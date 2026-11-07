@@ -1,0 +1,65 @@
+plugins {
+    id "java"
+    id "maven-publish"
+}
+
+group "org.meteordev"
+version "0.2.5"
+
+java {
+    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_1_8
+
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation "org.openjdk.jmh:jmh-core:1.36"
+    testImplementation "org.openjdk.jmh:jmh-generator-annprocess:1.36"
+
+    testAnnotationProcessor "org.openjdk.jmh:jmh-generator-annprocess:1.36"
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+}
+
+compileTestJava {
+    options.encoding = "UTF-8"
+}
+
+javadoc {
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+test {
+    failOnNoDiscoveredTests = false
+}
+
+publishing {
+    publications {
+        java(MavenPublication) {
+            from components.java
+        }
+    }
+
+    repositories {
+        maven {
+            name = "meteor-maven"
+            url = "https://maven.meteordev.org/releases"
+
+            credentials {
+                username = System.getenv("MAVEN_METEOR_ALIAS")
+                password = System.getenv("MAVEN_METEOR_TOKEN")
+            }
+
+            authentication {
+                basic(BasicAuthentication)
+            }
+        }
+    }
+}

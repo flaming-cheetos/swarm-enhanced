@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.Copy
+
 plugins {
     alias(libs.plugins.fabric.loom)
 }
@@ -27,7 +29,13 @@ dependencies {
 
     // Meteor
     modImplementation(libs.meteor.client)
+
+    // Baritone for compile-time only (Meteor provides runtime). Use Meteor's published baritone.
+    compileOnly("meteordevelopment:baritone:1.21.10-SNAPSHOT")
 }
+
+val modsFolder1 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/thisistnothi14/.minecraft/mods")
+val modsFolder2 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/1.21.4/.minecraft/mods")
 
 tasks {
     processResources {
@@ -37,7 +45,6 @@ tasks {
         )
 
         inputs.properties(propertyMap)
-
         filteringCharset = "UTF-8"
 
         filesMatching("fabric.mod.json") {
@@ -64,4 +71,24 @@ tasks {
         options.compilerArgs.add("-Xlint:deprecation")
         options.compilerArgs.add("-Xlint:unchecked")
     }
+}
+
+val remapJarTask = tasks.named("remapJar")
+
+val copyJarToInstance1 by tasks.registering(Copy::class) {
+    dependsOn(remapJarTask)
+    from(remapJarTask.map { it.outputs.files.singleFile })
+    into(modsFolder1)
+    rename { "swarm-improved.jar" }
+}
+
+val copyJarToInstance2 by tasks.registering(Copy::class) {
+    dependsOn(remapJarTask)
+    from(remapJarTask.map { it.outputs.files.singleFile })
+    into(modsFolder2)
+    rename { "swarm-improved.jar" }
+}
+
+tasks.named("build") {
+    dependsOn(copyJarToInstance1, copyJarToInstance2)
 }

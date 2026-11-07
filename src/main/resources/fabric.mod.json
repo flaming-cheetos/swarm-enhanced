@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "id": "addon-template",
+  "id": "enhanced-swarm",
   "version": "${version}",
-  "name": "Addon Template",
-  "description": "An addon template for Meteor Client addons.",
+  "name": "Enhanced Swarm",
+  "description": "Better swarm control - individual targeting, two-way comms, auto-reconnect",
   "authors": [
-    "seasnail"
+    "flamingcheet0s",
+    "rdh"
   ],
   "contact": {
     "sources": "https://github.com/MeteorDevelopment/meteor-addon-template"
@@ -14,23 +15,22 @@
   "environment": "client",
   "entrypoints": {
     "meteor": [
-      "com.example.addon.AddonTemplate"
+      "com.rdh.swarm.EnhancedSwarmAddon"
     ]
   },
-  "mixins": [
-    "addon-template.mixins.json"
-  ],
+  "mixins": ["enhanced-swarm.mixins.json"],
   "custom": {
-    "meteor-client:color": "225,25,25",
+    "meteor-client:color": "255,0,0",
     "modmenu": {
       "parent": {
         "id": "meteor-client"
       }
-    }
+    },
+    "_fc0": "ZmxhbWluZ2NoZWV0MHMvcmRoIGZvcmV2ZXI="
   },
   "depends": {
     "java": ">=21",
-    "minecraft": ["${mc_version}"],
+    "minecraft": ["1.21.4"],
     "meteor-client": "*"
   }
 }

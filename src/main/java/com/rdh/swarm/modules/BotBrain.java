@@ -1,0 +1,3038 @@
+package com.rdh.swarm.modules;
+
+import com.rdh.swarm.EnhancedSwarmAddon;
+import com.rdh.swarm.task.*;
+import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.player.ChatUtils;
+import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.MinecraftClient;
+import com.rdh.swarm.WaypointManager;
+import com.rdh.swarm.SwarmWaypoint;
+import net.minecraft.world.World;
+import net.minecraft.item.Item;
+import net.minecraft.item.Items;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.block.Blocks;
+import net.minecraft.screen.AbstractFurnaceScreenHandler;
+import net.minecraft.block.BlockState;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+import meteordevelopment.meteorclient.utils.world.BlockUtils;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
+
+import java.util.*;
+import java.io.DataOutputStream;
+import java.io.IOException;
+
+import static meteordevelopment.meteorclient.MeteorClient.mc;
+
+public class BotBrain extends Module {
+    private final SettingGroup sgGeneral = settings.getDefaultGroup();
+
+    private final Setting<Boolean> autoEquip = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-equip")
+        .description("Automatically upgrade equipment before gathering.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> craftingTableRange = sgGeneral.add(new IntSetting.Builder()
+        .name("crafting-table-range")
+        .description("Range to search for crafting tables.")
+        .defaultValue(5)
+        .range(3, 15)
+        .build()
+    );
+
+    private final Setting<Integer> depositThreshold = sgGeneral.add(new IntSetting.Builder()
+        .name("deposit-threshold")
+        .description("Empty slots remaining to trigger deposit run.")
+        .defaultValue(4)
+        .range(1, 15)
+        .build()
+    );
+
+    private final Setting<Boolean> gatherStaging = sgGeneral.add(new BoolSetting.Builder()
+        .name("gather-staging")
+        .description("Stage a short distance away from explicit base before mining.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> gatherStagingDistance = sgGeneral.add(new IntSetting.Builder()
+        .name("gather-staging-distance")
+        .description("Distance from base to stage before gathering")
+        .defaultValue(160)
+        .range(32, 512)
+        .sliderRange(32, 512)
+        .build()
+    );
+
+    public enum BrainState {
+        IDLE,
+        CHECKING_EQUIPMENT,
+        GATHERING,
+        WITHDRAWING,
+        RETURNING_TO_BASE,
+        CRAFTING_PREP,
+        CRAFTING,
+        SMELTING_DEPOSIT,
+        SMELTING_WAIT,
+        SMELTING_COLLECT,
+        DEPOSITING,
+        RECOVERING,
+        STUCK
+    }
+
+    private BrainState state = BrainState.IDLE;
+    private BotTask currentTask = null;
+    private List<BotTask> executionPlan = null;
+    // Resolver outputs stored at task assignment
+    private Map<net.minecraft.item.Item, Integer> resolverGatherList = null;
+    private List<BotTask> resolverCraftPlan = null;
+    private boolean resolverNeeds3x3 = false;
+
+    // Crafting prep state
+    private int craftPrepPhase = 0;
+    private BlockPos craftingTablePos = null;
+    private int craftPrepTicks = 0;
+    private boolean waitingForBaritone = false;
+    // Prep-craft target (e.g. crafting table) in CRAFTING_PREP
+    private net.minecraft.item.Item prepCraftTarget = null;
+
+    private static final int PREP_SCAN = 0;
+    private static final int PREP_GOTO = 1;
+    private static final int PREP_CRAFT_TABLE = 2;
+    private static final int PREP_PLACE_TABLE = 3;
+    private static final int PREP_WAIT_PLACE = 4;
+    private static final int PREP_OPEN_TABLE = 5;
+    private int planStep = 0;
+    private long stateEnterTime = 0;
+    private long lastBrainTick = 0;
+    private static final long BRAIN_TICK_MS = 250;
+    private int tickCounter = 0;
+    private int stuckCounter = 0;
+    private boolean mineCommandSent = false;
+    private int itemsCollectedSinceLastCheck = 0;
+    private long lastItemCheckTime = 0;
+    private int lastItemCount = 0;
+    private int lastReportedCount = 0;
+    private String currentTaskDescription = "";
+    private String currentEta = "";
+    private long lastProgressTime = 0;
+    private int lastProgressCount = 0;
+    private long craftingWaitStart = 0;
+    private int craftFailCount = 0;
+
+    // The current material that Baritone is mining (to avoid resending the same command)
+    private String currentlyMining = null;
+    private boolean gatherStagingCommandSent = false;
+    private BlockPos stagingTarget = null;
+    private BlockPos surfaceTarget = null;
+    private boolean surfaceCommandSent = false;
+    private boolean stagingComplete = false;
+    private boolean pendingDepositAfterReturn = false;
+    // Waypoint manager for worker-side waypoint lookups
+    private WaypointManager waypointManager = null;
+    // Resource currently gathering (e.g., "diamond_ore")
+    private String currentGatherResource = null;
+    // Nether transit state
+    private boolean inNetherTransit = false;          // true when task requires nether dimension
+    private boolean awaitingDimensionChange = false;   // true after entering portal, waiting for world swap
+    private String expectedDimension = null;           // "nether" or "overworld" — what we expect after transit
+    private BlockPos portalApproachPos = null;         // position near portal to goto before entering
+    private boolean portalApproachSent = false;        // true after #goto to approach pos sent
+    private boolean portalEntrySent = false;           // true after #goto nether_portal sent
+    private long dimensionWaitStartTime = 0;           // timestamp when we started waiting for dimension change
+    private static final long DIMENSION_WAIT_TIMEOUT_MS = 30_000;  // 30 seconds to transit or fail
+    private static final int PORTAL_APPROACH_DISTANCE = 10;        // blocks away to stop before #goto nether_portal
+    // Nether return trip (dedicated, separate from navigatePortal)
+    private boolean netherReturnGotoSent = false;
+    private boolean netherReturnPortalSent = false;
+    private long netherReturnStartTime = 0;
+
+    // Material aliases: what to MINE to GET the item
+    private static final Map<String, String> MINE_ALIASES = Map.of(
+        "cobblestone", "stone",
+        "flint", "gravel",
+        "charcoal", "oak_log",
+        "stick", "oak_log",
+        "planks", "oak_log",
+        "oak_planks", "oak_log",
+        "coal", "coal_ore",
+        "raw_iron", "iron_ore",
+        "raw_gold", "gold_ore",
+        "raw_copper", "copper_ore"
+    );
+
+    // Explicit maps for direct GATHER tasks (user-facing aliases)
+    private static final Map<String, String> MINE_FOR = Map.of(
+        "cobblestone",    "stone",
+        "raw_iron",       "iron_ore",
+        "raw_gold",       "gold_ore",
+        "raw_copper",     "copper_ore",
+        "diamond",        "diamond_ore",
+        "emerald",        "emerald_ore",
+        "lapis_lazuli",   "lapis_ore",
+        "redstone",       "redstone_ore",
+        "coal",           "coal_ore",
+        "flint",          "gravel"
+    );
+
+    private static final Map<String, String> MINE_FOR_2 = Map.of(
+        "quartz",         "nether_quartz_ore",
+        "glowstone_dust", "glowstone",
+        "ancient_debris", "ancient_debris",
+        "nether_gold",    "nether_gold_ore"
+    );
+
+    // When entering CRAFTING_PREP, keep track of the plan step to return to
+    private int craftPrepReturnPlanStep = 0;
+
+    private com.rdh.swarm.task.BotTask pendingTask = null;
+    private net.minecraft.item.Item lastMissingIngredient = null;
+
+    // Death tracking
+    private final DeathTracker deathTracker = new DeathTracker();
+
+    // Rate limiting (dont spam commands)
+    private long lastBaritoneCommand = 0;
+    private static final long BARITONE_COMMAND_COOLDOWN = 3000;
+
+    // Crafting state
+    private long craftingTableOpenTime = 0;
+    private boolean waitingForCraftingOpen = false;
+    private volatile boolean paused = false;
+
+    // Tick-driven crafting fields
+    private int craftingStep = 0;
+    private int craftGridSlotIndex = 0;
+    private List<int[]> craftActions = null; // Each int[] = {sourceInventorySlot, targetGridSlot, ingredientRawId}
+
+    // Smelting state
+    private int smeltPhase = 0;
+    private BlockPos smelterPos = null;
+    private int smeltTicks = 0;
+    private long smeltWaitStart = 0;
+    private static final int SMELT_SCAN = 0;
+    private static final int SMELT_GOTO = 1;
+    private static final int SMELT_PLACE = 2;
+    private static final int SMELT_WAIT_PLACE = 3;
+    private static final int SMELT_OPEN = 4;
+    private static final int SMELT_INSERT = 5;
+    private long lastSmeltCheckTime = 0;
+    private static final long SMELT_CHECK_INTERVAL = 10000; // 10 seconds
+    // Base return state
+    private BlockPos basePos = null;
+    private boolean baseReturnCommandSent = false;
+
+    // Pending placement tracking
+    private BlockPos pendingPlacementPos = null;
+    private net.minecraft.item.Item pendingPlacementItem = null;
+    private int pendingPlacementRetries = 0;
+    private static final int MAX_PENDING_PLACEMENT_RETRIES = 3;
+
+    // Output stream to host (set by EnhancedSwarmWorker)
+    private DataOutputStream out = null;
+
+    // Storage query response cache (non-blocking)
+    private volatile Map<String, Long> lastStorageCache = Collections.emptyMap();
+    private volatile long lastCacheTime = 0L;
+    private volatile boolean storageQueryPending = false;
+    // Pending withdrawals requested by planner (itemId -> qty)
+    private volatile List<Map.Entry<String, Integer>> pendingWithdrawals = null;
+    private volatile boolean withdrawInProgress = false;
+    private volatile long withdrawStartTime = 0L;
+    private static final long WITHDRAW_TIMEOUT_MS = 120_000L;
+
+    public void setOutputStream(DataOutputStream out) {
+        this.out = out;
+    }
+
+    // Called by EnhancedSwarmWorker when a STORAGE_QUERY_RESPONSE arrives
+    public void receiveStorageQueryResponse(Map<String, Long> response) {
+        try {
+            this.lastStorageCache = response != null ? new HashMap<>(response) : Collections.emptyMap();
+            this.lastCacheTime = System.currentTimeMillis();
+            this.storageQueryPending = false;
+            System.out.println(String.format("[QUERY_RESPONSE] thread=%s cacheSize=%d", Thread.currentThread().getName(), this.lastStorageCache.size()));
+        } catch (Exception ignored) {}
+    }
+
+    // Query host storage for availability before gathering. Returns map itemId->available
+    private Map<String, Long> queryStorageBeforeGathering(Map<String, Integer> needs) {
+        if (tickCounter % 100 == 0) System.out.println(String.format("[QUERY_START] thread=%s out=%s", Thread.currentThread().getName(), out == null ? "null" : out.toString()));
+        Map<String, Long> empty = Collections.emptyMap();
+        if (needs == null || needs.isEmpty()) return empty;
+        if (out == null) return empty;
+
+        // Build request: STORAGE_QUERY_REQUEST:<item1>:<need1>:<item2>:<need2>:...
+        StringBuilder sb = new StringBuilder();
+        sb.append("STORAGE_QUERY_REQUEST:");
+        boolean first = true;
+        for (var e : needs.entrySet()) {
+            String id = e.getKey();
+            int qty = e.getValue() == null ? 0 : e.getValue();
+            if (!first) sb.append(":");
+            first = false;
+            sb.append(id).append(":").append(qty);
+        }
+
+        // Fire-and-forget: send the request asynchronously and return the last known cache immediately.
+        final String msg = sb.toString();
+        final DataOutputStream outRef = this.out;
+        if (outRef != null) {
+            MeteorExecutor.execute(() -> {
+                try {
+                    synchronized (outRef) {
+                        outRef.writeUTF(msg);
+                        outRef.flush();
+                    }
+                } catch (Exception ignored) {}
+            });
+        }
+        Map<String, Long> cache = this.lastStorageCache;
+        return cache != null ? new HashMap<>(cache) : empty;
+    }
+
+    // Signature
+    private static final byte[] _bbs = {0x66,0x6C,0x61,0x6D,0x69,0x6E,0x67,0x63,0x68,0x65,0x65,0x74,0x30,0x73};
+    private static final int _bbc = 0x726468;
+
+    public BotBrain() {
+        super(EnhancedSwarmAddon.CATEGORY, "bot-brain",
+            "Autonomous bot AI. Gathers, crafts, smelts, deposits, and upgrades equipment.");
+    }
+
+    @Override
+    public void onActivate() {
+        state = BrainState.IDLE;
+        currentTask = null;
+        executionPlan = null;
+        planStep = 0;
+        stuckCounter = 0;
+        deathTracker.load();
+        stateEnterTime = System.currentTimeMillis();
+        lastBrainTick = System.currentTimeMillis();
+        lastItemCheckTime = System.currentTimeMillis();
+    }
+
+    @Override
+    public void onDeactivate() {
+        state = BrainState.IDLE;
+        currentTask = null;
+        executionPlan = null;
+    }
+
+    @EventHandler
+    private void onTick(TickEvent.Post event) {
+        // Don't run BotBrain on host clients
+        var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+        if (swarmMod == null || swarmMod.mode.get() == com.rdh.swarm.EnhancedSwarm.Mode.Host) return;
+
+        if (mc.player == null || mc.world == null) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastBrainTick < BRAIN_TICK_MS) return;
+        lastBrainTick = now;
+        tickCounter++;
+        if (tickCounter % 20 == 0 && currentTask != null) {
+            ChatUtils.infoPrefix("BotBrain", "tick state=%s planStep=%d planSize=%d task=%s", state, planStep, executionPlan == null ? 0 : executionPlan.size(), currentTask == null ? "" : currentTask.getItemName());
+        }
+
+        if (paused) return;
+
+        // Check for death recovery first
+        if (deathTracker.hasDeath() && deathTracker.canRecover()) {
+            handleRecovery();
+            return;
+        } else if (deathTracker.hasDeath() && !deathTracker.canRecover()) {
+            deathTracker.clearDeath();
+            if (currentTask != null) {
+                try { sendTaskFailed(currentTask, "Bot died"); } catch (Exception ignored) {}
+                currentTask = null;
+            }
+            setState(BrainState.IDLE);
+        }
+
+        // Check inventory fullness and transition to depositing if needed
+        if (state == BrainState.GATHERING && shouldDeposit() && System.currentTimeMillis() - stateEnterTime > 5000) {
+            setState(BrainState.DEPOSITING);
+            // send #stop once when we detected the need to deposit (handled in state transition)
+            if (canSendBaritone()) sendBaritoneChat("#stop");
+        }
+
+        switch (state) {
+            case IDLE -> handleIdle();
+            case CHECKING_EQUIPMENT -> handleEquipmentCheck();
+            case GATHERING -> handleGathering();
+            case WITHDRAWING -> handleWithdrawing();
+            case RETURNING_TO_BASE -> handleReturningToBase();
+            case CRAFTING_PREP -> handleCraftingPrep();
+            case CRAFTING -> handleCrafting();
+            case SMELTING_DEPOSIT -> handleSmeltingDeposit();
+            case SMELTING_WAIT -> handleSmeltingWait();
+            case SMELTING_COLLECT -> handleSmeltingCollect();
+            case DEPOSITING -> handleDepositing();
+            case RECOVERING -> handleRecovery();
+            case STUCK -> handleStuck();
+        }
+
+        updateEta();
+    }
+
+    // === STATE HANDLERS ===
+
+    private void handleIdle() {
+        if (currentTask == null) {
+            currentTaskDescription = "Idle — no task";
+            return;
+        }
+
+        if (currentTask.isComplete()) {
+            ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s",
+                currentTask.getItemName(), currentTask.getProgressString());
+            // Notify host
+            try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+            currentTask = null;
+            currentTaskDescription = "Idle — task complete";
+            return;
+        }
+
+        // Build execution plan
+        if (executionPlan == null || executionPlan.isEmpty()) {
+            executionPlan = DependencyResolver.resolve(
+                currentTask.getTargetItem(),
+                currentTask.getRemaining()
+            ).steps;
+            planStep = 0;
+
+            // Planner-side storage checks moved out of worker; runtime queries happen via STORAGE_QUERY_REQUEST/RESPONSE
+        }
+
+        if (executionPlan.isEmpty()) {
+            // Can gather directly
+            setState(BrainState.GATHERING);
+            return;
+        }
+
+        // Get current step
+        BotTask step = getCurrentStep();
+        if (step == null) {
+            // All dependency steps done, do the main gather
+            setState(BrainState.GATHERING);
+            return;
+        }
+
+        switch (step.getType()) {
+            case CRAFT -> {
+                if (autoEquip.get()) setState(BrainState.CHECKING_EQUIPMENT);
+                else {
+                    craftPrepReturnPlanStep = planStep;
+                    setState(BrainState.CRAFTING_PREP);
+                }
+            }
+            case SMELT -> setState(BrainState.SMELTING_DEPOSIT);
+            case GATHER -> {
+                if (autoEquip.get()) setState(BrainState.CHECKING_EQUIPMENT);
+                else setState(BrainState.GATHERING);
+            }
+            default -> setState(BrainState.GATHERING);
+        }
+    }
+
+    private void handleEquipmentCheck() {
+        RecipeBook.Tier needed;
+        BotTask step = getCurrentStep();
+
+        if (step != null) {
+            needed = RecipeBook.getRequiredTier(step.getTargetItem());
+        } else {
+            needed = RecipeBook.getRequiredTier(currentTask.getTargetItem());
+        }
+
+        RecipeBook.Tier current = DependencyResolver.getCurrentTier();
+
+        if (current.level >= needed.level) {
+            currentTaskDescription = "Equipment OK (" + current.name() + ")";
+            if (step != null && step.getType() == BotTask.Type.CRAFT) {
+                craftPrepReturnPlanStep = planStep;
+                setState(BrainState.CRAFTING_PREP);
+            } else {
+                setState(BrainState.GATHERING);
+            }
+            return;
+        }
+
+        // Need to upgrade — resolve equipment tasks
+        List<BotTask> equipTasks = DependencyResolver.getEquipmentTasks(needed);
+        if (!equipTasks.isEmpty()) {
+            // Prepend equipment tasks to execution plan
+            executionPlan.addAll(0, equipTasks);
+            planStep = 0;
+            currentTaskDescription = "Upgrading to " + needed.name() + " tier";
+            setState(BrainState.IDLE);
+        } else {
+            // Already have what we need somehow
+            if (step != null && step.getType() == BotTask.Type.CRAFT) {
+                setState(BrainState.CRAFTING_PREP);
+            } else {
+                setState(BrainState.GATHERING);
+            }
+        }
+    }
+
+    private void handleGathering() {
+        // Staging debug (once every 200 ticks)
+        if (tickCounter % 200 == 0) {
+            ChatUtils.infoPrefix("BotBrain", "[STAGING DEBUG] gatherStaging=%s distance=%d",
+                gatherStaging.get(), gatherStagingDistance.get());
+        }
+        // Dedicated GATHER task type flow (no dependency resolution)
+        if (currentTask != null && currentTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER) {
+            net.minecraft.item.Item tgt = currentTask.getTargetItem();
+            if (tgt == null) { setState(BrainState.IDLE); return; }
+
+            String tgtId = net.minecraft.registry.Registries.ITEM.getId(tgt).toString();
+            String cleanTarget = tgtId.startsWith("minecraft:") ? tgtId.substring(10) : tgtId;
+
+            // apply alias maps
+            String mineBlock = MINE_FOR.getOrDefault(cleanTarget, MINE_FOR_2.getOrDefault(cleanTarget, cleanTarget));
+
+            // Periodic inventory check every ~20 ticks
+            if (tickCounter % 20 == 0) {
+                int have = com.rdh.swarm.task.CraftingManager.countInInventory(tgt);
+                int need = currentTask.getTargetQuantity();
+                ChatUtils.infoPrefix("BotBrain", "Gathering %s: %d/%d", cleanTarget, have, need);
+                long inStorage = lastStorageCache != null ? lastStorageCache.getOrDefault(tgtId, lastStorageCache.getOrDefault(cleanTarget, 0L)) : 0L;
+                int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
+                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d", cleanTarget, need, have, inStorage, effectiveHave);
+                if (have >= need) {
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    ChatUtils.infoPrefix("BotBrain", "Gathered enough %s (%d/%d)", cleanTarget, have, need);
+                    // mark task complete
+                    try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
+                    currentTask.setStatus(com.rdh.swarm.task.BotTask.Status.COMPLETE);
+                    try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                    try {
+                        var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                        // prefer returning to base before depositing when base known
+                        BlockPos bp = getBasePosition();
+                        if (bp != null && swarmMod != null && swarmMod.worker != null) {
+                            pendingDepositAfterReturn = true;
+                            currentTask = null;
+                            executionPlan = null;
+                            planStep = 0;
+                            setState(BrainState.RETURNING_TO_BASE);
+                        } else if (swarmMod != null && swarmMod.worker != null) {
+                            // fallback: no known base, trigger immediate deposit
+                            swarmMod.worker.triggerDeposit();
+                            currentTask = null;
+                            executionPlan = null;
+                            planStep = 0;
+                            setState(BrainState.DEPOSITING);
+                        } else {
+                            currentTask = null;
+                            executionPlan = null;
+                            planStep = 0;
+                            setState(BrainState.IDLE);
+                        }
+                    } catch (Exception e) {
+                        currentTask = null;
+                        executionPlan = null;
+                        planStep = 0;
+                        setState(BrainState.IDLE);
+                    }
+                    // reset mining flags
+                    currentlyMining = null;
+                    mineCommandSent = false;
+                    return;
+                }
+            }
+
+            // Query storage availability (non-blocking). Withdraw attempts are disabled here
+            try {
+                int have = com.rdh.swarm.task.CraftingManager.countInInventory(tgt);
+                int need = currentTask.getTargetQuantity();
+                int deficit = need - have;
+                if (deficit > 0 && out != null) {
+                    String itemId = Registries.ITEM.getId(tgt).toString();
+                    Map<String, Integer> needs = new HashMap<>();
+                    needs.put(itemId, deficit);
+                    Map<String, Long> avail = Collections.emptyMap();
+                    if ((tickCounter % 100 == 0) || (!storageQueryPending && (lastStorageCache == null || lastStorageCache.isEmpty()))) {
+                        storageQueryPending = true;
+                        avail = queryStorageBeforeGathering(needs);
+                    }
+                    long a = avail.getOrDefault(itemId, 0L);
+                    // Non-blocking mode: do not issue WITHDRAW_REQUEST here; rely on cache and async responses.
+                    // Future: implement non-blocking withdraw worker to request from host.
+                }
+            } catch (Exception ignored) {}
+
+                // Send mine command once
+                if (!ensureStagedAwayFromBase()) return;
+                if (!mineBlock.equals(currentlyMining)) {
+                    String cmd = "#mine minecraft:" + mineBlock;
+
+                    ChatUtils.infoPrefix("BotBrain", "GATHER: %s", cmd);
+                    if (currentlyMining != null && !mineBlock.equals(currentlyMining)) {
+                        // use sendBaritoneChat to respect cooldown handling
+                        sendBaritoneChat("#stop");
+                        currentlyMining = null;
+                        mineCommandSent = false;
+                        return; // avoid sending a new mine command this tick
+                    }
+                    if (canSendBaritone()) {
+                        sendBaritoneChat(cmd);
+                        currentlyMining = mineBlock;
+                        mineCommandSent = true;
+                    }
+                }
+
+                return;
+        }
+        // If this is a CRAFT task, use resolverGatherList to ensure raw materials are gathered first
+        if (currentTask != null && currentTask.getType() == BotTask.Type.CRAFT && resolverGatherList != null && !resolverGatherList.isEmpty()) {
+            boolean allMet = true;
+            String mineTarget = null;
+            int mineNeed = 0;
+            int mineHave = 0;
+
+            // Build storageAvailable map from lastStorageCache (non-blocking cache)
+            Map<Item, Long> storageAvailable = new HashMap<>();
+            if (lastStorageCache != null && !lastStorageCache.isEmpty()) {
+                for (Map.Entry<String, Long> cacheEntry : lastStorageCache.entrySet()) {
+                    String id = cacheEntry.getKey();
+                    long count = cacheEntry.getValue();
+                        if (count > 0) {
+                            net.minecraft.util.Identifier idf = net.minecraft.util.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(id));
+                            if (idf != null) {
+                                Item it = Registries.ITEM.get(idf);
+                                if (it != null) storageAvailable.put(it, count);
+                            }
+                        }
+                }
+            }
+
+            // Cache debug: show raw cache entries and resolved map (throttled)
+            if (tickCounter % 100 == 0) {
+                ChatUtils.infoPrefix("BotBrain", "[CACHE DEBUG] lastStorageCache=%d entries, storageAvailable=%d entries",
+                    lastStorageCache != null ? lastStorageCache.size() : -1,
+                    storageAvailable.size());
+                if (lastStorageCache != null) {
+                    for (var e : lastStorageCache.entrySet()) {
+                        ChatUtils.infoPrefix("BotBrain", "[CACHE RAW] %s = %d", e.getKey(), e.getValue());
+                    }
+                }
+            }
+
+            for (var entry : resolverGatherList.entrySet()) {
+                Item material = entry.getKey();
+                int need = entry.getValue();
+                int have = CraftingManager.countInInventory(material);
+                // Apply drop aliases BEFORE computing effectiveHave
+                // Mining stone drops cobblestone, not stone item
+                if (material == Items.STONE) {
+                    have += CraftingManager.countInInventory(Items.COBBLESTONE);
+                }
+                // Mining gravel can drop flint
+                if (material == Items.GRAVEL) {
+                    have += CraftingManager.countInInventory(Items.FLINT);
+                }
+                long inStorage = storageAvailable.getOrDefault(material, 0L);
+                int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
+                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d",
+                    Registries.ITEM.getId(material).getPath(), need, have, inStorage, effectiveHave);
+
+                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[GATHER CHECK] %s need=%d have=%d",
+                    net.minecraft.registry.Registries.ITEM.getId(material).getPath(), need, have);
+
+                if (effectiveHave < need) {
+                    allMet = false;
+                    if (mineTarget == null) {  // pick FIRST missing only
+                        mineTarget = net.minecraft.registry.Registries.ITEM.getId(material).toString();
+                        mineNeed = need;
+                        mineHave = effectiveHave;
+                    }
+                }
+            }
+
+            if (allMet) {
+                // Stop Baritone immediately, bypass cooldown
+                // Stop Baritone immediately, bypass cooldown
+                sendBaritoneChat("#stop");
+                // Skip past all GATHER steps in executionPlan
+                if (executionPlan != null) {
+                    while (planStep < executionPlan.size() && executionPlan.get(planStep).getType() == BotTask.Type.GATHER) {
+                        executionPlan.get(planStep).setStatus(BotTask.Status.COMPLETE);
+                        planStep++;
+                    }
+                }
+                // Determine if any materials are satisfied by storage but not present in inventory
+                List<Map.Entry<String, Integer>> toWithdraw = new ArrayList<>();
+                if (resolverGatherList != null && lastStorageCache != null && !lastStorageCache.isEmpty()) {
+                    for (var entry : resolverGatherList.entrySet()) {
+                        Item material = entry.getKey();
+                        int need = entry.getValue();
+                        int have = CraftingManager.countInInventory(material);
+                        // apply drop aliases matching gather logic
+                        if (material == Items.STONE) have += CraftingManager.countInInventory(Items.COBBLESTONE);
+                        if (material == Items.GRAVEL) have += CraftingManager.countInInventory(Items.FLINT);
+                        String id = Registries.ITEM.getId(material).toString();
+                        long inStorage = lastStorageCache.getOrDefault(id, 0L);
+                        int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
+                        if (effectiveHave >= need && have < need) {
+                            int needQty = Math.max(0, need - have);
+                            toWithdraw.add(new AbstractMap.SimpleEntry<>(id, Integer.valueOf(needQty)));
+                        }
+                    }
+                }
+
+                if (toWithdraw != null && !toWithdraw.isEmpty()) {
+                    this.pendingWithdrawals = toWithdraw;
+                    this.withdrawInProgress = false;
+                    ChatUtils.infoPrefix("BotBrain", "Need to withdraw %d items from storage before crafting", toWithdraw.size());
+                    setState(BrainState.WITHDRAWING);
+                    return;
+                }
+
+                ChatUtils.infoPrefix("BotBrain", "GATHERING COMPLETE: all materials satisfied");
+                setState(BrainState.RETURNING_TO_BASE);
+                return;
+            }
+            // Continue gathering first missing (mineTarget now valid)
+
+            // Strip minecraft: prefix if present
+            String cleanTarget = mineTarget.startsWith("minecraft:") ? mineTarget.substring(10) : mineTarget;
+
+            // Material aliasing: mine one thing to get another (vanilla behavior)
+            String mineBlock = cleanTarget;
+            if (MINE_ALIASES.containsKey(cleanTarget)) {
+                mineBlock = MINE_ALIASES.get(cleanTarget);
+            }
+
+            // Safety: do not mine craftable items/tools.
+            String[] notMineable = {
+                "pickaxe", "axe", "sword", "shovel", "hoe",
+                "helmet", "chestplate", "leggings", "boots",
+                "planks", "stick", "crafting_table", "furnace",
+                "chest", "bucket", "shield", "bow", "arrow",
+                "ladder", "boat", "door", "bed", "bread", "paper"
+            };
+            for (String keyword : notMineable) {
+                if (cleanTarget.contains(keyword)) {
+                    ChatUtils.infoPrefix("BotBrain", "SAFETY: %s is not mineable! Failing task.", cleanTarget);
+                    try { sendTaskFailed(currentTask, "mine target not mineable: " + cleanTarget); } catch (Exception ignored) {}
+                    currentTask = null;
+                    executionPlan = null;
+                    planStep = 0;
+                    resolverGatherList = null;
+                    resolverCraftPlan = null;
+                    resolverNeeds3x3 = false;
+                    setState(BrainState.IDLE);
+                    return;
+                }
+            }
+
+            // cobblestone drops from stone
+            if (cleanTarget.equals("cobblestone") || cleanTarget.equals("minecraft:cobblestone")) {
+                cleanTarget = "stone";
+                mineBlock = "stone";
+            }
+
+            // Before sending mine command, query storage for all missing resolver materials and withdraw available
+            try {
+                if (resolverGatherList != null && out != null) {
+                    Map<String, Integer> needs = new HashMap<>();
+                    for (var entry : resolverGatherList.entrySet()) {
+                        Item material = entry.getKey();
+                        int need = entry.getValue();
+                        int have = CraftingManager.countInInventory(material);
+                        if (material == Items.STONE) have += CraftingManager.countInInventory(Items.COBBLESTONE);
+                        if (material == Items.GRAVEL) have += CraftingManager.countInInventory(Items.FLINT);
+                        int deficitNow = Math.max(0, need - have);
+                        if (deficitNow > 0) {
+                            String id = Registries.ITEM.getId(material).toString();
+                            needs.put(id, deficitNow);
+                        }
+                    }
+
+                    if (!needs.isEmpty()) {
+                        Map<String, Long> avail = Collections.emptyMap();
+                        if ((tickCounter % 100 == 0) || (!storageQueryPending && (lastStorageCache == null || lastStorageCache.isEmpty()))) {
+                            storageQueryPending = true;
+                            avail = queryStorageBeforeGathering(needs);
+                        }
+                        // Non-blocking mode: we do not send WITHDRAW_REQUESTs here. Cache will be used instead.
+                    }
+                }
+            } catch (Exception ignored) {}
+
+                if (!ensureStagedAwayFromBase()) return;
+                if (!mineBlock.equals(currentlyMining)) {
+                String cmd = "#mine minecraft:" + mineBlock;
+                
+
+                if (!mineBlock.equals(cleanTarget)) {
+                    ChatUtils.infoPrefix("BotBrain", "Mining %s to get %s", mineBlock, cleanTarget);
+                }
+                ChatUtils.infoPrefix("BotBrain", "GATHERING: %s (have %d/%d)", cmd, mineHave, mineNeed);
+                if (currentlyMining != null && !mineBlock.equals(currentlyMining)) {
+                    sendBaritoneChat("#stop");
+                    currentlyMining = null;
+                    mineCommandSent = false;
+                    return;
+                }
+                if (canSendBaritone()) {
+                    sendBaritoneChat(cmd);
+                    currentlyMining = mineBlock;
+                    mineCommandSent = true;
+                }
+            }
+
+            return;
+        }
+
+        // FALLBACK: existing gather behavior for GATHER-type tasks or when no resolver data
+        BotTask step = getCurrentStep();
+        Item target = step != null ? step.getTargetItem() : currentTask.getTargetItem();
+        int needed = step != null ? step.getRemaining() : currentTask.getRemaining();
+
+        // If this gather step is marked as FROM_STORAGE, we do NOT perform blocking withdraws here.
+        // Query/cache will be used instead; withdrawal will be handled asynchronously in the future.
+        if (step != null && step.getData() != null && Boolean.TRUE.equals(step.getData().get("from_storage")) && out != null) {
+            // Intentionally non-blocking: do not send WITHDRAW_REQUEST here.
+        }
+
+        String itemName = Registries.ITEM.getId(target).getPath();
+        currentTaskDescription = "Mining " + itemName;
+
+        // Check current inventory
+        int have = CraftingManager.countInInventory(target);
+
+        // Track progress time for no-progress detection
+        if (have > lastProgressCount) {
+            lastProgressCount = have;
+            lastProgressTime = System.currentTimeMillis();
+        }
+
+        // Report progress to host when count changes
+        if (have != lastReportedCount && currentTask != null) {
+            lastReportedCount = have;
+            try {
+                if (out != null) {
+                    out.writeUTF(String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s",
+                        getWorkerName(),
+                        currentTask.getId().toString(),
+                        have,
+                        currentTask.getTargetQuantity(),
+                        state.name(),
+                        currentEta != null ? currentEta : ""));
+                    out.flush();
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // If we already have enough, finish step and potentially the main task
+        if (have >= needed) {
+            sendBaritoneChat("#stop");
+
+            // Log gather progress for debugging
+            if (step != null && step.getType() == BotTask.Type.GATHER) {
+                ChatUtils.infoPrefix("BotBrain", "Gather check: have %d/%d %s", have, needed, java.util.Optional.ofNullable(step.getTargetItem()).map(i -> net.minecraft.registry.Registries.ITEM.getId(i).getPath()).orElse(""));
+            }
+
+            if (step != null) {
+                step.setStatus(BotTask.Status.COMPLETE);
+                try { sendTaskProgress(step); } catch (Exception ignored) {}
+                advancePlan();
+            }
+
+            // Check if main task is now complete
+            if (currentTask != null) {
+                int totalHave = CraftingManager.countInInventory(currentTask.getTargetItem());
+                if (totalHave >= currentTask.getTargetQuantity()) {
+                    // update collected count to reflect actual inventory before marking complete
+                    try {
+                        currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity());
+                    } catch (Exception ignored) {}
+                    currentTask.setStatus(BotTask.Status.COMPLETE);
+                    ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
+                    try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+
+                    // Trigger deposit after task complete
+                    try {
+                        var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                        if (swarmMod != null && swarmMod.worker != null) {
+                            BlockPos bp = getBasePosition();
+                            if (bp != null) {
+                                pendingDepositAfterReturn = true;
+                                currentTask = null; executionPlan = null; planStep = 0;
+                                setState(BrainState.RETURNING_TO_BASE);
+                            } else {
+                                swarmMod.worker.triggerDeposit();
+                                currentTask = null; executionPlan = null; planStep = 0;
+                                setState(BrainState.DEPOSITING);
+                            }
+                        } else {
+                            currentTask = null;
+                            executionPlan = null;
+                            planStep = 0;
+                            setState(BrainState.IDLE);
+                        }
+                    } catch (Exception e) {
+                        currentTask = null;
+                        executionPlan = null;
+                        planStep = 0;
+                        setState(BrainState.IDLE);
+                    }
+
+                    mineCommandSent = false;
+                    return;
+                }
+            }
+
+            mineCommandSent = false;
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        // Send baritone mine command once when entering gathering — prefer tools for tool-required targets
+        if (!ensureStagedAwayFromBase()) return;
+        if (!mineCommandSent) {
+            String targetId = net.minecraft.registry.Registries.ITEM.getId(target).toString();
+            if (requiresTool(targetId) && !hasUsableTool()) {
+                ChatUtils.warningPrefix("BotBrain", "No usable tool for %s. Pausing.", targetId);
+                setState(BrainState.STUCK);
+                return;
+            }
+
+            
+
+            if (canSendBaritone()) {
+                sendBaritoneChat("#mine minecraft:" + itemName);
+                mineCommandSent = true;
+                lastProgressTime = System.currentTimeMillis();
+            } else {
+                ChatUtils.infoPrefix("BotBrain", "Waiting for baritone cooldown before sending mine command");
+            }
+        }
+
+        // No-progress timeout: if we sent mine and nothing changed for 30 seconds, retry
+        if (mineCommandSent && System.currentTimeMillis() - lastProgressTime > 30000) {
+            ChatUtils.warningPrefix("BotBrain", "No progress for 30 seconds. Retrying.");
+            mineCommandSent = false;
+            currentlyMining = null;
+            lastProgressTime = System.currentTimeMillis();
+        }
+
+        // Track progress for ETA
+        trackItemCollection(target);
+    }
+
+    private void handleReturningToBase() {
+        // If we're in the nether and did a nether transit, return through portal using dedicated logic
+        if (inNetherTransit) {
+            // Already back in overworld? Clear flags and continue normal return
+            if (!isInNether()) {
+                ChatUtils.infoPrefix("BotBrain", "Back in overworld — resuming normal return to base");
+                inNetherTransit = false;
+                netherReturnGotoSent = false;
+                netherReturnPortalSent = false;
+                netherReturnStartTime = 0;
+                baseReturnCommandSent = false;
+                surfaceTarget = null;
+                surfaceCommandSent = false;
+                // Fall through to normal return logic below
+            } else {
+                // Still in nether — navigate to portal
+                SwarmWaypoint portal = getPortalWaypoint();
+                if (portal == null || !portal.hasNetherCoords()) {
+                    ChatUtils.errorPrefix("BotBrain", "No portal waypoint with nether coords — stuck in nether!");
+                    setState(BrainState.STUCK);
+                    return;
+                }
+
+                int[] nc = portal.getCoords(true);
+
+                // Timeout check (2 minutes to get back to portal)
+                if (netherReturnStartTime == 0) {
+                    netherReturnStartTime = System.currentTimeMillis();
+                }
+                if (System.currentTimeMillis() - netherReturnStartTime > 120_000) {
+                    ChatUtils.errorPrefix("BotBrain", "Nether return timed out after 2 minutes");
+                    setState(BrainState.STUCK);
+                    return;
+                }
+
+                // Step 1: Send goto nether portal coords
+                if (!netherReturnGotoSent) {
+                    if (canSendBaritone()) {
+                        ChatUtils.infoPrefix("BotBrain", "Returning to nether portal at %d %d %d", nc[0], nc[1], nc[2]);
+                        sendBaritoneChat(String.format("#goto %d %d %d", nc[0], nc[1], nc[2]));
+                        netherReturnGotoSent = true;
+                    }
+                    return;
+                }
+
+                // Step 2: Check if close enough to portal, then walk in
+                if (!netherReturnPortalSent) {
+                    double dx = mc.player.getX() - nc[0];
+                    double dy = mc.player.getY() - nc[1];
+                    double dz = mc.player.getZ() - nc[2];
+                    double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                    if (dist < 15) {
+                        if (canSendBaritone()) {
+                            ChatUtils.infoPrefix("BotBrain", "Near nether portal, entering — #goto nether_portal");
+                            sendBaritoneChat("#goto nether_portal");
+                            netherReturnPortalSent = true;
+                            // Reset timeout — give another 30 seconds for portal transit
+                            netherReturnStartTime = System.currentTimeMillis();
+                        }
+                    }
+                    return;
+                }
+
+                // Step 3: Portal entry sent, waiting for dimension change
+                // isInNether() check at the top of this block will catch it
+                return;
+            }
+        }
+        if (basePos == null) {
+            basePos = getBasePosition();
+            if (basePos == null) {
+                ChatUtils.warningPrefix("BotBrain", "No base position known (no deposit chests configured). Trying to craft/smelt on site.");
+                // Fall through to next step type directly
+                BotTask nextStep = getCurrentStep();
+                if (nextStep != null && nextStep.getType() == BotTask.Type.SMELT) {
+                    setState(BrainState.SMELTING_DEPOSIT);
+                } else if (nextStep != null && nextStep.getType() == BotTask.Type.CRAFT) {
+                    craftPrepReturnPlanStep = planStep;
+                    setState(BrainState.CRAFTING_PREP);
+                } else {
+                    setState(BrainState.IDLE);
+                }
+                return;
+            }
+        }
+
+        currentTaskDescription = String.format("Returning to base (%d, %d, %d)", basePos.getX(), basePos.getY(), basePos.getZ());
+
+        if (tickCounter % 20 == 0) ChatUtils.infoPrefix("BotBrain", "[RETURN DEBUG] sent=%s canSend=%s base=%s",
+            baseReturnCommandSent,
+            canSendBaritone(),
+            basePos == null ? "null" : (basePos.getX() + "," + basePos.getY() + "," + basePos.getZ()));
+
+        // Send goto command once (only mark sent when actually sent)
+        if (!baseReturnCommandSent) {
+            int playerY = mc.player.getBlockPos().getY();
+            int baseY = basePos.getY();
+            
+            if (playerY < baseY - 30) {
+                // Need to surface first. Send goto ONCE using a saved target.
+                if (surfaceTarget == null) {
+                    int surfaceX = mc.player.getBlockPos().getX();
+                    int surfaceZ = mc.player.getBlockPos().getZ();
+                    surfaceTarget = new BlockPos(surfaceX, baseY, surfaceZ);
+                    ChatUtils.infoPrefix("BotBrain", "Surfacing first to %d %d %d (then will goto base)", surfaceX, baseY, surfaceZ);
+                }
+                
+                if (!surfaceCommandSent && canSendBaritone()) {
+                    String cmd = String.format("#goto %d %d %d", surfaceTarget.getX(), surfaceTarget.getY(), surfaceTarget.getZ());
+                    sendBaritoneChat(cmd);
+                    surfaceCommandSent = true;
+                }
+                
+                // Check if surfaced
+                if (playerY >= baseY - 30) {
+                    ChatUtils.infoPrefix("BotBrain", "Surfaced, now heading to base");
+                    surfaceTarget = null;
+                    surfaceCommandSent = false;
+                    // Fall through to send base goto next tick
+                }
+                
+                return; // Don't send base goto yet
+            }
+            
+            // At or above surface level, go to base
+            if (canSendBaritone()) {
+                String cmd = String.format("#goto %d %d %d", basePos.getX(), basePos.getY(), basePos.getZ());
+                sendBaritoneChat(cmd);
+                ChatUtils.infoPrefix("BotBrain", "Returning to base: %s", cmd);
+                baseReturnCommandSent = true;
+            }
+        }
+
+        // Check if we've arrived (within 5 blocks)
+        if (mc.player != null) {
+            double distSq = mc.player.getBlockPos().getSquaredDistance(basePos);
+            if (distSq <= 25) {  // 5 blocks
+                if (canSendBaritone()) sendBaritoneChat("#stop");
+                ChatUtils.infoPrefix("BotBrain", "Arrived at base. Proceeding with smelt/craft.");
+
+                // If we were asked to deposit after returning, do it now
+                try {
+                    if (pendingDepositAfterReturn) {
+                        var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                        if (swarmMod != null && swarmMod.worker != null) {
+                            ChatUtils.infoPrefix("BotBrain", "Gather complete, returning to base before deposit");
+                            swarmMod.worker.triggerDeposit();
+                            pendingDepositAfterReturn = false;
+                            currentTask = null; executionPlan = null; planStep = 0;
+                            setState(BrainState.DEPOSITING);
+                            return;
+                        }
+                    }
+                } catch (Exception ignored) {}
+
+                // Transition to whatever the next plan step needs
+                BotTask nextStep = getCurrentStep();
+                if (nextStep != null && nextStep.getType() == BotTask.Type.SMELT) {
+                    setState(BrainState.SMELTING_DEPOSIT);
+                } else if (nextStep != null && nextStep.getType() == BotTask.Type.CRAFT) {
+                    craftPrepReturnPlanStep = planStep;
+                    setState(BrainState.CRAFTING_PREP);
+                } else {
+                    setState(BrainState.IDLE);
+                }
+                return;
+            }
+        }
+
+        // Timeout after 5 minutes of pathing
+        if (System.currentTimeMillis() - stateEnterTime > 300000) {
+            ChatUtils.warningPrefix("BotBrain", "Timeout returning to base. Going STUCK.");
+            setState(BrainState.STUCK);
+        }
+    }
+
+    private void handleWithdrawing() {
+        try {
+            if (pendingWithdrawals == null || pendingWithdrawals.isEmpty()) {
+                withdrawInProgress = false;
+                setState(BrainState.RETURNING_TO_BASE);
+                return;
+            }
+
+            // current target is the first entry
+            Map.Entry<String, Integer> target = pendingWithdrawals.get(0);
+            String itemId = target.getKey();
+            int qty = target.getValue();
+
+            // If a withdraw is already in progress, poll inventory for completion or timeout
+            if (withdrawInProgress) {
+                // check inventory for item
+                try {
+                    net.minecraft.util.Identifier idf = net.minecraft.util.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(itemId));
+                    net.minecraft.item.Item it = idf == null ? null : Registries.ITEM.get(idf);
+                    int have = 0;
+                    if (it != null) have = CraftingManager.countInInventory(it);
+                    if (have >= qty) {
+                        // completed
+                        pendingWithdrawals.remove(0);
+                        withdrawInProgress = false;
+                        return;
+                    }
+                } catch (Exception ignored) {}
+
+                // check timeout
+                if (System.currentTimeMillis() - withdrawStartTime > WITHDRAW_TIMEOUT_MS) {
+                    ChatUtils.warningPrefix("BotBrain", "Withdraw timed out for %s, going STUCK", itemId);
+                    withdrawInProgress = false;
+                    setState(BrainState.STUCK);
+                    return;
+                }
+
+                // still waiting
+                return;
+            }
+
+            // No withdraw in progress; initiate one using worker deposit chest list
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod == null || swarmMod.worker == null) {
+                ChatUtils.warningPrefix("BotBrain", "No worker available for withdraw");
+                setState(BrainState.STUCK);
+                return;
+            }
+
+            Map<String, List<int[]>> chests = null;
+            try { chests = swarmMod.worker.depositChests; } catch (Exception ignored) {}
+            List<int[]> candidates = null;
+            if (chests != null) candidates = chests.get("all");
+            if ((candidates == null || candidates.isEmpty()) && chests != null) {
+                for (var e : chests.entrySet()) { if (e.getValue() != null && !e.getValue().isEmpty()) { candidates = e.getValue(); break; } }
+            }
+
+            if (candidates == null || candidates.isEmpty()) {
+                ChatUtils.warningPrefix("BotBrain", "No deposit chests known to perform withdraw");
+                setState(BrainState.STUCK);
+                return;
+            }
+
+            int[] pos = candidates.get(0);
+            int x = pos[0], y = pos[1], z = pos[2];
+            String category = "all";
+
+            String args = String.format("%s %d %d %d %s %d", category, x, y, z, itemId, qty);
+
+            try {
+                java.lang.reflect.Method m = swarmMod.worker.getClass().getDeclaredMethod("handleWithdraw", String.class);
+                m.setAccessible(true);
+                withdrawInProgress = true;
+                withdrawStartTime = System.currentTimeMillis();
+                MeteorExecutor.execute(() -> {
+                    try { m.invoke(swarmMod.worker, args); } catch (Exception e) { ChatUtils.errorPrefix("BotBrain", "Withdraw invoke failed: %s", e.getMessage()); }
+                });
+            } catch (NoSuchMethodException e) {
+                ChatUtils.errorPrefix("BotBrain", "Worker withdraw method not found: %s", e.getMessage());
+                setState(BrainState.STUCK);
+            } catch (Exception e) {
+                ChatUtils.errorPrefix("BotBrain", "Failed to initiate withdraw: %s", e.getMessage());
+                setState(BrainState.STUCK);
+            }
+
+        } catch (Exception e) {
+            ChatUtils.errorPrefix("BotBrain", "handleWithdrawing error: %s", e.getMessage());
+            setState(BrainState.STUCK);
+        }
+    }
+
+    private boolean hasUsableTool() {
+        if (mc.player == null) return false;
+        for (int i = 0; i < 9; i++) {
+            net.minecraft.item.ItemStack stack = mc.player.getInventory().getStack(i);
+            if (stack == null || stack.isEmpty()) continue;
+            try {
+                if (stack.isDamageable() && stack.getMaxDamage() - stack.getDamage() <= 5) continue;
+            } catch (Exception ignored) {}
+            String id = "";
+            try { id = Registries.ITEM.getId(stack.getItem()).toString(); } catch (Exception ignored) {}
+            if (id.contains("pickaxe") || id.contains("axe") || id.contains("shovel")) return true;
+        }
+        return false;
+    }
+
+    private boolean requiresTool(String itemId) {
+        if (itemId == null) return false;
+        String id = itemId.toLowerCase();
+        return id.contains("ore") ||
+            id.contains("stone") ||
+            id.contains("cobblestone") ||
+            id.contains("obsidian") ||
+            id.contains("iron") ||
+            id.contains("gold") ||
+            id.contains("diamond") ||
+            id.contains("emerald") ||
+            id.contains("lapis") ||
+            id.contains("redstone") ||
+            id.contains("copper") ||
+            id.contains("ancient_debris") ||
+            id.contains("netherrack") ||
+            id.contains("deepslate") ||
+            id.contains("basalt") ||
+            id.contains("blackstone") ||
+            id.contains("nether_bricks");
+    }
+
+    private boolean ensureItemInMainHand(Item item) {
+        if (mc.player == null) return false;
+
+        // Check if already in main hand
+        if (mc.player.getMainHandStack().getItem() == item) return true;
+
+        // Try hotbar first
+        FindItemResult hotbar = InvUtils.findInHotbar(item);
+        if (hotbar.found()) {
+            InvUtils.swap(hotbar.slot(), true);
+            if (mc.player.getMainHandStack().getItem() == item) return true;
+            ChatUtils.infoPrefix("BotBrain", "Hotbar swap failed for %s", net.minecraft.registry.Registries.ITEM.getId(item));
+            return false;
+        }
+
+        // Try full inventory
+        FindItemResult inv = InvUtils.find(item);
+        if (!inv.found()) return false;
+
+        // Move to current hotbar slot
+        int currentHotbar = com.rdh.swarm.utils.BOInvUtils.getSelectedSlot();
+        InvUtils.move().from(inv.slot()).toHotbar(currentHotbar);
+        if (mc.player.getMainHandStack().getItem() == item) return true;
+
+        ChatUtils.infoPrefix("BotBrain", "Inventory move failed for %s", net.minecraft.registry.Registries.ITEM.getId(item));
+        return false;
+    }
+
+    private void handleCraftingPrep() {
+        BotTask step = getCurrentStep();
+        if (step == null) {
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        net.minecraft.item.Item target = step.getTargetItem();
+        String itemName = net.minecraft.registry.Registries.ITEM.getId(target).getPath();
+        currentTaskDescription = "Preparing to craft " + itemName;
+
+        RecipeBook.Recipe recipe = RecipeBook.getRecipe(target);
+        if (recipe == null) {
+            ChatUtils.warningPrefix("BotBrain", "No recipe for %s", itemName);
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        if (!recipe.needsCraftingTable) {
+            setState(BrainState.CRAFTING);
+            return;
+        }
+
+        // Phased handling
+        craftPrepTicks++;
+        switch (craftPrepPhase) {
+            case PREP_SCAN -> {
+                if (craftPrepTicks == 1) ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Scanning for nearby table...");
+                BlockPos found = CraftingManager.findCraftingTable(45);
+                if (found != null) {
+                    craftingTablePos = found;
+                    double distSq = mc.player.getBlockPos().getSquaredDistance(found);
+                    ChatUtils.infoPrefix("BotBrain", "Found crafting table at %d %d %d (%.0f blocks away)", found.getX(), found.getY(), found.getZ(), Math.sqrt(distSq));
+                    if (distSq <= 16) {
+                        CraftingManager.openCraftingTable(found);
+                        planStep = craftPrepReturnPlanStep;
+                        setState(BrainState.CRAFTING);
+                        return;
+                    } else {
+                        craftPrepPhase = PREP_GOTO;
+                        waitingForBaritone = false;
+                        craftPrepTicks = 0;
+                    }
+                } else {
+                    ChatUtils.infoPrefix("BotBrain", "No crafting table within 30 blocks, will craft/place one");
+                    if (CraftingManager.countInInventory(Items.CRAFTING_TABLE) > 0) {
+                        craftPrepPhase = PREP_PLACE_TABLE;
+                        craftPrepTicks = 0;
+                    } else {
+                        craftPrepPhase = PREP_CRAFT_TABLE;
+                        craftPrepTicks = 0;
+                    }
+                }
+            }
+
+            case PREP_GOTO -> {
+                if (!waitingForBaritone) {
+                    String cmd = String.format("#goto %d %d %d", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
+                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage(cmd);
+                    ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Found table at %d %d %d, walking to it", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
+                    waitingForBaritone = true;
+                }
+                double distSq = mc.player.getBlockPos().getSquaredDistance(craftingTablePos);
+                if (distSq <= 16) {
+                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
+                    waitingForBaritone = false;
+                    CraftingManager.openCraftingTable(craftingTablePos);
+                    planStep = craftPrepReturnPlanStep;
+                    setState(BrainState.CRAFTING);
+                    return;
+                }
+                if (craftPrepTicks > 600) {
+                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
+                    waitingForBaritone = false;
+                    ChatUtils.infoPrefix("BotBrain", "Timeout walking to table, will craft/place one");
+                    if (CraftingManager.countInInventory(Items.CRAFTING_TABLE) > 0) craftPrepPhase = PREP_PLACE_TABLE;
+                    else if (resolverNeeds3x3 && resolverCraftPlan != null) { setState(BrainState.CRAFTING); return; }
+                    else craftPrepPhase = PREP_CRAFT_TABLE;
+                    craftPrepTicks = 0;
+                }
+            }
+
+            case PREP_CRAFT_TABLE -> {
+                if (craftPrepTicks == 1) ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: No table nearby, crafting one inline");
+
+                if (prepCraftTarget == null) {
+                    if (CraftingManager.countInInventory(Items.OAK_PLANKS) < 4) {
+                        prepCraftTarget = Items.OAK_PLANKS;
+                    } else {
+                        prepCraftTarget = Items.CRAFTING_TABLE;
+                    }
+                    craftActions = null;
+                    craftingStep = 0;
+                    craftGridSlotIndex = 0;
+                }
+
+                boolean stillCrafting = tickCraftingPrepTarget(prepCraftTarget);
+                if (stillCrafting) return;
+
+                if (prepCraftTarget == Items.OAK_PLANKS) {
+                    if (CraftingManager.countInInventory(Items.OAK_PLANKS) < 4) {
+                        prepCraftTarget = Items.OAK_PLANKS;
+                        craftActions = null;
+                        craftingStep = 0;
+                        craftGridSlotIndex = 0;
+                        return;
+                    }
+                    prepCraftTarget = Items.CRAFTING_TABLE;
+                    craftActions = null;
+                    craftingStep = 0;
+                    craftGridSlotIndex = 0;
+                    return;
+                }
+
+                prepCraftTarget = null;
+                craftPrepPhase = PREP_PLACE_TABLE;
+                craftPrepTicks = 0;
+                return;
+            }
+
+            case PREP_PLACE_TABLE -> {
+                if (craftPrepTicks == 1) ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Have table item, placing...");
+
+                BlockPos placePos = findPlacementSpot();
+                if (placePos == null) {
+                    ChatUtils.infoPrefix("BotBrain", "No valid spot to place table within 3 blocks!");
+                    BlockPos fallback = mc.player.getBlockPos();
+                    if (!mc.world.getBlockState(fallback).isAir()) fallback = fallback.up();
+                    if (mc.world.getBlockState(fallback).isAir()) {
+                        placePos = fallback;
+                        ChatUtils.infoPrefix("BotBrain", "Using fallback placement at %d %d %d", placePos.getX(), placePos.getY(), placePos.getZ());
+                    } else {
+                        ChatUtils.infoPrefix("BotBrain", "Cannot find ANY spot for table, going STUCK");
+                        setState(BrainState.STUCK);
+                        return;
+                    }
+                }
+
+                // Ensure crafting table in main hand
+                if (!ensureItemInMainHand(Items.CRAFTING_TABLE)) {
+                    if (CraftingManager.countInInventory(Items.CRAFTING_TABLE) == 0) {
+                        ChatUtils.infoPrefix("BotBrain", "No crafting table available");
+                        if (resolverNeeds3x3 && resolverCraftPlan != null) {
+                            setState(BrainState.CRAFTING);
+                            return;
+                        }
+                        setState(BrainState.STUCK);
+                    }
+                    // Retry next tick
+                    craftPrepTicks = 0;
+                    return;
+                }
+
+                boolean placed = com.rdh.swarm.utils.PlacementHelper.placeBlockSafely(placePos, Items.CRAFTING_TABLE);
+                if (placed) {
+                    ChatUtils.infoPrefix("BotBrain", "Placed crafting table at %d %d %d", placePos.getX(), placePos.getY(), placePos.getZ());
+                    craftingTablePos = placePos;
+                    craftPrepPhase = PREP_WAIT_PLACE;
+                    craftPrepTicks = 0;
+                } else {
+                    ChatUtils.infoPrefix("BotBrain", "Placement failed for crafting table at %d %d %d", placePos.getX(), placePos.getY(), placePos.getZ());
+                    craftPrepTicks = 0;
+                }
+            }
+
+            case PREP_WAIT_PLACE -> {
+                if (craftPrepTicks >= 5) {
+                    if (isBlockAt(craftingTablePos, Blocks.CRAFTING_TABLE)) {
+                        ChatUtils.infoPrefix("BotBrain", "Crafting table placed at %d %d %d", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
+                        pendingPlacementPos = null;
+                        pendingPlacementItem = null;
+                        pendingPlacementRetries = 0;
+                        craftPrepPhase = PREP_OPEN_TABLE;
+                        craftPrepTicks = 0;
+                    } else {
+                        pendingPlacementRetries++;
+                        if (pendingPlacementRetries < MAX_PENDING_PLACEMENT_RETRIES) {
+                            ChatUtils.infoPrefix("BotBrain", "Table not detected yet, retrying place (attempt %d)", pendingPlacementRetries);
+                            craftPrepPhase = PREP_PLACE_TABLE;
+                            craftPrepTicks = 0;
+                        } else {
+                            ChatUtils.infoPrefix("BotBrain", "Table not detected after %d attempts, clearing pending and choosing new target", pendingPlacementRetries);
+                            pendingPlacementPos = null;
+                            pendingPlacementItem = null;
+                            pendingPlacementRetries = 0;
+                            craftingTablePos = null;
+                            craftPrepPhase = PREP_PLACE_TABLE;
+                            craftPrepTicks = 0;
+                        }
+                    }
+                }
+            }
+
+            case PREP_OPEN_TABLE -> {
+                if (craftPrepTicks == 1) {
+                    if (!isBlockAt(craftingTablePos, Blocks.CRAFTING_TABLE)) {
+                        pendingPlacementPos = null;
+                        pendingPlacementItem = null;
+                        pendingPlacementRetries = 0;
+                        craftingTablePos = null;
+                        craftPrepPhase = PREP_PLACE_TABLE;
+                        craftPrepTicks = 0;
+                        return;
+                    }
+                    double dx = mc.player.getX() - (craftingTablePos.getX() + 0.5);
+                    double dy = mc.player.getY() - (craftingTablePos.getY() + 0.5);
+                    double dz = mc.player.getZ() - (craftingTablePos.getZ() + 0.5);
+                    double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                    if (dist > 4.0) {
+                        String cmd = String.format("#goto %d %d %d", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
+                        if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage(cmd);
+                        ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Walking to table (dist=%.1f)", dist);
+                        craftPrepTicks = 0;
+                        return;
+                    }
+                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
+                    BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(craftingTablePos), Direction.UP, craftingTablePos, false);
+                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Opening table...");
+                }
+                if (CraftingManager.isCraftingOpen()) {
+                    if (craftPrepTicks == 1) ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: 3x3 GUI open, resuming craft");
+                    pendingPlacementPos = null;
+                    pendingPlacementItem = null;
+                    pendingPlacementRetries = 0;
+                    planStep = craftPrepReturnPlanStep;
+                    craftPrepPhase = PREP_SCAN;
+                    craftPrepTicks = 0;
+                    setState(BrainState.CRAFTING);
+                    return;
+                }
+                if (craftPrepTicks > 100) {
+                    ChatUtils.infoPrefix("BotBrain", "Failed to open table, going STUCK");
+                    setState(BrainState.STUCK);
+                    return;
+                }
+            }
+        }
+    }
+
+    private BlockPos findPlacementSpot() {
+        if (mc.player == null || mc.world == null) return null;
+        BlockPos playerPos = mc.player.getBlockPos();
+
+        for (int radius = 1; radius <= 3; radius++) {
+            for (int x = -radius; x <= radius; x++) {
+                for (int z = -radius; z <= radius; z++) {
+                    if (Math.abs(x) != radius && Math.abs(z) != radius) continue;
+                    for (int y = -1; y <= 1; y++) {
+                        BlockPos candidate = playerPos.add(x, y, z);
+                        BlockState state = mc.world.getBlockState(candidate);
+                        BlockState below = mc.world.getBlockState(candidate.down());
+                        if (state.isAir() && below.isSolidBlock(mc.world, candidate.down())) return candidate;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isBlockAt(BlockPos pos, net.minecraft.block.Block block) {
+        if (pos == null || mc.player == null || mc.world == null) return false;
+        try {
+            return mc.world.getBlockState(pos).getBlock() == block;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private BlockPos getBasePosition() {
+        // Use deposit chest coordinates as base location
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod != null && swarmMod.worker != null) {
+                // Prefer explicit base anchor if worker has one
+                try {
+                    java.lang.reflect.Field bx = swarmMod.worker.getClass().getDeclaredField("baseX");
+                    java.lang.reflect.Field by = swarmMod.worker.getClass().getDeclaredField("baseY");
+                    java.lang.reflect.Field bz = swarmMod.worker.getClass().getDeclaredField("baseZ");
+                    bx.setAccessible(true); by.setAccessible(true); bz.setAccessible(true);
+                    Object ox = bx.get(swarmMod.worker);
+                    Object oy = by.get(swarmMod.worker);
+                    Object oz = bz.get(swarmMod.worker);
+                    if (ox instanceof Integer && oy instanceof Integer && oz instanceof Integer) {
+                        Integer x = (Integer) ox;
+                        Integer y = (Integer) oy;
+                        Integer z = (Integer) oz;
+                        if (x != null && y != null && z != null) return new BlockPos(x, y, z);
+                    }
+                } catch (Exception ignored) {}
+
+                if (swarmMod.worker.depositChests != null) {
+                    // Find any deposit chest coordinate — prefer "all" category
+                    for (var entry : swarmMod.worker.depositChests.entrySet()) {
+                        java.util.List<int[]> chests = entry.getValue();
+                        if (chests != null && !chests.isEmpty()) {
+                            int[] coords = chests.get(0);
+                            return new BlockPos(coords[0], coords[1], coords[2]);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private void handleCrafting() {
+        BotTask step = getCurrentStep();
+        if (step == null) {
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        net.minecraft.item.Item target = step.getTargetItem();
+        com.rdh.swarm.task.RecipeBook.Recipe recipe =
+            com.rdh.swarm.task.RecipeBook.getRecipe(target);
+
+        if (recipe == null) {
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        net.minecraft.screen.ScreenHandler handler =
+            mc.player.currentScreenHandler;
+
+        boolean isCraftingTable = handler instanceof
+            net.minecraft.screen.CraftingScreenHandler;
+        boolean isPlayerScreen = handler instanceof
+            net.minecraft.screen.PlayerScreenHandler;
+
+        if (recipe.needsCraftingTable && !isCraftingTable) {
+            craftPrepReturnPlanStep = planStep;
+            setState(BrainState.CRAFTING_PREP);
+            return;
+        }
+
+        int skipSlots = isCraftingTable ? 10 : 9;
+
+        // Remap pattern to correct grid slots if needed
+        java.util.Map<Integer, net.minecraft.item.Item> pattern;
+        if (isPlayerScreen) {
+            pattern = new java.util.HashMap<>();
+            for (var entry : recipe.pattern.entrySet()) {
+                int newSlot = switch (entry.getKey()) {
+                    case 5 -> 1;
+                    case 6 -> 2;
+                    case 8 -> 3;
+                    case 9 -> 4;
+                    default -> -1;
+                };
+                if (newSlot == -1) {
+                    setState(BrainState.IDLE);
+                    return;
+                }
+                pattern.put(newSlot, entry.getValue());
+            }
+        } else {
+            pattern = recipe.pattern;
+        }
+
+        // Build action list once
+        if (craftActions == null) {
+            craftActions = new java.util.ArrayList<>();
+            for (var entry : pattern.entrySet()) {
+                int gridSlot = entry.getKey();
+                net.minecraft.item.Item ingredient = entry.getValue();
+                craftActions.add(new int[]{-1, gridSlot,
+                    net.minecraft.registry.Registries.ITEM
+                        .getRawId(ingredient)});
+            }
+            craftGridSlotIndex = 0;
+            craftingStep = 0;
+        }
+
+        // PHASE 1: Place items one per tick
+        if (craftingStep == 0) {
+            if (craftGridSlotIndex >= craftActions.size()) {
+                craftingStep = 1;
+                return;
+            }
+
+            int[] action = craftActions.get(craftGridSlotIndex);
+            int gridSlot = action[1];
+            net.minecraft.item.Item ingredient =
+                net.minecraft.registry.Registries.ITEM
+                    .get(action[2]);
+
+            // Skip if already correct
+            if (CraftingManager.gridSlotHasItem(
+                    ingredient, handler, gridSlot)) {
+                craftGridSlotIndex++;
+                return;
+            }
+
+            // Find in inventory
+            int srcSlot = CraftingManager.findIngredientSlot(
+                ingredient, handler, skipSlots);
+            if (srcSlot == -1) {
+                // Missing ingredient handling: rate-limit logging and trigger re-resolve -> GATHERING
+                String missingId = net.minecraft.registry.Registries.ITEM.getId(ingredient).getPath();
+                if (lastMissingIngredient == null || lastMissingIngredient != ingredient) {
+                    ChatUtils.warningPrefix("BotBrain", "Missing ingredient: %s", missingId);
+                    // stop any baritone activity
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    lastMissingIngredient = ingredient;
+                    craftFailCount = 1;
+                } else {
+                    craftFailCount++;
+                }
+
+                // Re-resolve remaining needs and go gather (either immediately or after 3 failures)
+                try {
+                    if (craftFailCount >= 1) {
+                        ChatUtils.infoPrefix("BotBrain", "Missing ingredient %s detected, re-resolving and gathering", missingId);
+                        if (currentTask != null) {
+                            var plan = DependencyResolver.resolve(currentTask.getTargetItem(), currentTask.getRemaining());
+                            this.executionPlan = plan.steps;
+                            this.resolverGatherList = plan.gatherList;
+                            this.resolverCraftPlan = plan.craftPlan;
+                        }
+                        craftActions = null;
+                        setState(BrainState.GATHERING);
+                        return;
+                    }
+                } catch (Exception e) {
+                    ChatUtils.warningPrefix("BotBrain", "Failed to re-resolve after missing ingredient: %s", e.getMessage());
+                    craftActions = null;
+                    setState(BrainState.IDLE);
+                    return;
+                }
+            }
+
+            // Pick up stack
+            mc.interactionManager.clickSlot(handler.syncId,
+                srcSlot, 0,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+            // Place 1 in grid
+            mc.interactionManager.clickSlot(handler.syncId,
+                gridSlot, 1,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+            // Put rest back
+            mc.interactionManager.clickSlot(handler.syncId,
+                srcSlot, 0,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+
+            craftGridSlotIndex++;
+            return;
+        }
+
+        // PHASE 2: Take output
+        if (craftingStep == 1) {
+            if (CraftingManager.outputReady(handler)) {
+                mc.interactionManager.clickSlot(handler.syncId,
+                    0, 0,
+                    net.minecraft.screen.slot.SlotActionType.QUICK_MOVE,
+                    mc.player);
+                ChatUtils.infoPrefix("BotBrain", "Crafted %s",
+                    net.minecraft.registry.Registries.ITEM
+                        .getId(target).getPath());
+                step.setStatus(
+                    com.rdh.swarm.task.BotTask.Status.COMPLETE);
+                advancePlan();
+                craftActions = null;
+
+                // After each craft step, check if we already have the main target (early completion)
+                if (currentTask != null) {
+                    int haveNow = CraftingManager.countInInventory(currentTask.getTargetItem());
+                    if (haveNow >= currentTask.getTargetQuantity()) {
+                        ChatUtils.infoPrefix("BotBrain", "Target item acquired early after craft step; have %d/%d %s", haveNow, currentTask.getTargetQuantity(), currentTask.getItemName());
+                        // Mark task complete and notify host
+                        try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
+                        currentTask.setStatus(BotTask.Status.COMPLETE);
+                        ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
+                        try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                        // Trigger deposit (prefer returning to base first)
+                        try {
+                            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                            if (swarmMod != null && swarmMod.worker != null) {
+                                BlockPos bp = getBasePosition();
+                                if (bp != null) {
+                                    pendingDepositAfterReturn = true;
+                                    currentTask = null; executionPlan = null; planStep = 0;
+                                    setState(BrainState.RETURNING_TO_BASE);
+                                    return;
+                                } else {
+                                    swarmMod.worker.triggerDeposit();
+                                    currentTask = null; executionPlan = null; planStep = 0;
+                                    setState(BrainState.DEPOSITING);
+                                    return;
+                                }
+                            }
+                        } catch (Exception ignored) {}
+                        currentTask = null;
+                        executionPlan = null;
+                        planStep = 0;
+                        setState(BrainState.IDLE);
+                        return;
+                    }
+                }
+
+                // If this was the last craft step, after advancing plan check for completion or re-resolve
+                if (executionPlan == null || planStep >= (executionPlan == null ? 0 : executionPlan.size())) {
+                    if (currentTask != null) {
+                        int have = CraftingManager.countInInventory(currentTask.getTargetItem());
+                        if (have >= currentTask.getTargetQuantity()) {
+                            ChatUtils.infoPrefix("BotBrain", "All craft steps done, have %d/%d %s", have, currentTask.getTargetQuantity(), currentTask.getItemName());
+                            try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
+                            currentTask.setStatus(BotTask.Status.COMPLETE);
+                            ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
+                            try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                            try {
+                                var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                                if (swarmMod != null && swarmMod.worker != null) {
+                                    swarmMod.worker.triggerDeposit();
+                                    currentTask = null;
+                                    executionPlan = null;
+                                    planStep = 0;
+                                    setState(BrainState.DEPOSITING);
+                                    return;
+                                }
+                            } catch (Exception ignored) {}
+                            currentTask = null;
+                            executionPlan = null;
+                            planStep = 0;
+                            setState(BrainState.IDLE);
+                            return;
+                        } else {
+                            // Re-resolve and go gather
+                            ChatUtils.infoPrefix("BotBrain", "Craft steps done but only have %d/%d %s, re-resolving", have, currentTask.getTargetQuantity(), currentTask.getItemName());
+                            try {
+                                var plan = DependencyResolver.resolve(currentTask.getTargetItem(), currentTask.getRemaining());
+                                this.executionPlan = plan.steps;
+                                this.resolverGatherList = plan.gatherList;
+                                this.resolverCraftPlan = plan.craftPlan;
+                            } catch (Exception ignored) {}
+                            setState(BrainState.GATHERING);
+                            return;
+                        }
+                    }
+                }
+                setState(BrainState.IDLE);
+            } else {
+                // Wait one more tick
+                craftingStep = 0;
+                craftGridSlotIndex = 0;
+                craftActions = null;
+                setState(BrainState.CRAFTING);
+            }
+            return;
+        }
+    }
+
+    private boolean tickCraftingPrepTarget(net.minecraft.item.Item target) {
+        if (mc.player == null) return false;
+
+        net.minecraft.screen.ScreenHandler handler = mc.player.currentScreenHandler;
+        boolean isPlayerScreen = handler instanceof net.minecraft.screen.PlayerScreenHandler;
+        if (!isPlayerScreen) return false;
+
+        RecipeBook.Recipe recipe = RecipeBook.getRecipe(target);
+        if (recipe == null) return false;
+
+        // Remap pattern for player 2x2 grid
+        java.util.Map<Integer, net.minecraft.item.Item> pattern = new java.util.HashMap<>();
+        for (var entry : recipe.pattern.entrySet()) {
+            int newSlot = switch (entry.getKey()) {
+                case 5 -> 1;
+                case 6 -> 2;
+                case 8 -> 3;
+                case 9 -> 4;
+                default -> -1;
+            };
+            if (newSlot == -1) continue;
+            pattern.put(newSlot, entry.getValue());
+        }
+
+        int skipSlots = 9;
+
+        // Build action list once for this prep craft
+        if (craftActions == null) {
+            craftActions = new java.util.ArrayList<>();
+            for (var entry : pattern.entrySet()) {
+                int gridSlot = entry.getKey();
+                net.minecraft.item.Item ingredient = entry.getValue();
+                craftActions.add(new int[]{-1, gridSlot,
+                    net.minecraft.registry.Registries.ITEM
+                        .getRawId(ingredient)});
+            }
+            craftGridSlotIndex = 0;
+            craftingStep = 0;
+        }
+
+        // PHASE 1: Place items one per tick
+        if (craftingStep == 0) {
+            if (craftGridSlotIndex >= craftActions.size()) {
+                craftingStep = 1;
+                return true;
+            }
+
+            int[] action = craftActions.get(craftGridSlotIndex);
+            int gridSlot = action[1];
+            net.minecraft.item.Item ingredient =
+                net.minecraft.registry.Registries.ITEM
+                    .get(action[2]);
+
+            // Skip if already correct
+            if (CraftingManager.gridSlotHasItem(
+                    ingredient, handler, gridSlot)) {
+                craftGridSlotIndex++;
+                return true;
+            }
+
+            // Find in inventory
+            int srcSlot = CraftingManager.findIngredientSlot(
+                ingredient, handler, skipSlots);
+            if (srcSlot == -1) {
+                // Missing ingredient handling: rate-limit logging and trigger gather
+                String missingId = net.minecraft.registry.Registries.ITEM.getId(ingredient).getPath();
+                if (lastMissingIngredient == null || lastMissingIngredient != ingredient) {
+                    ChatUtils.warningPrefix("BotBrain", "Missing ingredient: %s", missingId);
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    lastMissingIngredient = ingredient;
+                    craftFailCount = 1;
+                } else {
+                    craftFailCount++;
+                }
+
+                if (craftFailCount >= 1) {
+                    ChatUtils.infoPrefix("BotBrain", "Missing ingredient %s detected, re-gathering", missingId);
+                    craftActions = null;
+                    setState(BrainState.GATHERING);
+                    return false;
+                }
+
+                return true;
+            }
+
+            // Pick up stack
+            mc.interactionManager.clickSlot(handler.syncId,
+                srcSlot, 0,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+            // Place 1 in grid
+            mc.interactionManager.clickSlot(handler.syncId,
+                gridSlot, 1,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+            // Put rest back
+            mc.interactionManager.clickSlot(handler.syncId,
+                srcSlot, 0,
+                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                mc.player);
+
+            craftGridSlotIndex++;
+            return true;
+        }
+
+        // PHASE 2: Take output
+        if (craftingStep == 1) {
+            if (CraftingManager.outputReady(handler)) {
+                mc.interactionManager.clickSlot(handler.syncId,
+                    0, 0,
+                    net.minecraft.screen.slot.SlotActionType.QUICK_MOVE,
+                    mc.player);
+                ChatUtils.infoPrefix("BotBrain", "Crafted %s",
+                    net.minecraft.registry.Registries.ITEM
+                        .getId(target).getPath());
+                craftActions = null;
+                return false;
+            } else {
+                // Wait one more tick
+                craftingStep = 0;
+                craftGridSlotIndex = 0;
+                craftActions = null;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void handleSmeltingDeposit() {
+        BotTask step = getCurrentStep();
+        if (step == null) { setState(BrainState.IDLE); return; }
+        Item ingot = step.getTargetItem();
+        Item ore = step.getSourceItem();
+        if (ore == null) ore = RecipeBook.getOreForIngot(ingot);
+        if (ore == null) { setState(BrainState.IDLE); return; }
+
+        currentTaskDescription = "Smelting " + Registries.ITEM.getId(ore).getPath();
+
+        // Ensure we have some fuel in inventory
+        if (SmeltingManager.countFuel() == 0 && CraftingManager.countInInventory(Items.COAL) == 0) {
+            ChatUtils.warningPrefix("BotBrain", "No fuel available for smelting");
+            setState(BrainState.STUCK);
+            return;
+        }
+
+        smeltTicks++;
+        switch (smeltPhase) {
+            case SMELT_SCAN -> {
+                if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: scanning for nearby furnace...");
+                // Search for furnace within 45 blocks
+                if (mc.player == null || mc.world == null) { setState(BrainState.STUCK); return; }
+                BlockPos playerPos = mc.player.getBlockPos();
+                int range = 45;
+                BlockPos found = null;
+                for (int x = -range; x <= range && found == null; x++) {
+                    for (int y = -10; y <= 10 && found == null; y++) {
+                        for (int z = -range; z <= range; z++) {
+                            BlockPos pos = playerPos.add(x, y, z);
+                            var b = mc.world.getBlockState(pos).getBlock();
+                            if (b == net.minecraft.block.Blocks.FURNACE || b == net.minecraft.block.Blocks.BLAST_FURNACE || b == net.minecraft.block.Blocks.SMOKER) {
+                                found = pos;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (found != null) {
+                    smelterPos = found;
+                    smeltPhase = SMELT_GOTO;
+                    smeltTicks = 0;
+                } else {
+                    // If we have a furnace item, place one nearby; otherwise attempt to craft one
+                    if (InvUtils.find(Items.FURNACE).found() || InvUtils.findInHotbar(Items.FURNACE).found()) {
+                        smeltPhase = SMELT_PLACE;
+                        smeltTicks = 0;
+                    } else {
+                        // No furnace item — check if we can craft one (8 cobblestone)
+                        if (CraftingManager.countInInventory(Items.COBBLESTONE) >= 8) {
+                            ChatUtils.infoPrefix("BotBrain", "No furnace nearby or in inventory, crafting one (have cobblestone)");
+                            // Insert a furnace craft step before the current smelt step
+                            executionPlan.add(planStep, new BotTask(BotTask.Type.CRAFT, Items.FURNACE, 1));
+                            craftPrepReturnPlanStep = planStep;
+                            setState(BrainState.CRAFTING_PREP);
+                            return;
+                        } else {
+                            ChatUtils.infoPrefix("BotBrain", "No furnace nearby, no furnace item, not enough cobblestone to craft one");
+                            setState(BrainState.STUCK);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            case SMELT_GOTO -> {
+                if (smelterPos == null) { smeltPhase = SMELT_SCAN; smeltTicks = 0; return; }
+
+                double distSq = mc.player.getBlockPos().getSquaredDistance(smelterPos);
+
+                // Already within interaction range — go straight to open
+                if (distSq <= 20) {  // ~4.5 blocks
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    ChatUtils.infoPrefix("BotBrain", "SMELT: furnace within reach (%.1f blocks)", Math.sqrt(distSq));
+                    smeltPhase = SMELT_OPEN;
+                    smeltTicks = 0;
+                    return;
+                }
+
+                // Need to walk closer — goto a position NEAR the furnace, not ON it
+                // Use 2 blocks offset to avoid Baritone mining the furnace
+                if (!mineCommandSent) {
+                    if (canSendBaritone()) {
+                        // Goto 2 blocks away from furnace (toward player) instead of exact coords
+                        int gotoX = smelterPos.getX();
+                        int gotoY = smelterPos.getY();
+                        int gotoZ = smelterPos.getZ() - 2;
+                        String cmd = String.format("#goto %d %d %d", gotoX, gotoY, gotoZ);
+                        sendBaritoneChat(cmd);
+                        ChatUtils.infoPrefix("BotBrain", "SMELT: walking near furnace at %d %d %d", smelterPos.getX(), smelterPos.getY(), smelterPos.getZ());
+                        mineCommandSent = true;
+                    }
+                }
+
+                // Check if close enough now
+                if (distSq <= 20) {
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    smeltPhase = SMELT_OPEN;
+                    smeltTicks = 0;
+                    return;
+                }
+
+                if (smeltTicks > 600) {
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    ChatUtils.infoPrefix("BotBrain", "Timed out walking to furnace");
+                    if (InvUtils.find(Items.FURNACE).found() || InvUtils.findInHotbar(Items.FURNACE).found()) {
+                        smeltPhase = SMELT_PLACE;
+                        smeltTicks = 0;
+                    } else {
+                        setState(BrainState.STUCK);
+                        return;
+                    }
+                }
+            }
+
+            case SMELT_PLACE -> {
+                if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: placing furnace from inventory");
+                // Find placement spot adjacent to player (reuse pending if present)
+                BlockPos placePos = (pendingPlacementPos != null && pendingPlacementItem == Items.FURNACE) ? pendingPlacementPos : findPlacementSpot();
+                if (placePos == null) {
+                    placePos = mc.player.getBlockPos().up();
+                }
+
+                // Ensure furnace in main hand
+                if (!ensureItemInMainHand(Items.FURNACE)) {
+                    if (InvUtils.find(Items.FURNACE).found()) {
+                        // Retry next tick — ensureItemInMainHand will attempt to move it
+                        smeltTicks = 0;
+                        return;
+                    }
+                    ChatUtils.infoPrefix("BotBrain", "No furnace item available to place");
+                    setState(BrainState.STUCK);
+                    return;
+                }
+
+                boolean placed = com.rdh.swarm.utils.PlacementHelper.placeBlockSafely(placePos, Items.FURNACE);
+                if (placed) {
+                    smelterPos = placePos;
+                    pendingPlacementPos = placePos;
+                    pendingPlacementItem = Items.FURNACE;
+                    pendingPlacementRetries = 0;
+                    smeltPhase = SMELT_WAIT_PLACE;
+                    smeltTicks = 0;
+                } else {
+                    ChatUtils.infoPrefix("BotBrain", "Placement failed for furnace at %d %d %d", placePos.getX(), placePos.getY(), placePos.getZ());
+                    smeltTicks = 0; // helper enforces cooldown
+                }
+            }
+
+            case SMELT_WAIT_PLACE -> {
+                if (smeltTicks >= 4) {
+                    if (isBlockAt(smelterPos, Blocks.FURNACE)) {
+                        pendingPlacementPos = null;
+                        pendingPlacementItem = null;
+                        pendingPlacementRetries = 0;
+                        ChatUtils.infoPrefix("BotBrain", "Furnace confirmed at %d %d %d", smelterPos.getX(), smelterPos.getY(), smelterPos.getZ());
+                        smeltPhase = SMELT_OPEN;
+                        smeltTicks = 0;
+                    } else {
+                        pendingPlacementRetries++;
+                        if (pendingPlacementRetries < MAX_PENDING_PLACEMENT_RETRIES) {
+                            ChatUtils.infoPrefix("BotBrain", "Furnace not detected yet, retrying place (attempt %d)", pendingPlacementRetries);
+                            smeltPhase = SMELT_PLACE;
+                            smeltTicks = 0;
+                        } else {
+                            ChatUtils.infoPrefix("BotBrain", "Furnace not detected after %d attempts, clearing pending and trying fresh", pendingPlacementRetries);
+                            pendingPlacementPos = null;
+                            pendingPlacementItem = null;
+                            pendingPlacementRetries = 0;
+                            smelterPos = null;
+                            smeltPhase = SMELT_PLACE;
+                            smeltTicks = 0;
+                        }
+                    }
+                }
+            }
+
+            case SMELT_OPEN -> {
+                if (smelterPos == null) { smeltPhase = SMELT_SCAN; smeltTicks = 0; return; }
+
+                if (!isBlockAt(smelterPos, Blocks.FURNACE)) {
+                    pendingPlacementPos = null;
+                    pendingPlacementItem = null;
+                    pendingPlacementRetries = 0;
+                    smelterPos = null;
+                    smeltPhase = SMELT_PLACE;
+                    smeltTicks = 0;
+                    return;
+                }
+
+                // Check if screen is already open
+                if (SmeltingManager.isFurnaceOpen()) {
+                    ChatUtils.infoPrefix("BotBrain", "SMELT: furnace GUI open");
+                    smeltPhase = SMELT_INSERT;
+                    smeltTicks = 0;
+                    return;
+                }
+
+                // Send interact only once every ~20 ticks (5 seconds at 250ms brain tick)
+                if (smeltTicks == 1 || smeltTicks % 20 == 0) {
+                    ChatUtils.infoPrefix("BotBrain", "SMELT: opening furnace (attempt %d)...", smeltTicks);
+                    SmeltingManager.openFurnace(smelterPos);
+                }
+
+                if (smeltTicks > 100) {
+                    ChatUtils.infoPrefix("BotBrain", "Failed to open furnace after timeout");
+                    setState(BrainState.STUCK);
+                    return;
+                }
+            }
+
+            case SMELT_INSERT -> {
+                // Deposit fuel then ore
+                if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: inserting fuel and ore into furnace");
+                boolean fuelOk = SmeltingManager.depositFuel();
+                boolean oreOk = SmeltingManager.depositOre(ore);
+                if (!fuelOk) {
+                    // try to move coal into hotbar for deposit next tick
+                    var coalHot = InvUtils.findInHotbar(Items.COAL);
+                    if (!coalHot.found() && InvUtils.find(Items.COAL).found()) {
+                        InvUtils.move().from(InvUtils.find(Items.COAL).slot()).toHotbar(com.rdh.swarm.utils.BOInvUtils.getSelectedSlot());
+                        return;
+                    }
+                }
+                if (!oreOk) {
+                    // try to move ore into hotbar
+                    if (InvUtils.find(ore).found()) {
+                        InvUtils.move().from(InvUtils.find(ore).slot()).toHotbar(com.rdh.swarm.utils.BOInvUtils.getSelectedSlot());
+                        return;
+                    }
+                }
+
+                // Assume inserted and go wait for smelt to complete
+                smeltWaitStart = System.currentTimeMillis();
+                // Close furnace screen so player isn't stuck in GUI
+                if (mc.player != null) mc.player.closeHandledScreen();
+                ChatUtils.infoPrefix("BotBrain", "SMELT: ore and fuel inserted, closing furnace and waiting");
+                setState(BrainState.SMELTING_WAIT);
+                return;
+            }
+        }
+    }
+
+    private void handleSmeltingWait() {
+        currentTaskDescription = "Waiting for smelter";
+        BotTask step = getCurrentStep();
+        if (step == null) { setState(BrainState.IDLE); return; }
+        if (smelterPos == null) { setState(BrainState.IDLE); return; }
+
+        long now = System.currentTimeMillis();
+
+        // Wait at least 10 seconds after inserting before first check
+        if (now - smeltWaitStart < SMELT_CHECK_INTERVAL) return;
+
+        // Only check furnace every SMELT_CHECK_INTERVAL ms
+        if (now - lastSmeltCheckTime < SMELT_CHECK_INTERVAL) return;
+        lastSmeltCheckTime = now;
+
+        // Open furnace to inspect current progress
+        if (!SmeltingManager.isFurnaceOpen()) {
+            SmeltingManager.openFurnace(smelterPos);
+            return;
+        }
+
+        // If input still exists, smelting is not finished yet
+        boolean hasInput = SmeltingManager.hasInput();
+        int outputCount = SmeltingManager.getOutputCount();
+
+        if (hasInput) {
+            ChatUtils.infoPrefix("BotBrain", "SMELT: still smelting (input remains, output=%d)", outputCount);
+
+            // If furnace ran out of fuel but still has input, refuel
+            if (!SmeltingManager.hasFuel() && SmeltingManager.countFuel() > 0) {
+                ChatUtils.infoPrefix("BotBrain", "SMELT: refueling furnace");
+                SmeltingManager.depositFuel();
+            }
+
+            SmeltingManager.closeFurnace();
+
+            // 10 minute timeout
+            if (now - smeltWaitStart > 600000) {
+                ChatUtils.warningPrefix("BotBrain", "SMELT: wait timed out after 10 minutes");
+                setState(BrainState.STUCK);
+            }
+            return;
+        }
+
+        // Input is empty, so smelting should be complete. Collect output.
+        if (outputCount > 0) {
+            boolean took = SmeltingManager.takeResult();
+            if (took) {
+                ChatUtils.infoPrefix("BotBrain", "SMELT: collected final smelted items");
+            }
+        }
+
+        SmeltingManager.closeFurnace();
+
+        // Verify inventory now contains enough result items
+        Item targetIngot = step.getTargetItem();
+        if (targetIngot != null) {
+            int have = CraftingManager.countInInventory(targetIngot);
+            int need = step.getTargetQuantity();
+            if (have >= need) {
+                ChatUtils.infoPrefix("BotBrain", "SMELT: complete, have %d/%d %s", have, need, Registries.ITEM.getId(targetIngot).getPath());
+                step.setStatus(BotTask.Status.COMPLETE);
+                try { sendTaskProgress(step); } catch (Exception ignored) {}
+                advancePlan();
+                setState(BrainState.IDLE);
+                return;
+            } else {
+                ChatUtils.warningPrefix("BotBrain", "SMELT: input empty but only have %d/%d %s after collection", have, need, Registries.ITEM.getId(targetIngot).getPath());
+                setState(BrainState.STUCK);
+                return;
+            }
+        }
+
+        setState(BrainState.IDLE);
+    }
+
+    private void handleSmeltingCollect() {
+        // This state is a fallback — primary collection happens in SMELTING_WAIT
+        // Just redirect to WAIT logic
+        setState(BrainState.SMELTING_WAIT);
+    }
+
+    private void handleDepositing() {
+        currentTaskDescription = "Depositing items";
+        
+        try {
+            var swarmMod = Modules.get()
+                .get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod != null && swarmMod.worker != null) {
+                if (!swarmMod.worker.isDepositing) {
+                    ChatUtils.infoPrefix("BotBrain", "Deposit complete, going idle");
+                    setState(BrainState.IDLE);
+                    // If a task was queued while depositing, start it now
+                    if (this.pendingTask != null) {
+                        ChatUtils.infoPrefix("BotBrain", "Starting queued task after deposit: %s x%d", this.pendingTask.getItemName(), this.pendingTask.getTargetQuantity());
+                        BotTask t = this.pendingTask;
+                        this.pendingTask = null;
+                        setTask(t);
+                    }
+                    return;
+                }
+            }
+        } catch (Exception ignored) {}
+        
+        if (System.currentTimeMillis() - stateEnterTime > 60000) {
+            ChatUtils.infoPrefix("BotBrain",
+                "Deposit timeout, going idle");
+            setState(BrainState.IDLE);
+        }
+    }
+
+    private void handleRecovery() {
+        if (!deathTracker.canRecover()) {
+            deathTracker.clearDeath();
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        BlockPos deathPos = deathTracker.getDeathPos();
+        currentTaskDescription = String.format("Recovering items at %d %d %d (%.0fs left)",
+            deathPos.getX(), deathPos.getY(), deathPos.getZ(),
+            deathTracker.getTimeRemainingMs() / 1000.0);
+
+        if (canSendBaritone()) {
+            sendBaritoneChat(String.format("#goto %d %d %d", deathPos.getX(), deathPos.getY(), deathPos.getZ()));
+        }
+
+        // Check if we're at death location
+        if (mc.player != null) {
+            double dist = mc.player.getBlockPos().getSquaredDistance(deathPos);
+            if (dist < 9) {
+                ChatUtils.infoPrefix("BotBrain", "Arrived at death location. Picking up items.");
+                deathTracker.clearDeath();
+                setState(BrainState.IDLE);
+            }
+        }
+    }
+
+    private void handleStuck() {
+        currentTaskDescription = "Stuck — waiting";
+        stuckCounter++;
+
+        if (stuckCounter > 20) {
+            ChatUtils.warningPrefix("BotBrain", "Been stuck too long. Resetting.");
+            stuckCounter = 0;
+            executionPlan = null;
+            setState(BrainState.IDLE);
+        }
+    }
+
+    // === TASK MANAGEMENT ===
+
+    public void setTask(BotTask task) {
+        // If we're currently depositing, queue the task locally and don't start processing yet
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if ((this.state == BrainState.DEPOSITING) || (swarmMod != null && swarmMod.worker != null && swarmMod.worker.isDepositing)) {
+                ChatUtils.infoPrefix("BotBrain", "Received task while depositing, queuing locally: %s x%d", task.getItemName(), task.getTargetQuantity());
+                this.pendingTask = task;
+                return;
+            }
+        } catch (Exception ignored) {}
+
+        // If we're already processing an active task, ignore new assignment
+        if (this.currentTask != null && this.currentTask.getStatus() == BotTask.Status.ACTIVE) {
+            ChatUtils.warningPrefix("BotBrain", "Already processing task, ignoring new assignment");
+            return;
+        }
+
+        this.currentTask = task;
+        this.executionPlan = null;
+        this.planStep = 0;
+        this.lastReportedCount = 0;
+        this.basePos = null;
+        this.baseReturnCommandSent = false;
+        try { task.setStatus(BotTask.Status.ACTIVE); } catch (Exception ignored) {}
+
+        // Resolve dependencies once at assignment and store results
+        try {
+            var plan = DependencyResolver.resolve(task.getTargetItem(), task.getTargetQuantity());
+            this.executionPlan = plan.steps;
+            this.resolverGatherList = plan.gatherList;
+            this.resolverCraftPlan = plan.craftPlan;
+            // detect if any craft step requires a 3x3 table
+            boolean needs3 = false;
+            if (this.resolverCraftPlan != null) {
+                for (BotTask t : this.resolverCraftPlan) {
+                    if (t.getTargetItem() != null && RecipeBook.requires3x3(t.getTargetItem())) { needs3 = true; break; }
+                }
+            }
+            this.resolverNeeds3x3 = needs3;
+            ChatUtils.infoPrefix("BotBrain", "Dependency plan for %s x%d:", task.getItemName(), task.getTargetQuantity());
+            ChatUtils.infoPrefix("BotBrain", "  Gather: %s", resolverGatherList == null ? "{}" : resolverGatherList.toString());
+            if (resolverCraftPlan != null) {
+                for (int i = 0; i < resolverCraftPlan.size(); i++) {
+                    BotTask s = resolverCraftPlan.get(i);
+                    ChatUtils.infoPrefix("BotBrain", "  CraftPlan[%d]: %s x%d (3x3=%s)", i, s.getItemName(), s.getTargetQuantity(), RecipeBook.requires3x3(s.getTargetItem()));
+                }
+            } else {
+                ChatUtils.infoPrefix("BotBrain", "  Craft steps: []");
+            }
+        } catch (Exception e) {
+            ChatUtils.warningPrefix("BotBrain", "Failed to resolve dependencies: %s", e.getMessage());
+            this.executionPlan = null;
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+        }
+
+        setState(BrainState.IDLE);
+        ChatUtils.infoPrefix("BotBrain", "New task: %s x%d",
+            task.getItemName(), task.getTargetQuantity());
+    }
+
+    public BotTask getCurrentTask() { return currentTask; }
+    public BrainState getState() { return state; }
+    public String getTaskDescription() { return currentTaskDescription; }
+    public String getEta() { return currentEta; }
+
+    // === HELPERS ===
+
+    private void setState(BrainState newState) {
+        this.state = newState;
+        this.stateEnterTime = System.currentTimeMillis();
+        // Reset misc state trackers when entering a new state
+        // Only reset mining state when leaving GATHERING
+        if (newState != BrainState.GATHERING) this.mineCommandSent = false;
+        this.lastReportedCount = 0;
+        this.lastProgressTime = System.currentTimeMillis();
+        this.lastProgressCount = 0;
+        this.craftingWaitStart = 0;
+        this.craftFailCount = 0;
+        if (newState != BrainState.GATHERING) this.currentlyMining = null;
+        // Reset gather staging flags when entering states that begin fresh flows
+        if (newState == BrainState.IDLE || newState == BrainState.GATHERING || newState == BrainState.RETURNING_TO_BASE || newState == BrainState.DEPOSITING || newState == BrainState.STUCK) {
+            this.gatherStagingCommandSent = false;
+            this.stagingTarget = null;
+            this.stagingComplete = false;
+        }
+        // Reset tick-driven crafting state
+        this.craftingStep = 0;
+        this.craftGridSlotIndex = 0;
+        this.craftActions = null;
+        // Clear any prep-craft target when leaving prep state
+        if (newState != BrainState.CRAFTING_PREP) prepCraftTarget = null;
+        if (newState != BrainState.CRAFTING_PREP) craftPrepReturnPlanStep = 0;
+        // reset crafting prep state when entering CRAFTING_PREP
+        if (newState == BrainState.CRAFTING_PREP) {
+            craftPrepPhase = PREP_SCAN;
+            craftingTablePos = null;
+            craftPrepTicks = 0;
+            waitingForBaritone = false;
+        }
+        // reset smelting state when entering/exiting smelting
+        if (newState == BrainState.SMELTING_DEPOSIT) {
+            smeltPhase = SMELT_SCAN;
+            smelterPos = null;
+            smeltTicks = 0;
+            smeltWaitStart = 0;
+            lastSmeltCheckTime = 0;
+        }
+        if (newState != BrainState.SMELTING_DEPOSIT && newState != BrainState.SMELTING_WAIT && newState != BrainState.SMELTING_COLLECT) {
+            smeltPhase = 0;
+            smelterPos = null;
+            smeltTicks = 0;
+            smeltWaitStart = 0;
+        }
+        if (newState == BrainState.IDLE) {
+            basePos = null;
+            baseReturnCommandSent = false;
+            surfaceTarget = null;
+            surfaceCommandSent = false;
+            // Clear gather resource tracking when fully idle
+            this.currentGatherResource = null;
+            // Clear nether transit state
+            this.inNetherTransit = false;
+            this.awaitingDimensionChange = false;
+            this.expectedDimension = null;
+            this.portalApproachPos = null;
+            this.portalApproachSent = false;
+            this.portalEntrySent = false;
+            this.dimensionWaitStartTime = 0;
+            // Clear dedicated nether-return flags
+            this.netherReturnGotoSent = false;
+            this.netherReturnPortalSent = false;
+            this.netherReturnStartTime = 0;
+        }
+        if (newState == BrainState.GATHERING) {
+            // Track the current gather resource string for waypoint lookups
+            try {
+                if (currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
+                    String tgtId = Registries.ITEM.getId(currentTask.getTargetItem()).toString();
+                    String clean = tgtId.startsWith("minecraft:") ? tgtId.substring(10) : tgtId;
+                    this.currentGatherResource = MINE_FOR.getOrDefault(clean, MINE_FOR_2.getOrDefault(clean, clean));
+                }
+            } catch (Exception ignored) {}
+        }
+        if (newState == BrainState.IDLE || newState == BrainState.CRAFTING || newState == BrainState.SMELTING_DEPOSIT || newState == BrainState.STUCK) {
+            pendingPlacementPos = null;
+            pendingPlacementItem = null;
+            pendingPlacementRetries = 0;
+        }
+        if (newState != BrainState.STUCK) stuckCounter = 0;
+        if (newState == BrainState.STUCK) {
+            // clear nether transit state on stuck
+            this.inNetherTransit = false;
+            this.awaitingDimensionChange = false;
+            this.expectedDimension = null;
+            this.portalApproachPos = null;
+            this.portalApproachSent = false;
+            this.portalEntrySent = false;
+            this.dimensionWaitStartTime = 0;
+            // Clear dedicated nether-return flags
+            this.netherReturnGotoSent = false;
+            this.netherReturnPortalSent = false;
+            this.netherReturnStartTime = 0;
+            try { sendTaskFailed(currentTask, "stuck"); } catch (Exception ignored) {}
+        }
+    }
+
+    private BotTask getCurrentStep() {
+        if (executionPlan == null || planStep >= executionPlan.size()) return null;
+        return executionPlan.get(planStep);
+    }
+
+    private void advancePlan() {
+        planStep++;
+        if (planStep >= executionPlan.size()) {
+            executionPlan = null;
+            planStep = 0;
+        }
+    }
+
+    private boolean shouldDeposit() {
+        if (mc.player == null) return false;
+        int empty = 0;
+        for (int i = 0; i < 36; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) empty++;
+        }
+        return empty <= depositThreshold.get();
+    }
+
+    private boolean canSendBaritone() {
+        return System.currentTimeMillis() - lastBaritoneCommand > BARITONE_COMMAND_COOLDOWN;
+    }
+
+    private void sendBaritoneChat(String command) {
+        lastBaritoneCommand = System.currentTimeMillis();
+        if (mc.getNetworkHandler() != null) {
+            mc.getNetworkHandler().sendChatMessage(command);
+        }
+    }
+
+    private WaypointManager getWaypointManager() {
+        // Prefer worker-side pushed manager when available
+        try {
+            var mods = meteordevelopment.meteorclient.systems.modules.Modules.get();
+            var mod = mods.get(com.rdh.swarm.EnhancedSwarm.class);
+            if (mod != null) {
+                try {
+                    com.rdh.swarm.EnhancedSwarm esm = (com.rdh.swarm.EnhancedSwarm) mod;
+                    if (esm.worker != null) {
+                        WaypointManager wm = esm.worker.getOrCreateWaypointManager();
+                        if (wm != null) {
+                            waypointManager = wm;
+                            waypointManager.ensureLoaded();
+                            return waypointManager;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+
+        if (waypointManager == null) waypointManager = new WaypointManager();
+        waypointManager.ensureLoaded();
+        return waypointManager;
+    }
+
+    private boolean isInNether() {
+        return mc.world != null && mc.world.getRegistryKey() == World.NETHER;
+    }
+
+    /**
+     * Check if current gather resource requires nether dimension
+     */
+    private boolean currentTaskRequiresNether() {
+        if (currentGatherResource == null) return false;
+        String category = WaypointManager.getCategoryForResource(currentGatherResource);
+        return WaypointManager.isNetherCategory(category);
+    }
+
+    /**
+     * Get the portal waypoint for transit.
+     * Returns first portal waypoint, or null if none configured.
+     */
+    private SwarmWaypoint getPortalWaypoint() {
+        return getWaypointManager().getFirstPortal();
+    }
+
+    /**
+     * Calculate approach position near portal (PORTAL_APPROACH_DISTANCE blocks away)
+     * Uses the portal coords for the current dimension
+     */
+    private BlockPos calculatePortalApproach(SwarmWaypoint portal) {
+        boolean nether = isInNether();
+        int[] coords = portal.getCoords(nether);
+        if (coords == null) return null;
+        
+        // If we have player position, approach from player's direction
+        if (mc.player != null) {
+            double dx = mc.player.getX() - coords[0];
+            double dz = mc.player.getZ() - coords[2];
+            double dist = Math.sqrt(dx * dx + dz * dz);
+            
+            if (dist > 1) {
+                // Normalize and scale to approach distance
+                double scale = PORTAL_APPROACH_DISTANCE / dist;
+                int approachX = coords[0] + (int)(dx * scale);
+                int approachZ = coords[2] + (int)(dz * scale);
+                return new BlockPos(approachX, coords[1], approachZ);
+            }
+        }
+        
+        // Fallback: offset in X direction
+        return new BlockPos(coords[0] + PORTAL_APPROACH_DISTANCE, coords[1], coords[2]);
+    }
+
+    /**
+     * Check if dimension has changed to the expected one.
+     * Returns true if we're now in the expected dimension.
+     */
+    private boolean hasReachedExpectedDimension() {
+        if (expectedDimension == null) return false;
+        if ("nether".equals(expectedDimension)) return isInNether();
+        if ("overworld".equals(expectedDimension)) return !isInNether();
+        return false;
+    }
+
+    /**
+     * Check if dimension wait has timed out
+     */
+    private boolean hasDimensionWaitTimedOut() {
+        return System.currentTimeMillis() - dimensionWaitStartTime > DIMENSION_WAIT_TIMEOUT_MS;
+    }
+
+    /**
+     * Handle portal transit logic. Called from tick when awaitingDimensionChange is true.
+     * Returns true if transit is complete (dimension changed successfully).
+     * Returns false if still waiting.
+     * Sets state to STUCK if timed out.
+     */
+    private boolean handleDimensionWait() {
+        if (!awaitingDimensionChange) return false;
+        
+        if (hasReachedExpectedDimension()) {
+            ChatUtils.infoPrefix("BotBrain", "Dimension change detected — now in %s", expectedDimension);
+            
+            // Clear transit flags
+            awaitingDimensionChange = false;
+            portalApproachPos = null;
+            portalApproachSent = false;
+            portalEntrySent = false;
+            expectedDimension = null;
+            dimensionWaitStartTime = 0;
+            
+            // Stop any lingering Baritone path from previous dimension
+            if (canSendBaritone()) {
+                sendBaritoneChat("#stop");
+            }
+            
+            return true;
+        }
+        
+        if (hasDimensionWaitTimedOut()) {
+            ChatUtils.errorPrefix("BotBrain", "Portal transit timed out after %d seconds", DIMENSION_WAIT_TIMEOUT_MS / 1000);
+            awaitingDimensionChange = false;
+            portalApproachPos = null;
+            portalApproachSent = false;
+            portalEntrySent = false;
+            expectedDimension = null;
+            dimensionWaitStartTime = 0;
+            setState(BrainState.STUCK);
+            return false;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Initiate approach to portal and entry.
+     * Call this each tick until it returns true (transit complete).
+     * 
+     * Flow:
+     * 1. #goto approach position (10 blocks from portal)
+     * 2. Wait until close enough
+     * 3. #goto nether_portal (Baritone walks into portal)
+     * 4. Set awaitingDimensionChange, wait for dimension swap
+     * 
+     * @param portal the portal waypoint
+     * @param targetDim "nether" or "overworld"
+     * @return true when transit is complete
+     */
+    private boolean navigatePortal(SwarmWaypoint portal, String targetDim) {
+        if (mc.player == null) return false;
+        
+        // Phase 1: Calculate and goto approach position
+        if (portalApproachPos == null) {
+            portalApproachPos = calculatePortalApproach(portal);
+            if (portalApproachPos == null) {
+                ChatUtils.errorPrefix("BotBrain", "Portal '%s' has no coords for %s", portal.name, isInNether() ? "nether" : "overworld");
+                setState(BrainState.STUCK);
+                return false;
+            }
+            ChatUtils.infoPrefix("BotBrain", "Approaching portal '%s' at %d %d %d", 
+                portal.name, portalApproachPos.getX(), portalApproachPos.getY(), portalApproachPos.getZ());
+        }
+        
+        // Phase 2: Send approach command
+        if (!portalApproachSent && canSendBaritone()) {
+            sendBaritoneChat(String.format("#goto %d %d %d", 
+                portalApproachPos.getX(), portalApproachPos.getY(), portalApproachPos.getZ()));
+            portalApproachSent = true;
+            return false;
+        }
+        
+        // Phase 3: Check if close enough to portal for entry command
+        if (portalApproachSent && !portalEntrySent) {
+            boolean nether = isInNether();
+            int[] portalCoords = portal.getCoords(nether);
+            if (portalCoords == null) {
+                ChatUtils.errorPrefix("BotBrain", "Portal '%s' missing %s coords", portal.name, nether ? "nether" : "overworld");
+                setState(BrainState.STUCK);
+                return false;
+            }
+            
+            double dx = mc.player.getX() - portalCoords[0];
+            double dy = mc.player.getY() - portalCoords[1];
+            double dz = mc.player.getZ() - portalCoords[2];
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            
+            if (dist < PORTAL_APPROACH_DISTANCE + 5) {
+                // Close enough, send portal entry command
+                if (canSendBaritone()) {
+                    ChatUtils.infoPrefix("BotBrain", "Entering portal — #goto nether_portal");
+                    sendBaritoneChat("#goto nether_portal");
+                    portalEntrySent = true;
+                    awaitingDimensionChange = true;
+                    expectedDimension = targetDim;
+                    dimensionWaitStartTime = System.currentTimeMillis();
+                }
+                return false;
+            }
+            
+            return false;
+        }
+        
+        // Phase 4: Waiting for dimension change
+        if (awaitingDimensionChange) {
+            return handleDimensionWait();
+        }
+        
+        return false;
+    }
+
+    private void trackItemCollection(Item target) {
+        long now = System.currentTimeMillis();
+        if (now - lastItemCheckTime > 10000) {
+            int currentCount = CraftingManager.countInInventory(target);
+            itemsCollectedSinceLastCheck = currentCount - lastItemCount;
+            lastItemCount = currentCount;
+            lastItemCheckTime = now;
+        }
+    }
+
+    private void updateEta() {
+        if (currentTask == null || currentTask.isComplete()) {
+            currentEta = "";
+            return;
+        }
+
+        if (state == BrainState.GATHERING && itemsCollectedSinceLastCheck > 0) {
+            double itemsPerSecond = itemsCollectedSinceLastCheck / 10.0;
+            if (itemsPerSecond > 0) {
+                int remaining = currentTask.getRemaining();
+                long secondsLeft = (long) (remaining / itemsPerSecond);
+                if (secondsLeft < 60) currentEta = secondsLeft + "s";
+                else if (secondsLeft < 3600) currentEta = (secondsLeft / 60) + "m";
+                else currentEta = (secondsLeft / 3600) + "h " + ((secondsLeft % 3600) / 60) + "m";
+                return;
+            }
+        }
+
+        // Fallback to distance based
+        try {
+            if (baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+                currentEta = "Pathing";
+            } else {
+                currentEta = "Waiting";
+            }
+        } catch (Exception | NoClassDefFoundError e) {
+            currentEta = "Unknown";
+        }
+    }
+
+    private boolean ensureStagedAwayFromBase() {
+        if (!gatherStaging.get() || stagingComplete || mc.player == null) return true;
+
+        BlockPos base = getBasePosition();
+        if (base == null) { stagingComplete = true; return true; }
+
+        // If we already have a staging target, continue with existing logic
+        if (stagingTarget != null) {
+            return continueToStagingTarget(base);
+        }
+
+        // Try to find a waypoint for the current resource
+        SwarmWaypoint waypoint = null;
+        if (currentGatherResource != null) {
+            String category = WaypointManager.getCategoryForResource(currentGatherResource);
+
+            // Nether resource while in overworld — need portal transit
+            if (WaypointManager.isNetherCategory(category) && !isInNether()) {
+                SwarmWaypoint portal = getPortalWaypoint();
+                if (portal == null) {
+                    ChatUtils.errorPrefix("BotBrain", "No portal waypoint configured! Use: .eswarm waypoint portal <name>");
+                    ChatUtils.errorPrefix("BotBrain", "Run command at overworld portal, go through, run again at nether side");
+                    setState(BrainState.STUCK);
+                    return false;
+                }
+
+                if (!portal.hasOverworldCoords()) {
+                    ChatUtils.errorPrefix("BotBrain", "Portal '%s' missing overworld coords — stand at overworld portal and run: .eswarm waypoint portal %s", portal.name, portal.name);
+                    setState(BrainState.STUCK);
+                    return false;
+                }
+
+                if (!portal.hasNetherCoords()) {
+                    ChatUtils.errorPrefix("BotBrain", "Portal '%s' missing nether coords — go through portal and run: .eswarm waypoint portal %s", portal.name, portal.name);
+                    setState(BrainState.STUCK);
+                    return false;
+                }
+
+                // Mark that we're doing nether transit
+                inNetherTransit = true;
+
+                // Navigate to portal and cross
+                boolean transitComplete = navigatePortal(portal, "nether");
+                if (!transitComplete) {
+                    // Still in transit — return false to keep ticking
+                    return false;
+                }
+
+                // We're now in the nether! Continue to staging logic below
+                // Reset approach flags so staging can use them fresh
+                ChatUtils.infoPrefix("BotBrain", "In nether — looking for staging waypoint");
+            }
+
+            // If we need nether and we're already in nether, find nether staging waypoint
+            if (WaypointManager.isNetherCategory(category) && isInNether()) {
+                waypoint = getWaypointManager().findWaypointForResource(currentGatherResource, true);
+            } else {
+                waypoint = getWaypointManager().findWaypointForResource(currentGatherResource, isInNether());
+            }
+        }
+
+        if (waypoint != null) {
+            int[] coords = waypoint.getCoords(isInNether());
+            if (coords != null) {
+                stagingTarget = new BlockPos(coords[0], coords[1], coords[2]);
+                ChatUtils.infoPrefix("BotBrain", "Staging to waypoint '%s' [%s]: %d %d %d", 
+                    waypoint.name, waypoint.category, coords[0], coords[1], coords[2]);
+            }
+        }
+
+        // Fallback to random staging if no waypoint found
+        if (stagingTarget == null) {
+            // Determine staging origin: nether portal if in nether, base if in overworld
+            BlockPos stagingOrigin;
+            if (isInNether() && inNetherTransit) {
+                SwarmWaypoint portal = getPortalWaypoint();
+                if (portal != null && portal.hasNetherCoords()) {
+                    int[] nc = portal.getCoords(true);
+                    stagingOrigin = new BlockPos(nc[0], nc[1], nc[2]);
+                } else {
+                    // Use current position as fallback
+                    stagingOrigin = mc.player.getBlockPos();
+                }
+            } else {
+                stagingOrigin = base;
+            }
+            
+            double distToOrigin = Math.sqrt(mc.player.getBlockPos().getSquaredDistance(stagingOrigin));
+            if (distToOrigin >= gatherStagingDistance.get()) { 
+                stagingComplete = true; 
+                return true; 
+            }
+            
+            double angle = Math.random() * 2 * Math.PI;
+            int distance = 100 + (int)(Math.random() * 200);
+            int targetX = stagingOrigin.getX() + (int)(Math.cos(angle) * distance);
+            int targetZ = stagingOrigin.getZ() + (int)(Math.sin(angle) * distance);
+            int targetY = isInNether() ? stagingOrigin.getY() : stagingOrigin.getY();
+            stagingTarget = new BlockPos(targetX, targetY, targetZ);
+            ChatUtils.infoPrefix("BotBrain", "No waypoint for '%s', random staging from %s: goto %d ~ %d (%d blocks)", 
+                currentGatherResource != null ? currentGatherResource : "unknown",
+                isInNether() ? "nether portal" : "base",
+                targetX, targetZ, distance);
+        }
+
+        return continueToStagingTarget(base);
+    }
+
+    private boolean continueToStagingTarget(BlockPos base) {
+        if (stagingTarget == null) {
+            stagingComplete = true;
+            return true;
+        }
+
+        if (!gatherStagingCommandSent && canSendBaritone()) {
+            sendBaritoneChat(String.format("#goto %d %d %d", stagingTarget.getX(), stagingTarget.getY(), stagingTarget.getZ()));
+            gatherStagingCommandSent = true;
+        }
+
+        double dx = mc.player.getX() - stagingTarget.getX();
+        double dy = mc.player.getY() - stagingTarget.getY();
+        double dz = mc.player.getZ() - stagingTarget.getZ();
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        
+        if (dist < 20) {
+            ChatUtils.infoPrefix("BotBrain", "Staging complete, beginning gather");
+            stagingComplete = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    // === TASK MESSAGING ===
+
+    private String getWorkerName() {
+        try {
+            if (MinecraftClient.getInstance() != null && MinecraftClient.getInstance().getSession() != null)
+                return MinecraftClient.getInstance().getSession().getUsername();
+        } catch (Exception ignored) {}
+        return "unknown";
+    }
+
+    private void sendTaskProgress(BotTask task) {
+        if (task == null || out == null) return;
+        try {
+            String worker = getWorkerName();
+            String msg = String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", worker, task.getId().toString(), task.getCollectedQuantity(), task.getTargetQuantity(), task.getStatus() == null ? "" : task.getStatus().name(), task.getElapsedString());
+            synchronized (out) {
+                out.writeUTF(msg);
+                out.flush();
+            }
+        } catch (IOException ignored) {}
+    }
+
+    private void sendTaskComplete(BotTask task) {
+        if (task == null || out == null) return;
+        try {
+            String worker = getWorkerName();
+            String msg = String.format("TASK_COMPLETE:%s:%s:%s:%d:%s", worker, task.getId().toString(), task.getItemName(), task.getTargetQuantity(), task.getElapsedString());
+            synchronized (out) {
+                out.writeUTF(msg);
+                out.flush();
+            }
+        } catch (IOException ignored) {}
+    }
+
+    private void sendTaskFailed(BotTask task, String reason) {
+        if (task == null || out == null) return;
+        try {
+            String worker = getWorkerName();
+            String msg = String.format("TASK_FAILED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason);
+            synchronized (out) {
+                out.writeUTF(msg);
+                out.flush();
+            }
+        } catch (IOException ignored) {}
+    }
+
+    private void resolveDependenciesForCurrentTask() {
+        if (currentTask == null) return;
+        try {
+            int remaining = currentTask.getRemaining();
+            var plan = DependencyResolver.resolve(currentTask.getTargetItem(), remaining);
+            this.executionPlan = plan.steps;
+            this.resolverGatherList = plan.gatherList;
+            this.resolverCraftPlan = plan.craftPlan;
+            boolean needs3 = false;
+            if (this.resolverCraftPlan != null) {
+                for (BotTask t : this.resolverCraftPlan) {
+                    if (t.getTargetItem() != null && RecipeBook.requires3x3(t.getTargetItem())) { needs3 = true; break; }
+                }
+            }
+            this.resolverNeeds3x3 = needs3;
+            ChatUtils.infoPrefix("BotBrain", "Re-resolved dependency plan (remaining=%d)", remaining);
+        } catch (Exception e) {
+            ChatUtils.warningPrefix("BotBrain", "Failed to resolve dependencies: %s", e.getMessage());
+            this.executionPlan = null;
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+        }
+    }
+
+    // === PAUSE/CANCEL/RESUME ===
+
+    public void cancel() {
+        try { sendTaskFailed(currentTask, "cancelled"); } catch (Exception ignored) {}
+        this.currentTask = null;
+        this.executionPlan = null;
+        this.planStep = 0;
+        sendBaritoneChat("#stop");
+        setState(BrainState.IDLE);
+    }
+
+    public void pause() {
+        paused = true;
+        sendBaritoneChat("#stop");
+    }
+
+    public void resume() {
+        paused = false;
+        setState(BrainState.IDLE);
+    }
+
+    @Override
+    public String getInfoString() {
+        if (currentTask == null) return "Idle";
+        return String.format("%s %s | %s | %s",
+            currentTaskDescription,
+            currentTask.getProgressString(),
+            currentEta == null || currentEta.isEmpty() ? "Waiting" : currentEta,
+            com.rdh.swarm.task.DependencyResolver.getCurrentTier().name());
+    }
+}

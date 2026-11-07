@@ -1,0 +1,113 @@
+package com.rdh.swarm.web;
+
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.websocketx.*;
+import io.netty.util.CharsetUtil;
+
+import static io.netty.handler.codec.http.HttpResponseStatus.*;
+import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+
+public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
+
+    private final SwarmWebServer server;
+    private WebSocketServerHandshaker handshaker;
+
+    public SwarmWebHandler(SwarmWebServer server) {
+        this.server = server;
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
+        if (msg instanceof FullHttpRequest req) {
+            handleHttp(ctx, req);
+        } else if (msg instanceof WebSocketFrame frame) {
+            handleWebSocket(ctx, frame);
+        }
+    }
+
+    private void handleHttp(ChannelHandlerContext ctx, FullHttpRequest req) {
+        String uri = req.uri().split("\\?")[0];
+
+        // WebSocket upgrade
+        if (uri.equals("/ws")) {
+            WebSocketServerHandshakerFactory factory = new WebSocketServerHandshakerFactory(
+                "ws://" + req.headers().get(HttpHeaderNames.HOST) + "/ws",
+                null, true
+            );
+            handshaker = factory.newHandshaker(req);
+            if (handshaker == null) {
+                WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
+            } else {
+                handshaker.handshake(ctx.channel(), req).addListener(future -> {
+                    if (future.isSuccess()) {
+                        server.addClient(ctx.channel());
+                    }
+                });
+            }
+            return;
+        }
+
+        // API POST endpoints
+        if (req.method() == HttpMethod.POST) {
+            String body = req.content().toString(CharsetUtil.UTF_8);
+            server.handleApiCommand(uri, body);
+            sendJson(ctx, "{\"ok\":true}");
+            return;
+        }
+
+        // Serve HTML for GET /
+        if (req.method() == HttpMethod.GET && uri.equals("/")) {
+            sendHtml(ctx, SwarmWebPanel.getHtml());
+            return;
+        }
+
+        // 404
+        sendResponse(ctx, NOT_FOUND, "text/plain", "Not found");
+    }
+
+    private void handleWebSocket(ChannelHandlerContext ctx, WebSocketFrame frame) {
+        if (frame instanceof CloseWebSocketFrame) {
+            handshaker.close(ctx.channel(), (CloseWebSocketFrame) frame.retain());
+            server.removeClient(ctx.channel());
+        } else if (frame instanceof PingWebSocketFrame) {
+            ctx.channel().writeAndFlush(new PongWebSocketFrame(frame.content().retain()));
+        } else if (frame instanceof TextWebSocketFrame text) {
+            // Handle messages from browser (currently unused, all control via HTTP POST)
+            String msg = text.text();
+            server.handleApiCommand(msg, msg);
+        }
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        server.removeClient(ctx.channel());
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        ctx.close();
+    }
+
+    private void sendHtml(ChannelHandlerContext ctx, String html) {
+        sendResponse(ctx, OK, "text/html; charset=UTF-8", html);
+    }
+
+    private void sendJson(ChannelHandlerContext ctx, String json) {
+        sendResponse(ctx, OK, "application/json", json);
+    }
+
+    private void sendResponse(ChannelHandlerContext ctx, HttpResponseStatus status,
+                               String contentType, String body) {
+        byte[] bytes = body.getBytes(CharsetUtil.UTF_8);
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HTTP_1_1, status, Unpooled.wrappedBuffer(bytes)
+        );
+        response.headers()
+            .set(HttpHeaderNames.CONTENT_TYPE, contentType)
+            .set(HttpHeaderNames.CONTENT_LENGTH, bytes.length)
+            .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+    }
+}
