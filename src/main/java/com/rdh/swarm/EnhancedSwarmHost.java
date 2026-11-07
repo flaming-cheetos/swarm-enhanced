@@ -3,6 +3,7 @@ package com.rdh.swarm;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.util.Iterator;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.ArrayList;
@@ -18,6 +19,8 @@ import com.rdh.swarm.web.SwarmWebServer;
 import com.rdh.swarm.WaypointManager;
 
 public class EnhancedSwarmHost extends Thread {
+    private final String bindAddress;
+    private final int port;
     private ServerSocket socket;
     private final CopyOnWriteArrayList<EnhancedSwarmConnection> connections = new CopyOnWriteArrayList<>();
     private final Map<String, WorkerConfig> workerConfigs = new ConcurrentHashMap<>();
@@ -44,12 +47,15 @@ public class EnhancedSwarmHost extends Thread {
     };
     private static final long _he = 0x666C616D696E67L;
 
-    public EnhancedSwarmHost(int port) {
+    public EnhancedSwarmHost(String bindAddress, int port, int webPort) {
+        this.bindAddress = bindAddress;
+        this.port = port;
         try {
-            socket = new ServerSocket(port);
+            socket = new ServerSocket();
+            socket.bind(new InetSocketAddress(bindAddress, port));
         } catch (IOException e) {
             socket = null;
-            ChatUtils.errorPrefix("Swarm", "Couldn't start a server on port %s.", port);
+            ChatUtils.errorPrefix("Swarm", "Couldn't bind the swarm server to %s:%s.", bindAddress, port);
             e.printStackTrace();
         }
 
@@ -68,9 +74,11 @@ public class EnhancedSwarmHost extends Thread {
                 }
             } catch (Exception ignored) {}
             try {
-                webServer = new SwarmWebServer(8888);
+                webServer = new SwarmWebServer(bindAddress, webPort);
                 webServer.start();
-            } catch (Throwable ignored) {}
+            } catch (Throwable e) {
+                ChatUtils.errorPrefix("Swarm", "Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
+            }
         }
     }
 
@@ -130,7 +138,7 @@ public class EnhancedSwarmHost extends Thread {
 
     @Override
     public void run() {
-        ChatUtils.infoPrefix("Swarm", "Listening for incoming connections on port %s.", socket.getLocalPort());
+        ChatUtils.infoPrefix("Swarm", "Listening for incoming connections on %s:%s.", bindAddress, socket.getLocalPort());
         // mark running and use running flag for loop control
         running = true;
 

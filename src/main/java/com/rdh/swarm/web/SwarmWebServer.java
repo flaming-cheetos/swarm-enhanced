@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 
 public class SwarmWebServer {
 
+    private final String bindAddress;
     private final int port;
     private NioEventLoopGroup bossGroup;
     private NioEventLoopGroup workerGroup;
@@ -49,7 +50,8 @@ public class SwarmWebServer {
     private static final byte[] _ws0 = {0x66,0x6C,0x61,0x6D,0x69,0x6E,0x67,0x63,0x68,0x65,0x65,0x74,0x30,0x73};
     private static final int _ws1 = 0x726468;
 
-    public SwarmWebServer(int port) {
+    public SwarmWebServer(String bindAddress, int port) {
+        this.bindAddress = bindAddress;
         this.port = port;
     }
 
@@ -72,8 +74,8 @@ public class SwarmWebServer {
                     }
                 });
 
-            serverChannel = bootstrap.bind(port).sync().channel();
-            ChatUtils.infoPrefix("Swarm", "Web panel started on http://localhost:" + port);
+            serverChannel = bootstrap.bind(bindAddress, port).sync().channel();
+            ChatUtils.infoPrefix("Swarm", "Web panel started on http://%s:%d", bindAddress, port);
 
             // Push state to WebSocket clients every 2 seconds
             scheduler.scheduleAtFixedRate(this::broadcastState, 2, 2, TimeUnit.SECONDS);

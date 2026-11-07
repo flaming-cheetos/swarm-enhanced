@@ -123,6 +123,24 @@ public class EnhancedSwarm extends Module {
         .build()
     );
 
+    private final Setting<String> bindAddress = sgGeneral.add(new StringSetting.Builder()
+        .name("bind-address")
+        .description("Host bind address for TCP 6969 and the web panel. Default is loopback-only.")
+        .defaultValue("127.0.0.1")
+        .visible(() -> mode.get() == Mode.Host)
+        .build()
+    );
+
+    private final Setting<Integer> webPort = sgGeneral.add(new IntSetting.Builder()
+        .name("web-port")
+        .description("Port for the host web panel (binds to the configured bind address).")
+        .defaultValue(8888)
+        .range(1, 65535)
+        .noSlider()
+        .visible(() -> mode.get() == Mode.Host)
+        .build()
+    );
+
     public EnhancedSwarmHost host;
     public EnhancedSwarmWorker worker;
     private String selectedTarget = "All";
@@ -151,7 +169,7 @@ public class EnhancedSwarm extends Module {
             if (!isActive()) return;
             close();
             if (mode.get() == Mode.Host) {
-                host = new EnhancedSwarmHost(serverPort.get());
+                host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
                 try {
                     if (host != null && depositXSetting.get() != Integer.MIN_VALUE) {
                         host.setDepositChest(depositXSetting.get(), depositYSetting.get(), depositZSetting.get());
@@ -693,7 +711,7 @@ public class EnhancedSwarm extends Module {
     @Override
     public void onActivate() {
         if (mode.get() == Mode.Host) {
-            if (host == null) host = new EnhancedSwarmHost(serverPort.get());
+            if (host == null) host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
             if (host != null) {
                 MeteorExecutor.execute(() -> {
                     try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
@@ -749,7 +767,7 @@ public class EnhancedSwarm extends Module {
     private void onGameJoin(GameJoinedEvent event) {
         if (!isActive()) return;
         if (mode.get() == Mode.Host && host == null) {
-            host = new EnhancedSwarmHost(serverPort.get());
+            host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
         }
         // Workers: DO NOTHING. Already running.
     }
