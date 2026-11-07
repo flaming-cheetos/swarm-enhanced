@@ -1,8 +1,8 @@
 package com.rdh.swarm.task;
 
-import net.minecraft.item.Item;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.*;
 
@@ -215,7 +215,7 @@ public class DependencyResolver {
         System.out.println("Target: " + targetItem);
         System.out.println("needs3x3: " + needs3x3);
         for (var entry : gatherList.entrySet()) {
-            System.out.println("  GATHER: " + Registries.ITEM.getId(entry.getKey()) + " = " + entry.getValue());
+            System.out.println("  GATHER: " + BuiltInRegistries.ITEM.getKey(entry.getKey()) + " = " + entry.getValue());
         }
         for (int i = 0; i < craftPlan.size(); i++) {
             BotTask s = craftPlan.get(i);
@@ -269,7 +269,7 @@ public class DependencyResolver {
     }
 
     private static boolean isMineable(Item item) {
-        String id = Registries.ITEM.getId(item).toString();
+        String id = BuiltInRegistries.ITEM.getKey(item).toString();
         return id.contains("ore") || id.contains("stone") || id.contains("cobblestone") ||
                id.contains("coal") || id.contains("diamond") || id.contains("emerald") ||
                id.contains("lapis") || id.contains("redstone") || id.contains("copper") ||
@@ -279,7 +279,7 @@ public class DependencyResolver {
     }
 
     private static boolean isLog(Item item) {
-        String id = Registries.ITEM.getId(item).toString();
+        String id = BuiltInRegistries.ITEM.getKey(item).toString();
         return id.contains("log") || id.contains("wood");
     }
 }

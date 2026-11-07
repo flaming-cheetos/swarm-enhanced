@@ -3,7 +3,7 @@ package com.rdh.swarm.modules;
 import java.util.List;
 import java.util.function.Predicate;
 
-import net.minecraft.item.Item;
+import net.minecraft.world.item.Item;
 
 import meteordevelopment.meteorclient.settings.*;
 

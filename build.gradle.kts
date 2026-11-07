@@ -5,9 +5,9 @@ plugins {
 }
 
 base {
-    archivesName = properties["archives_base_name"] as String
+    archivesName = providers.gradleProperty("archives_base_name").get()
     version = libs.versions.mod.version.get()
-    group = properties["maven_group"] as String
+    group = providers.gradleProperty("maven_group").get()
 }
 
 repositories {
@@ -24,14 +24,22 @@ repositories {
 dependencies {
     // Fabric
     minecraft(libs.minecraft)
-    mappings(variantOf(libs.yarn) { classifier("v2") })
-    modImplementation(libs.fabric.loader)
+    implementation(libs.fabric.loader)
 
     // Meteor
-    modImplementation(libs.meteor.client)
+    implementation(libs.meteor.client)
+
+    // Fabric API (DataResourceStore / resource-loader types)
+    implementation(libs.fabric.api)
 
     // Baritone for compile-time only (Meteor provides runtime). Use Meteor's published baritone.
-    compileOnly("meteordevelopment:baritone:1.21.10-SNAPSHOT")
+    compileOnly(libs.baritone)
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(libs.versions.jdk.get().toInt()))
+    }
 }
 
 val modsFolder1 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/thisistnothi14/.minecraft/mods")
@@ -61,34 +69,32 @@ tasks {
     }
 
     java {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
     }
 
     withType<JavaCompile> {
         options.encoding = "UTF-8"
-        options.release = 21
+        options.release = 25
         options.compilerArgs.add("-Xlint:deprecation")
         options.compilerArgs.add("-Xlint:unchecked")
     }
 }
 
-val remapJarTask = tasks.named("remapJar")
+val jarTask = tasks.named("jar")
 
-val copyJarToInstance1 by tasks.registering(Copy::class) {
-    dependsOn(remapJarTask)
-    from(remapJarTask.map { it.outputs.files.singleFile })
+val copyJarToInstance1 = tasks.register<Copy>("copyJarToInstance1") {
+    dependsOn(jarTask)
+    from(jarTask.map { it.outputs.files.singleFile })
     into(modsFolder1)
     rename { "swarm-improved.jar" }
+    onlyIf { modsFolder1.exists() }
 }
 
-val copyJarToInstance2 by tasks.registering(Copy::class) {
-    dependsOn(remapJarTask)
-    from(remapJarTask.map { it.outputs.files.singleFile })
+val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
+    dependsOn(jarTask)
+    from(jarTask.map { it.outputs.files.singleFile })
     into(modsFolder2)
     rename { "swarm-improved.jar" }
-}
-
-tasks.named("build") {
-    dependsOn(copyJarToInstance1, copyJarToInstance2)
+    onlyIf { modsFolder2.exists() }
 }

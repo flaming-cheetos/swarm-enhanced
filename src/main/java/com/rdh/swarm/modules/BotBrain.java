@@ -8,21 +8,21 @@ import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 import com.rdh.swarm.WaypointManager;
 import com.rdh.swarm.SwarmWaypoint;
-import net.minecraft.world.World;
-import net.minecraft.item.Item;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.block.Blocks;
-import net.minecraft.screen.AbstractFurnaceScreenHandler;
-import net.minecraft.block.BlockState;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 import meteordevelopment.meteorclient.utils.world.BlockUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
@@ -96,7 +96,7 @@ public class BotBrain extends Module {
     private BotTask currentTask = null;
     private List<BotTask> executionPlan = null;
     // Resolver outputs stored at task assignment
-    private Map<net.minecraft.item.Item, Integer> resolverGatherList = null;
+    private Map<net.minecraft.world.item.Item, Integer> resolverGatherList = null;
     private List<BotTask> resolverCraftPlan = null;
     private boolean resolverNeeds3x3 = false;
 
@@ -106,7 +106,7 @@ public class BotBrain extends Module {
     private int craftPrepTicks = 0;
     private boolean waitingForBaritone = false;
     // Prep-craft target (e.g. crafting table) in CRAFTING_PREP
-    private net.minecraft.item.Item prepCraftTarget = null;
+    private net.minecraft.world.item.Item prepCraftTarget = null;
 
     private static final int PREP_SCAN = 0;
     private static final int PREP_GOTO = 1;
@@ -198,7 +198,7 @@ public class BotBrain extends Module {
     private int craftPrepReturnPlanStep = 0;
 
     private com.rdh.swarm.task.BotTask pendingTask = null;
-    private net.minecraft.item.Item lastMissingIngredient = null;
+    private net.minecraft.world.item.Item lastMissingIngredient = null;
 
     // Death tracking
     private final DeathTracker deathTracker = new DeathTracker();
@@ -215,7 +215,7 @@ public class BotBrain extends Module {
     // Tick-driven crafting fields
     private int craftingStep = 0;
     private int craftGridSlotIndex = 0;
-    private List<int[]> craftActions = null; // Each int[] = {sourceInventorySlot, targetGridSlot, ingredientRawId}
+    private List<Object[]> craftActions = null; // Each Object[] = {sourceInventorySlot, targetGridSlot, Item ingredient}
 
     // Smelting state
     private int smeltPhase = 0;
@@ -236,7 +236,7 @@ public class BotBrain extends Module {
 
     // Pending placement tracking
     private BlockPos pendingPlacementPos = null;
-    private net.minecraft.item.Item pendingPlacementItem = null;
+    private net.minecraft.world.item.Item pendingPlacementItem = null;
     private int pendingPlacementRetries = 0;
     private static final int MAX_PENDING_PLACEMENT_RETRIES = 3;
 
@@ -338,7 +338,7 @@ public class BotBrain extends Module {
         var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
         if (swarmMod == null || swarmMod.mode.get() == com.rdh.swarm.EnhancedSwarm.Mode.Host) return;
 
-        if (mc.player == null || mc.world == null) return;
+        if (mc.player == null || mc.level == null) return;
 
         long now = System.currentTimeMillis();
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
@@ -498,10 +498,10 @@ public class BotBrain extends Module {
         }
         // Dedicated GATHER task type flow (no dependency resolution)
         if (currentTask != null && currentTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER) {
-            net.minecraft.item.Item tgt = currentTask.getTargetItem();
+            net.minecraft.world.item.Item tgt = currentTask.getTargetItem();
             if (tgt == null) { setState(BrainState.IDLE); return; }
 
-            String tgtId = net.minecraft.registry.Registries.ITEM.getId(tgt).toString();
+            String tgtId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(tgt).toString();
             String cleanTarget = tgtId.startsWith("minecraft:") ? tgtId.substring(10) : tgtId;
 
             // apply alias maps
@@ -564,7 +564,7 @@ public class BotBrain extends Module {
                 int need = currentTask.getTargetQuantity();
                 int deficit = need - have;
                 if (deficit > 0 && out != null) {
-                    String itemId = Registries.ITEM.getId(tgt).toString();
+                    String itemId = BuiltInRegistries.ITEM.getKey(tgt).toString();
                     Map<String, Integer> needs = new HashMap<>();
                     needs.put(itemId, deficit);
                     Map<String, Long> avail = Collections.emptyMap();
@@ -614,9 +614,9 @@ public class BotBrain extends Module {
                     String id = cacheEntry.getKey();
                     long count = cacheEntry.getValue();
                         if (count > 0) {
-                            net.minecraft.util.Identifier idf = net.minecraft.util.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(id));
+                            net.minecraft.resources.Identifier idf = net.minecraft.resources.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(id));
                             if (idf != null) {
-                                Item it = Registries.ITEM.get(idf);
+                                Item it = BuiltInRegistries.ITEM.getValue(idf);
                                 if (it != null) storageAvailable.put(it, count);
                             }
                         }
@@ -651,15 +651,15 @@ public class BotBrain extends Module {
                 long inStorage = storageAvailable.getOrDefault(material, 0L);
                 int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d",
-                    Registries.ITEM.getId(material).getPath(), need, have, inStorage, effectiveHave);
+                    BuiltInRegistries.ITEM.getKey(material).getPath(), need, have, inStorage, effectiveHave);
 
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[GATHER CHECK] %s need=%d have=%d",
-                    net.minecraft.registry.Registries.ITEM.getId(material).getPath(), need, have);
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(material).getPath(), need, have);
 
                 if (effectiveHave < need) {
                     allMet = false;
                     if (mineTarget == null) {  // pick FIRST missing only
-                        mineTarget = net.minecraft.registry.Registries.ITEM.getId(material).toString();
+                        mineTarget = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(material).toString();
                         mineNeed = need;
                         mineHave = effectiveHave;
                     }
@@ -687,7 +687,7 @@ public class BotBrain extends Module {
                         // apply drop aliases matching gather logic
                         if (material == Items.STONE) have += CraftingManager.countInInventory(Items.COBBLESTONE);
                         if (material == Items.GRAVEL) have += CraftingManager.countInInventory(Items.FLINT);
-                        String id = Registries.ITEM.getId(material).toString();
+                        String id = BuiltInRegistries.ITEM.getKey(material).toString();
                         long inStorage = lastStorageCache.getOrDefault(id, 0L);
                         int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
                         if (effectiveHave >= need && have < need) {
@@ -761,7 +761,7 @@ public class BotBrain extends Module {
                         if (material == Items.GRAVEL) have += CraftingManager.countInInventory(Items.FLINT);
                         int deficitNow = Math.max(0, need - have);
                         if (deficitNow > 0) {
-                            String id = Registries.ITEM.getId(material).toString();
+                            String id = BuiltInRegistries.ITEM.getKey(material).toString();
                             needs.put(id, deficitNow);
                         }
                     }
@@ -813,7 +813,7 @@ public class BotBrain extends Module {
             // Intentionally non-blocking: do not send WITHDRAW_REQUEST here.
         }
 
-        String itemName = Registries.ITEM.getId(target).getPath();
+        String itemName = BuiltInRegistries.ITEM.getKey(target).getPath();
         currentTaskDescription = "Mining " + itemName;
 
         // Check current inventory
@@ -848,7 +848,7 @@ public class BotBrain extends Module {
 
             // Log gather progress for debugging
             if (step != null && step.getType() == BotTask.Type.GATHER) {
-                ChatUtils.infoPrefix("BotBrain", "Gather check: have %d/%d %s", have, needed, java.util.Optional.ofNullable(step.getTargetItem()).map(i -> net.minecraft.registry.Registries.ITEM.getId(i).getPath()).orElse(""));
+                ChatUtils.infoPrefix("BotBrain", "Gather check: have %d/%d %s", have, needed, java.util.Optional.ofNullable(step.getTargetItem()).map(i -> net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(i).getPath()).orElse(""));
             }
 
             if (step != null) {
@@ -909,7 +909,7 @@ public class BotBrain extends Module {
         // Send baritone mine command once when entering gathering — prefer tools for tool-required targets
         if (!ensureStagedAwayFromBase()) return;
         if (!mineCommandSent) {
-            String targetId = net.minecraft.registry.Registries.ITEM.getId(target).toString();
+            String targetId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).toString();
             if (requiresTool(targetId) && !hasUsableTool()) {
                 ChatUtils.warningPrefix("BotBrain", "No usable tool for %s. Pausing.", targetId);
                 setState(BrainState.STUCK);
@@ -1035,14 +1035,14 @@ public class BotBrain extends Module {
 
         // Send goto command once (only mark sent when actually sent)
         if (!baseReturnCommandSent) {
-            int playerY = mc.player.getBlockPos().getY();
+            int playerY = mc.player.blockPosition().getY();
             int baseY = basePos.getY();
             
             if (playerY < baseY - 30) {
                 // Need to surface first. Send goto ONCE using a saved target.
                 if (surfaceTarget == null) {
-                    int surfaceX = mc.player.getBlockPos().getX();
-                    int surfaceZ = mc.player.getBlockPos().getZ();
+                    int surfaceX = mc.player.blockPosition().getX();
+                    int surfaceZ = mc.player.blockPosition().getZ();
                     surfaceTarget = new BlockPos(surfaceX, baseY, surfaceZ);
                     ChatUtils.infoPrefix("BotBrain", "Surfacing first to %d %d %d (then will goto base)", surfaceX, baseY, surfaceZ);
                 }
@@ -1075,7 +1075,7 @@ public class BotBrain extends Module {
 
         // Check if we've arrived (within 5 blocks)
         if (mc.player != null) {
-            double distSq = mc.player.getBlockPos().getSquaredDistance(basePos);
+            double distSq = mc.player.blockPosition().distSqr(basePos);
             if (distSq <= 25) {  // 5 blocks
                 if (canSendBaritone()) sendBaritoneChat("#stop");
                 ChatUtils.infoPrefix("BotBrain", "Arrived at base. Proceeding with smelt/craft.");
@@ -1133,8 +1133,8 @@ public class BotBrain extends Module {
             if (withdrawInProgress) {
                 // check inventory for item
                 try {
-                    net.minecraft.util.Identifier idf = net.minecraft.util.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(itemId));
-                    net.minecraft.item.Item it = idf == null ? null : Registries.ITEM.get(idf);
+                    net.minecraft.resources.Identifier idf = net.minecraft.resources.Identifier.tryParse(com.rdh.swarm.StorageIndex.normalizeId(itemId));
+                    net.minecraft.world.item.Item it = idf == null ? null : BuiltInRegistries.ITEM.getValue(idf);
                     int have = 0;
                     if (it != null) have = CraftingManager.countInInventory(it);
                     if (have >= qty) {
@@ -1210,13 +1210,13 @@ public class BotBrain extends Module {
     private boolean hasUsableTool() {
         if (mc.player == null) return false;
         for (int i = 0; i < 9; i++) {
-            net.minecraft.item.ItemStack stack = mc.player.getInventory().getStack(i);
+            net.minecraft.world.item.ItemStack stack = mc.player.getInventory().getItem(i);
             if (stack == null || stack.isEmpty()) continue;
             try {
-                if (stack.isDamageable() && stack.getMaxDamage() - stack.getDamage() <= 5) continue;
+                if (stack.isDamageableItem() && stack.getMaxDamage() - stack.getDamageValue() <= 5) continue;
             } catch (Exception ignored) {}
             String id = "";
-            try { id = Registries.ITEM.getId(stack.getItem()).toString(); } catch (Exception ignored) {}
+            try { id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); } catch (Exception ignored) {}
             if (id.contains("pickaxe") || id.contains("axe") || id.contains("shovel")) return true;
         }
         return false;
@@ -1248,14 +1248,14 @@ public class BotBrain extends Module {
         if (mc.player == null) return false;
 
         // Check if already in main hand
-        if (mc.player.getMainHandStack().getItem() == item) return true;
+        if (mc.player.getMainHandItem().getItem() == item) return true;
 
         // Try hotbar first
         FindItemResult hotbar = InvUtils.findInHotbar(item);
         if (hotbar.found()) {
             InvUtils.swap(hotbar.slot(), true);
-            if (mc.player.getMainHandStack().getItem() == item) return true;
-            ChatUtils.infoPrefix("BotBrain", "Hotbar swap failed for %s", net.minecraft.registry.Registries.ITEM.getId(item));
+            if (mc.player.getMainHandItem().getItem() == item) return true;
+            ChatUtils.infoPrefix("BotBrain", "Hotbar swap failed for %s", net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item));
             return false;
         }
 
@@ -1266,9 +1266,9 @@ public class BotBrain extends Module {
         // Move to current hotbar slot
         int currentHotbar = com.rdh.swarm.utils.BOInvUtils.getSelectedSlot();
         InvUtils.move().from(inv.slot()).toHotbar(currentHotbar);
-        if (mc.player.getMainHandStack().getItem() == item) return true;
+        if (mc.player.getMainHandItem().getItem() == item) return true;
 
-        ChatUtils.infoPrefix("BotBrain", "Inventory move failed for %s", net.minecraft.registry.Registries.ITEM.getId(item));
+        ChatUtils.infoPrefix("BotBrain", "Inventory move failed for %s", net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item));
         return false;
     }
 
@@ -1279,8 +1279,8 @@ public class BotBrain extends Module {
             return;
         }
 
-        net.minecraft.item.Item target = step.getTargetItem();
-        String itemName = net.minecraft.registry.Registries.ITEM.getId(target).getPath();
+        net.minecraft.world.item.Item target = step.getTargetItem();
+        String itemName = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).getPath();
         currentTaskDescription = "Preparing to craft " + itemName;
 
         RecipeBook.Recipe recipe = RecipeBook.getRecipe(target);
@@ -1303,7 +1303,7 @@ public class BotBrain extends Module {
                 BlockPos found = CraftingManager.findCraftingTable(45);
                 if (found != null) {
                     craftingTablePos = found;
-                    double distSq = mc.player.getBlockPos().getSquaredDistance(found);
+                    double distSq = mc.player.blockPosition().distSqr(found);
                     ChatUtils.infoPrefix("BotBrain", "Found crafting table at %d %d %d (%.0f blocks away)", found.getX(), found.getY(), found.getZ(), Math.sqrt(distSq));
                     if (distSq <= 16) {
                         CraftingManager.openCraftingTable(found);
@@ -1330,13 +1330,13 @@ public class BotBrain extends Module {
             case PREP_GOTO -> {
                 if (!waitingForBaritone) {
                     String cmd = String.format("#goto %d %d %d", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
-                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage(cmd);
+                    if (canSendBaritone()) mc.getConnection().sendChat(cmd);
                     ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Found table at %d %d %d, walking to it", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
                     waitingForBaritone = true;
                 }
-                double distSq = mc.player.getBlockPos().getSquaredDistance(craftingTablePos);
+                double distSq = mc.player.blockPosition().distSqr(craftingTablePos);
                 if (distSq <= 16) {
-                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
+                    if (canSendBaritone()) mc.getConnection().sendChat("#stop");
                     waitingForBaritone = false;
                     CraftingManager.openCraftingTable(craftingTablePos);
                     planStep = craftPrepReturnPlanStep;
@@ -1344,7 +1344,7 @@ public class BotBrain extends Module {
                     return;
                 }
                 if (craftPrepTicks > 600) {
-                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
+                    if (canSendBaritone()) mc.getConnection().sendChat("#stop");
                     waitingForBaritone = false;
                     ChatUtils.infoPrefix("BotBrain", "Timeout walking to table, will craft/place one");
                     if (CraftingManager.countInInventory(Items.CRAFTING_TABLE) > 0) craftPrepPhase = PREP_PLACE_TABLE;
@@ -1398,9 +1398,9 @@ public class BotBrain extends Module {
                 BlockPos placePos = findPlacementSpot();
                 if (placePos == null) {
                     ChatUtils.infoPrefix("BotBrain", "No valid spot to place table within 3 blocks!");
-                    BlockPos fallback = mc.player.getBlockPos();
-                    if (!mc.world.getBlockState(fallback).isAir()) fallback = fallback.up();
-                    if (mc.world.getBlockState(fallback).isAir()) {
+                    BlockPos fallback = mc.player.blockPosition();
+                    if (!mc.level.getBlockState(fallback).isAir()) fallback = fallback.above();
+                    if (mc.level.getBlockState(fallback).isAir()) {
                         placePos = fallback;
                         ChatUtils.infoPrefix("BotBrain", "Using fallback placement at %d %d %d", placePos.getX(), placePos.getY(), placePos.getZ());
                     } else {
@@ -1482,14 +1482,14 @@ public class BotBrain extends Module {
                     double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
                     if (dist > 4.0) {
                         String cmd = String.format("#goto %d %d %d", craftingTablePos.getX(), craftingTablePos.getY(), craftingTablePos.getZ());
-                        if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage(cmd);
+                        if (canSendBaritone()) mc.getConnection().sendChat(cmd);
                         ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Walking to table (dist=%.1f)", dist);
                         craftPrepTicks = 0;
                         return;
                     }
-                    if (canSendBaritone()) mc.getNetworkHandler().sendChatMessage("#stop");
-                    BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(craftingTablePos), Direction.UP, craftingTablePos, false);
-                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    if (canSendBaritone()) mc.getConnection().sendChat("#stop");
+                    BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(craftingTablePos), Direction.UP, craftingTablePos, false);
+                    mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
                     ChatUtils.infoPrefix("BotBrain", "CRAFTING_PREP: Opening table...");
                 }
                 if (CraftingManager.isCraftingOpen()) {
@@ -1513,18 +1513,18 @@ public class BotBrain extends Module {
     }
 
     private BlockPos findPlacementSpot() {
-        if (mc.player == null || mc.world == null) return null;
-        BlockPos playerPos = mc.player.getBlockPos();
+        if (mc.player == null || mc.level == null) return null;
+        BlockPos playerPos = mc.player.blockPosition();
 
         for (int radius = 1; radius <= 3; radius++) {
             for (int x = -radius; x <= radius; x++) {
                 for (int z = -radius; z <= radius; z++) {
                     if (Math.abs(x) != radius && Math.abs(z) != radius) continue;
                     for (int y = -1; y <= 1; y++) {
-                        BlockPos candidate = playerPos.add(x, y, z);
-                        BlockState state = mc.world.getBlockState(candidate);
-                        BlockState below = mc.world.getBlockState(candidate.down());
-                        if (state.isAir() && below.isSolidBlock(mc.world, candidate.down())) return candidate;
+                        BlockPos candidate = playerPos.offset(x, y, z);
+                        BlockState state = mc.level.getBlockState(candidate);
+                        BlockState below = mc.level.getBlockState(candidate.below());
+                        if (state.isAir() && below.isSolid()) return candidate;
                     }
                 }
             }
@@ -1532,10 +1532,10 @@ public class BotBrain extends Module {
         return null;
     }
 
-    private boolean isBlockAt(BlockPos pos, net.minecraft.block.Block block) {
-        if (pos == null || mc.player == null || mc.world == null) return false;
+    private boolean isBlockAt(BlockPos pos, net.minecraft.world.level.block.Block block) {
+        if (pos == null || mc.player == null || mc.level == null) return false;
         try {
-            return mc.world.getBlockState(pos).getBlock() == block;
+            return mc.level.getBlockState(pos).getBlock() == block;
         } catch (Exception e) {
             return false;
         }
@@ -1585,7 +1585,7 @@ public class BotBrain extends Module {
             return;
         }
 
-        net.minecraft.item.Item target = step.getTargetItem();
+        net.minecraft.world.item.Item target = step.getTargetItem();
         com.rdh.swarm.task.RecipeBook.Recipe recipe =
             com.rdh.swarm.task.RecipeBook.getRecipe(target);
 
@@ -1594,13 +1594,13 @@ public class BotBrain extends Module {
             return;
         }
 
-        net.minecraft.screen.ScreenHandler handler =
-            mc.player.currentScreenHandler;
+        net.minecraft.world.inventory.AbstractContainerMenu handler =
+            mc.player.containerMenu;
 
         boolean isCraftingTable = handler instanceof
-            net.minecraft.screen.CraftingScreenHandler;
+            net.minecraft.world.inventory.CraftingMenu;
         boolean isPlayerScreen = handler instanceof
-            net.minecraft.screen.PlayerScreenHandler;
+            net.minecraft.world.inventory.InventoryMenu;
 
         if (recipe.needsCraftingTable && !isCraftingTable) {
             craftPrepReturnPlanStep = planStep;
@@ -1611,7 +1611,7 @@ public class BotBrain extends Module {
         int skipSlots = isCraftingTable ? 10 : 9;
 
         // Remap pattern to correct grid slots if needed
-        java.util.Map<Integer, net.minecraft.item.Item> pattern;
+        java.util.Map<Integer, net.minecraft.world.item.Item> pattern;
         if (isPlayerScreen) {
             pattern = new java.util.HashMap<>();
             for (var entry : recipe.pattern.entrySet()) {
@@ -1637,10 +1637,8 @@ public class BotBrain extends Module {
             craftActions = new java.util.ArrayList<>();
             for (var entry : pattern.entrySet()) {
                 int gridSlot = entry.getKey();
-                net.minecraft.item.Item ingredient = entry.getValue();
-                craftActions.add(new int[]{-1, gridSlot,
-                    net.minecraft.registry.Registries.ITEM
-                        .getRawId(ingredient)});
+                net.minecraft.world.item.Item ingredient = entry.getValue();
+                craftActions.add(new Object[]{-1, gridSlot, ingredient});
             }
             craftGridSlotIndex = 0;
             craftingStep = 0;
@@ -1653,11 +1651,10 @@ public class BotBrain extends Module {
                 return;
             }
 
-            int[] action = craftActions.get(craftGridSlotIndex);
-            int gridSlot = action[1];
-            net.minecraft.item.Item ingredient =
-                net.minecraft.registry.Registries.ITEM
-                    .get(action[2]);
+            Object[] action = craftActions.get(craftGridSlotIndex);
+            int gridSlot = (Integer) action[1];
+            net.minecraft.world.item.Item ingredient =
+                (net.minecraft.world.item.Item) action[2];
 
             // Skip if already correct
             if (CraftingManager.gridSlotHasItem(
@@ -1671,7 +1668,7 @@ public class BotBrain extends Module {
                 ingredient, handler, skipSlots);
             if (srcSlot == -1) {
                 // Missing ingredient handling: rate-limit logging and trigger re-resolve -> GATHERING
-                String missingId = net.minecraft.registry.Registries.ITEM.getId(ingredient).getPath();
+                String missingId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(ingredient).getPath();
                 if (lastMissingIngredient == null || lastMissingIngredient != ingredient) {
                     ChatUtils.warningPrefix("BotBrain", "Missing ingredient: %s", missingId);
                     // stop any baritone activity
@@ -1705,19 +1702,19 @@ public class BotBrain extends Module {
             }
 
             // Pick up stack
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 srcSlot, 0,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
             // Place 1 in grid
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 gridSlot, 1,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
             // Put rest back
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 srcSlot, 0,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
 
             craftGridSlotIndex++;
@@ -1727,13 +1724,12 @@ public class BotBrain extends Module {
         // PHASE 2: Take output
         if (craftingStep == 1) {
             if (CraftingManager.outputReady(handler)) {
-                mc.interactionManager.clickSlot(handler.syncId,
+                mc.gameMode.handleContainerInput(handler.containerId,
                     0, 0,
-                    net.minecraft.screen.slot.SlotActionType.QUICK_MOVE,
+                    net.minecraft.world.inventory.ContainerInput.QUICK_MOVE,
                     mc.player);
                 ChatUtils.infoPrefix("BotBrain", "Crafted %s",
-                    net.minecraft.registry.Registries.ITEM
-                        .getId(target).getPath());
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).getPath());
                 step.setStatus(
                     com.rdh.swarm.task.BotTask.Status.COMPLETE);
                 advancePlan();
@@ -1827,18 +1823,18 @@ public class BotBrain extends Module {
         }
     }
 
-    private boolean tickCraftingPrepTarget(net.minecraft.item.Item target) {
+    private boolean tickCraftingPrepTarget(net.minecraft.world.item.Item target) {
         if (mc.player == null) return false;
 
-        net.minecraft.screen.ScreenHandler handler = mc.player.currentScreenHandler;
-        boolean isPlayerScreen = handler instanceof net.minecraft.screen.PlayerScreenHandler;
+        net.minecraft.world.inventory.AbstractContainerMenu handler = mc.player.containerMenu;
+        boolean isPlayerScreen = handler instanceof net.minecraft.world.inventory.InventoryMenu;
         if (!isPlayerScreen) return false;
 
         RecipeBook.Recipe recipe = RecipeBook.getRecipe(target);
         if (recipe == null) return false;
 
         // Remap pattern for player 2x2 grid
-        java.util.Map<Integer, net.minecraft.item.Item> pattern = new java.util.HashMap<>();
+        java.util.Map<Integer, net.minecraft.world.item.Item> pattern = new java.util.HashMap<>();
         for (var entry : recipe.pattern.entrySet()) {
             int newSlot = switch (entry.getKey()) {
                 case 5 -> 1;
@@ -1858,10 +1854,8 @@ public class BotBrain extends Module {
             craftActions = new java.util.ArrayList<>();
             for (var entry : pattern.entrySet()) {
                 int gridSlot = entry.getKey();
-                net.minecraft.item.Item ingredient = entry.getValue();
-                craftActions.add(new int[]{-1, gridSlot,
-                    net.minecraft.registry.Registries.ITEM
-                        .getRawId(ingredient)});
+                net.minecraft.world.item.Item ingredient = entry.getValue();
+                craftActions.add(new Object[]{-1, gridSlot, ingredient});
             }
             craftGridSlotIndex = 0;
             craftingStep = 0;
@@ -1874,11 +1868,10 @@ public class BotBrain extends Module {
                 return true;
             }
 
-            int[] action = craftActions.get(craftGridSlotIndex);
-            int gridSlot = action[1];
-            net.minecraft.item.Item ingredient =
-                net.minecraft.registry.Registries.ITEM
-                    .get(action[2]);
+            Object[] action = craftActions.get(craftGridSlotIndex);
+            int gridSlot = (Integer) action[1];
+            net.minecraft.world.item.Item ingredient =
+                (net.minecraft.world.item.Item) action[2];
 
             // Skip if already correct
             if (CraftingManager.gridSlotHasItem(
@@ -1892,7 +1885,7 @@ public class BotBrain extends Module {
                 ingredient, handler, skipSlots);
             if (srcSlot == -1) {
                 // Missing ingredient handling: rate-limit logging and trigger gather
-                String missingId = net.minecraft.registry.Registries.ITEM.getId(ingredient).getPath();
+                String missingId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(ingredient).getPath();
                 if (lastMissingIngredient == null || lastMissingIngredient != ingredient) {
                     ChatUtils.warningPrefix("BotBrain", "Missing ingredient: %s", missingId);
                     if (canSendBaritone()) sendBaritoneChat("#stop");
@@ -1913,19 +1906,19 @@ public class BotBrain extends Module {
             }
 
             // Pick up stack
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 srcSlot, 0,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
             // Place 1 in grid
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 gridSlot, 1,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
             // Put rest back
-            mc.interactionManager.clickSlot(handler.syncId,
+            mc.gameMode.handleContainerInput(handler.containerId,
                 srcSlot, 0,
-                net.minecraft.screen.slot.SlotActionType.PICKUP,
+                net.minecraft.world.inventory.ContainerInput.PICKUP,
                 mc.player);
 
             craftGridSlotIndex++;
@@ -1935,13 +1928,12 @@ public class BotBrain extends Module {
         // PHASE 2: Take output
         if (craftingStep == 1) {
             if (CraftingManager.outputReady(handler)) {
-                mc.interactionManager.clickSlot(handler.syncId,
+                mc.gameMode.handleContainerInput(handler.containerId,
                     0, 0,
-                    net.minecraft.screen.slot.SlotActionType.QUICK_MOVE,
+                    net.minecraft.world.inventory.ContainerInput.QUICK_MOVE,
                     mc.player);
                 ChatUtils.infoPrefix("BotBrain", "Crafted %s",
-                    net.minecraft.registry.Registries.ITEM
-                        .getId(target).getPath());
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).getPath());
                 craftActions = null;
                 return false;
             } else {
@@ -1964,7 +1956,7 @@ public class BotBrain extends Module {
         if (ore == null) ore = RecipeBook.getOreForIngot(ingot);
         if (ore == null) { setState(BrainState.IDLE); return; }
 
-        currentTaskDescription = "Smelting " + Registries.ITEM.getId(ore).getPath();
+        currentTaskDescription = "Smelting " + BuiltInRegistries.ITEM.getKey(ore).getPath();
 
         // Ensure we have some fuel in inventory
         if (SmeltingManager.countFuel() == 0 && CraftingManager.countInInventory(Items.COAL) == 0) {
@@ -1978,16 +1970,16 @@ public class BotBrain extends Module {
             case SMELT_SCAN -> {
                 if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: scanning for nearby furnace...");
                 // Search for furnace within 45 blocks
-                if (mc.player == null || mc.world == null) { setState(BrainState.STUCK); return; }
-                BlockPos playerPos = mc.player.getBlockPos();
+                if (mc.player == null || mc.level == null) { setState(BrainState.STUCK); return; }
+                BlockPos playerPos = mc.player.blockPosition();
                 int range = 45;
                 BlockPos found = null;
                 for (int x = -range; x <= range && found == null; x++) {
                     for (int y = -10; y <= 10 && found == null; y++) {
                         for (int z = -range; z <= range; z++) {
-                            BlockPos pos = playerPos.add(x, y, z);
-                            var b = mc.world.getBlockState(pos).getBlock();
-                            if (b == net.minecraft.block.Blocks.FURNACE || b == net.minecraft.block.Blocks.BLAST_FURNACE || b == net.minecraft.block.Blocks.SMOKER) {
+                            BlockPos pos = playerPos.offset(x, y, z);
+                            var b = mc.level.getBlockState(pos).getBlock();
+                            if (b == net.minecraft.world.level.block.Blocks.FURNACE || b == net.minecraft.world.level.block.Blocks.BLAST_FURNACE || b == net.minecraft.world.level.block.Blocks.SMOKER) {
                                 found = pos;
                                 break;
                             }
@@ -2024,7 +2016,7 @@ public class BotBrain extends Module {
             case SMELT_GOTO -> {
                 if (smelterPos == null) { smeltPhase = SMELT_SCAN; smeltTicks = 0; return; }
 
-                double distSq = mc.player.getBlockPos().getSquaredDistance(smelterPos);
+                double distSq = mc.player.blockPosition().distSqr(smelterPos);
 
                 // Already within interaction range — go straight to open
                 if (distSq <= 20) {  // ~4.5 blocks
@@ -2076,7 +2068,7 @@ public class BotBrain extends Module {
                 // Find placement spot adjacent to player (reuse pending if present)
                 BlockPos placePos = (pendingPlacementPos != null && pendingPlacementItem == Items.FURNACE) ? pendingPlacementPos : findPlacementSpot();
                 if (placePos == null) {
-                    placePos = mc.player.getBlockPos().up();
+                    placePos = mc.player.blockPosition().above();
                 }
 
                 // Ensure furnace in main hand
@@ -2191,7 +2183,7 @@ public class BotBrain extends Module {
                 // Assume inserted and go wait for smelt to complete
                 smeltWaitStart = System.currentTimeMillis();
                 // Close furnace screen so player isn't stuck in GUI
-                if (mc.player != null) mc.player.closeHandledScreen();
+                if (mc.player != null) mc.setScreenAndShow(null);
                 ChatUtils.infoPrefix("BotBrain", "SMELT: ore and fuel inserted, closing furnace and waiting");
                 setState(BrainState.SMELTING_WAIT);
                 return;
@@ -2259,14 +2251,14 @@ public class BotBrain extends Module {
             int have = CraftingManager.countInInventory(targetIngot);
             int need = step.getTargetQuantity();
             if (have >= need) {
-                ChatUtils.infoPrefix("BotBrain", "SMELT: complete, have %d/%d %s", have, need, Registries.ITEM.getId(targetIngot).getPath());
+                ChatUtils.infoPrefix("BotBrain", "SMELT: complete, have %d/%d %s", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
                 step.setStatus(BotTask.Status.COMPLETE);
                 try { sendTaskProgress(step); } catch (Exception ignored) {}
                 advancePlan();
                 setState(BrainState.IDLE);
                 return;
             } else {
-                ChatUtils.warningPrefix("BotBrain", "SMELT: input empty but only have %d/%d %s after collection", have, need, Registries.ITEM.getId(targetIngot).getPath());
+                ChatUtils.warningPrefix("BotBrain", "SMELT: input empty but only have %d/%d %s after collection", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
                 setState(BrainState.STUCK);
                 return;
             }
@@ -2328,7 +2320,7 @@ public class BotBrain extends Module {
 
         // Check if we're at death location
         if (mc.player != null) {
-            double dist = mc.player.getBlockPos().getSquaredDistance(deathPos);
+            double dist = mc.player.blockPosition().distSqr(deathPos);
             if (dist < 9) {
                 ChatUtils.infoPrefix("BotBrain", "Arrived at death location. Picking up items.");
                 deathTracker.clearDeath();
@@ -2489,7 +2481,7 @@ public class BotBrain extends Module {
             // Track the current gather resource string for waypoint lookups
             try {
                 if (currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
-                    String tgtId = Registries.ITEM.getId(currentTask.getTargetItem()).toString();
+                    String tgtId = BuiltInRegistries.ITEM.getKey(currentTask.getTargetItem()).toString();
                     String clean = tgtId.startsWith("minecraft:") ? tgtId.substring(10) : tgtId;
                     this.currentGatherResource = MINE_FOR.getOrDefault(clean, MINE_FOR_2.getOrDefault(clean, clean));
                 }
@@ -2535,7 +2527,7 @@ public class BotBrain extends Module {
         if (mc.player == null) return false;
         int empty = 0;
         for (int i = 0; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).isEmpty()) empty++;
+            if (mc.player.getInventory().getItem(i).isEmpty()) empty++;
         }
         return empty <= depositThreshold.get();
     }
@@ -2546,8 +2538,8 @@ public class BotBrain extends Module {
 
     private void sendBaritoneChat(String command) {
         lastBaritoneCommand = System.currentTimeMillis();
-        if (mc.getNetworkHandler() != null) {
-            mc.getNetworkHandler().sendChatMessage(command);
+        if (mc.getConnection() != null) {
+            mc.getConnection().sendChat(command);
         }
     }
 
@@ -2577,7 +2569,7 @@ public class BotBrain extends Module {
     }
 
     private boolean isInNether() {
-        return mc.world != null && mc.world.getRegistryKey() == World.NETHER;
+        return mc.level != null && mc.level.dimension() == Level.NETHER;
     }
 
     /**
@@ -2791,6 +2783,7 @@ public class BotBrain extends Module {
         }
 
         // Fallback to distance based
+        // TODO: guard separate Baritone mod 26.3
         try {
             if (baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
                 currentEta = "Pathing";
@@ -2883,13 +2876,13 @@ public class BotBrain extends Module {
                     stagingOrigin = new BlockPos(nc[0], nc[1], nc[2]);
                 } else {
                     // Use current position as fallback
-                    stagingOrigin = mc.player.getBlockPos();
+                    stagingOrigin = mc.player.blockPosition();
                 }
             } else {
                 stagingOrigin = base;
             }
             
-            double distToOrigin = Math.sqrt(mc.player.getBlockPos().getSquaredDistance(stagingOrigin));
+            double distToOrigin = Math.sqrt(mc.player.blockPosition().distSqr(stagingOrigin));
             if (distToOrigin >= gatherStagingDistance.get()) { 
                 stagingComplete = true; 
                 return true; 
@@ -2939,8 +2932,8 @@ public class BotBrain extends Module {
 
     private String getWorkerName() {
         try {
-            if (MinecraftClient.getInstance() != null && MinecraftClient.getInstance().getSession() != null)
-                return MinecraftClient.getInstance().getSession().getUsername();
+            if (Minecraft.getInstance() != null && Minecraft.getInstance().getUser() != null)
+                return Minecraft.getInstance().getUser().getName();
         } catch (Exception ignored) {}
         return "unknown";
     }

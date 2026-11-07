@@ -6,7 +6,7 @@ import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 import java.util.*;
 
@@ -115,7 +115,7 @@ public class SwarmSpam extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (mc.player == null || mc.getNetworkHandler() == null) return;
+        if (mc.player == null || mc.getConnection() == null) return;
 
         List<String> msgs = messages.get();
         if (msgs == null || msgs.isEmpty()) return;
@@ -140,7 +140,7 @@ public class SwarmSpam extends Module {
 
         // Send
         try {
-            mc.getNetworkHandler().sendChatMessage(msg);
+            mc.getConnection().sendChat(msg);
         } catch (Exception e) {
             ChatUtils.errorPrefix("SwarmSpam", "Failed to send message: %s", e.getMessage());
         }
@@ -164,8 +164,8 @@ public class SwarmSpam extends Module {
 
         // {player} → username
         try {
-            if (mc.getSession() != null) {
-                msg = msg.replace("{player}", mc.getSession().getUsername());
+            if (mc.getUser() != null) {
+                msg = msg.replace("{player}", mc.getUser().getName());
             }
         } catch (Exception ignored) {}
 

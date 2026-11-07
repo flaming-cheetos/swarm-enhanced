@@ -12,9 +12,9 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
-import net.minecraft.item.Item;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.item.Item;
 
 public class TaskQueue {
 
@@ -158,7 +158,7 @@ public class TaskQueue {
                         if (itemName != null && !itemName.isEmpty()) {
                             try {
                                 Identifier idf = Identifier.tryParse(itemName);
-                                Item it = Registries.ITEM.get(idf);
+                                Item it = BuiltInRegistries.ITEM.getValue(idf);
                                 data.put("item", it);
                             } catch (Exception ignored) {}
                         }

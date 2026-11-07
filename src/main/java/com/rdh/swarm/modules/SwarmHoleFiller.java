@@ -2,7 +2,7 @@ package com.rdh.swarm.modules;
 
 import java.util.List;
 
-import net.minecraft.block.Block;
+import net.minecraft.world.level.block.Block;
 
 import meteordevelopment.meteorclient.settings.BlockListSetting;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -25,11 +25,11 @@ public class SwarmHoleFiller extends SwarmProxyModule {
 
     public final Setting<List<Block>> blocks = sg.add(new BlockListSetting.Builder().name("blocks").defaultValue(
         // keep some defaults similar to reference
-        Block.getBlockFromItem(net.minecraft.item.Items.OBSIDIAN),
-        Block.getBlockFromItem(net.minecraft.item.Items.CRYING_OBSIDIAN),
-        Block.getBlockFromItem(net.minecraft.item.Items.NETHERITE_BLOCK),
-        Block.getBlockFromItem(net.minecraft.item.Items.RESPAWN_ANCHOR),
-        Block.getBlockFromItem(net.minecraft.item.Items.COBWEB)
+        Block.byItem(net.minecraft.world.item.Items.OBSIDIAN),
+        Block.byItem(net.minecraft.world.item.Items.CRYING_OBSIDIAN),
+        Block.byItem(net.minecraft.world.item.Items.NETHERITE_BLOCK),
+        Block.byItem(net.minecraft.world.item.Items.RESPAWN_ANCHOR),
+        Block.byItem(net.minecraft.world.item.Items.COBWEB)
     ).onChanged(v -> pushSetting("blocks", v)).build());
 
     public final Setting<Integer> searchRadius = sg.add(new IntSetting.Builder().name("search-radius").defaultValue(5).min(0).sliderMax(6).onChanged(v -> pushSetting("search-radius", v)).build());

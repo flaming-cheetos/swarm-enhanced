@@ -1,6 +1,6 @@
 package com.rdh.swarm.task;
 
-import net.minecraft.util.math.BlockPos;
+import net.minecraft.core.BlockPos;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -51,12 +51,12 @@ public class DeathTracker {
 
     public boolean hasDeath() {
         if (mc.player == null) return false;
-        return getDeathCount(mc.player.getUuid()) > 0;
+        return getDeathCount(mc.player.getUUID()) > 0;
     }
 
     public boolean canRecover() {
         if (mc.player == null) return false;
-        List<DeathRecord> list = getDeaths(mc.player.getUuid());
+        List<DeathRecord> list = getDeaths(mc.player.getUUID());
         if (list.isEmpty()) return false;
         Instant then = list.get(list.size()-1).time;
         return Instant.now().isBefore(then.plusSeconds(300));
@@ -64,14 +64,14 @@ public class DeathTracker {
 
     public BlockPos getDeathPos() {
         if (mc.player == null) return new BlockPos(0,0,0);
-        List<DeathRecord> list = getDeaths(mc.player.getUuid());
+        List<DeathRecord> list = getDeaths(mc.player.getUUID());
         if (list.isEmpty()) return new BlockPos(0,0,0);
         return list.get(list.size()-1).pos;
     }
 
     public long getTimeRemainingMs() {
         if (mc.player == null) return 0;
-        List<DeathRecord> list = getDeaths(mc.player.getUuid());
+        List<DeathRecord> list = getDeaths(mc.player.getUUID());
         if (list.isEmpty()) return 0;
         Instant then = list.get(list.size()-1).time;
         long remaining = then.plusSeconds(300).toEpochMilli() - Instant.now().toEpochMilli();
@@ -80,6 +80,6 @@ public class DeathTracker {
 
     public void clearDeath() {
         if (mc.player == null) return;
-        clear(mc.player.getUuid());
+        clear(mc.player.getUUID());
     }
 }

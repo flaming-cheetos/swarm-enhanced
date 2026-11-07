@@ -6,9 +6,9 @@ import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.Items;
-import net.minecraft.util.Hand;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.InteractionHand;
 
 public class SwarmPearlChase extends Module {
     private final SettingGroup sgPearl = settings.createGroup("Pearl");
@@ -84,12 +84,12 @@ public class SwarmPearlChase extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (mc.player == null || mc.world == null) return;
+        if (mc.player == null || mc.level == null) return;
 
         String name = targetName.get().trim();
         if (name.isEmpty()) return;
 
-        PlayerEntity target = findTarget(name);
+        Player target = findTarget(name);
         if (target == null) return;
 
         double dist = mc.player.distanceTo(target);
@@ -115,8 +115,8 @@ public class SwarmPearlChase extends Module {
         }
     }
 
-    private PlayerEntity findTarget(String name) {
-        for (PlayerEntity p : mc.world.getPlayers()) {
+    private Player findTarget(String name) {
+        for (Player p : mc.level.players()) {
             if (p != mc.player && p.getName().getString().equalsIgnoreCase(name)) {
                 return p;
             }
@@ -124,7 +124,7 @@ public class SwarmPearlChase extends Module {
         return null;
     }
 
-    private boolean throwPearl(PlayerEntity target, double dist) {
+    private boolean throwPearl(Player target, double dist) {
         int slot = findHotbarItem(Items.ENDER_PEARL);
         if (slot == -1) return false;
 
@@ -132,13 +132,13 @@ public class SwarmPearlChase extends Module {
         mc.player.getInventory().setSelectedSlot(slot);
 
         aimAt(target, dist, true);
-        mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+        mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
 
         mc.player.getInventory().setSelectedSlot(prev);
         return true;
     }
 
-    private boolean throwWindCharge(PlayerEntity target) {
+    private boolean throwWindCharge(Player target) {
         int slot = findHotbarItem(Items.WIND_CHARGE);
         if (slot == -1) return false;
 
@@ -146,13 +146,13 @@ public class SwarmPearlChase extends Module {
         mc.player.getInventory().setSelectedSlot(slot);
 
         aimAtFeet(target);
-        mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+        mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
 
         mc.player.getInventory().setSelectedSlot(prev);
         return true;
     }
 
-    private void aimAt(PlayerEntity target, double dist, boolean compensate) {
+    private void aimAt(Player target, double dist, boolean compensate) {
         double dx = target.getX() - mc.player.getX();
         double dz = target.getZ() - mc.player.getZ();
         double dy = (target.getY() + 1.0) - (mc.player.getY() + 1.6);
@@ -165,11 +165,11 @@ public class SwarmPearlChase extends Module {
 
         pitch = Math.max(-89, Math.min(89, pitch));
 
-        mc.player.setYaw(yaw);
-        mc.player.setPitch(pitch);
+        mc.player.setYRot(yaw);
+        mc.player.setXRot(pitch);
     }
 
-    private void aimAtFeet(PlayerEntity target) {
+    private void aimAtFeet(Player target) {
         double dx = target.getX() - mc.player.getX();
         double dz = target.getZ() - mc.player.getZ();
         double dy = target.getY() - (mc.player.getY() + 1.6);
@@ -180,13 +180,13 @@ public class SwarmPearlChase extends Module {
 
         pitch = Math.max(-89, Math.min(89, pitch));
 
-        mc.player.setYaw(yaw);
-        mc.player.setPitch(pitch);
+        mc.player.setYRot(yaw);
+        mc.player.setXRot(pitch);
     }
 
-    private int findHotbarItem(net.minecraft.item.Item item) {
+    private int findHotbarItem(net.minecraft.world.item.Item item) {
         for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getStack(i).getItem() == item) return i;
+            if (mc.player.getInventory().getItem(i).getItem() == item) return i;
         }
         return -1;
     }

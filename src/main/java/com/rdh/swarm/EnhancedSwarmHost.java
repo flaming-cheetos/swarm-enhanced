@@ -266,10 +266,10 @@ public class EnhancedSwarmHost extends Thread {
 
     public String getCurrentServer() {
         try {
-            net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
             if (mc == null) return "unknown";
-            if (mc.getCurrentServerEntry() != null) {
-                String addr = mc.getCurrentServerEntry().address;
+            if (mc.getCurrentServer() != null) {
+                String addr = mc.getCurrentServer().ip;
                 if (addr == null) return "unknown";
                 addr = addr.trim().toLowerCase();
                 // strip default Minecraft port 25565
@@ -284,7 +284,7 @@ public class EnhancedSwarmHost extends Thread {
                 }
                 return addr;
             }
-            if (mc.isIntegratedServerRunning()) return "singleplayer";
+            if (mc.hasSingleplayerServer()) return "singleplayer";
         } catch (Exception ignored) {}
         return "unknown";
     }

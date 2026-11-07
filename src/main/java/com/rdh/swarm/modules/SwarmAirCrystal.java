@@ -13,17 +13,17 @@ import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.block.Blocks;
-import net.minecraft.client.network.AbstractClientPlayerEntity;
-import net.minecraft.entity.decoration.EndCrystalEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.Items;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
 import java.util.List;
@@ -149,7 +149,7 @@ public class SwarmAirCrystal extends Module {
     private long lastCombo = 0;
 
     // Extrapolation map
-    private final Map<AbstractClientPlayerEntity, Box> extPos = new HashMap<>();
+    private final Map<AbstractClientPlayer, AABB> extPos = new HashMap<>();
 
     // Attack cooldown tracker
     private final TimerList<Integer> attackedList = new TimerList<>();
@@ -183,7 +183,7 @@ public class SwarmAirCrystal extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (mc.player == null || mc.world == null) return;
+        if (mc.player == null || mc.level == null) return;
 
         attackedList.update();
 
@@ -197,7 +197,7 @@ public class SwarmAirCrystal extends Module {
         String name = targetName.get().trim();
         if (name.isEmpty()) return;
 
-        PlayerEntity target = findTarget(name);
+        Player target = findTarget(name);
         if (target == null) {
             state = ComboState.WAITING;
             return;
@@ -221,12 +221,12 @@ public class SwarmAirCrystal extends Module {
                 if (!canPlace(below)) break;
 
                 // Get extrapolated bounding box for accurate damage calc
-                Box targetBox = extPos.containsKey((AbstractClientPlayerEntity) target)
-                    ? extPos.get((AbstractClientPlayerEntity) target)
+                AABB targetBox = extPos.containsKey((AbstractClientPlayer) target)
+                    ? extPos.get((AbstractClientPlayer) target)
                     : target.getBoundingBox();
 
                 // Crystal position (center top of the obby block)
-                Vec3d crystalPos = new Vec3d(
+                Vec3 crystalPos = new Vec3(
                     below.getX() + 0.5,
                     below.getY() + 1,
                     below.getZ() + 0.5
@@ -295,8 +295,8 @@ public class SwarmAirCrystal extends Module {
         }
     }
 
-    private PlayerEntity findTarget(String name) {
-        for (PlayerEntity p : mc.world.getPlayers()) {
+    private Player findTarget(String name) {
+        for (Player p : mc.level.players()) {
             if (p != mc.player && p.getName().getString().equalsIgnoreCase(name)) {
                 return p;
             }
@@ -304,25 +304,25 @@ public class SwarmAirCrystal extends Module {
         return null;
     }
 
-    private boolean isAirborne(PlayerEntity player) {
-        if (player.isOnGround()) return false;
-        BlockPos below = player.getBlockPos().down();
+    private boolean isAirborne(Player player) {
+        if (player.onGround()) return false;
+        BlockPos below = player.blockPosition().below();
         double feetY = player.getY();
         double groundY = below.getY() + 1;
         return (feetY - groundY) >= minAirHeight.get();
     }
 
-    private BlockPos getBlockBelow(PlayerEntity player) {
-        BlockPos pos = player.getBlockPos().down();
+    private BlockPos getBlockBelow(Player player) {
+        BlockPos pos = player.blockPosition().below();
         for (int i = 0; i < 5; i++) {
-            if (mc.world.getBlockState(pos).isAir()) return pos;
-            pos = pos.down();
+            if (mc.level.getBlockState(pos).isAir()) return pos;
+            pos = pos.below();
         }
         return null;
     }
 
     // Compatibility wrappers for earlier BlackOut port names
-    private BlockPos getAirBlockBelow(PlayerEntity player) {
+    private BlockPos getAirBlockBelow(Player player) {
         return getBlockBelow(player);
     }
 
@@ -331,9 +331,9 @@ public class SwarmAirCrystal extends Module {
     }
 
     private boolean canPlaceObby(BlockPos pos) {
-        if (!mc.world.getBlockState(pos).isAir()) return false;
-        BlockPos below = pos.down();
-        if (mc.world.getBlockState(below).isAir()) return false;
+        if (!mc.level.getBlockState(pos).isAir()) return false;
+        BlockPos below = pos.below();
+        if (mc.level.getBlockState(below).isAir()) return false;
         return true;
     }
 
@@ -345,9 +345,9 @@ public class SwarmAirCrystal extends Module {
         if (autoSwap.get()) BOInvUtils.invSwitch(slot);
 
         try {
-            Vec3d hitVec = Vec3d.ofCenter(pos.down()).add(0, 0.5, 0);
-            BlockHitResult hit = new BlockHitResult(hitVec, Direction.UP, pos.down(), false);
-            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+            Vec3 hitVec = Vec3.atCenterOf(pos.below()).add(0, 0.5, 0);
+            BlockHitResult hit = new BlockHitResult(hitVec, Direction.UP, pos.below(), false);
+            mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
         } catch (Exception e) {
             return false;
         }
@@ -357,7 +357,7 @@ public class SwarmAirCrystal extends Module {
     }
 
     private boolean placeCrystal(BlockPos obbyPos) {
-        if (mc.world.getBlockState(obbyPos).getBlock() != Blocks.OBSIDIAN) return false;
+        if (mc.level.getBlockState(obbyPos).getBlock() != Blocks.OBSIDIAN) return false;
 
         int slot = InvUtils.find(Items.END_CRYSTAL).slot();
         if (slot == -1) return false;
@@ -366,9 +366,9 @@ public class SwarmAirCrystal extends Module {
         if (autoSwap.get()) BOInvUtils.invSwitch(slot);
 
         try {
-            Vec3d hitVec = Vec3d.ofCenter(obbyPos).add(0, 0.5, 0);
+            Vec3 hitVec = Vec3.atCenterOf(obbyPos).add(0, 0.5, 0);
             BlockHitResult hit = new BlockHitResult(hitVec, Direction.UP, obbyPos, false);
-            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+            mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
         } catch (Exception e) {
             return false;
         }
@@ -378,14 +378,14 @@ public class SwarmAirCrystal extends Module {
     }
 
     private void breakCrystal(BlockPos obbyPos) {
-        Box searchBox = new Box(obbyPos).expand(2);
-        List<EndCrystalEntity> crystals = mc.world.getEntitiesByClass(EndCrystalEntity.class, searchBox, e -> true);
+        AABB searchBox = new AABB(obbyPos).inflate(2);
+        List<EndCrystal> crystals = mc.level.getEntitiesOfClass(EndCrystal.class, searchBox, e -> true);
         if (crystals.isEmpty()) return;
 
-        EndCrystalEntity closest = null;
+        EndCrystal closest = null;
         double closestDist = Double.MAX_VALUE;
 
-        for (EndCrystalEntity crystal : crystals) {
+        for (EndCrystal crystal : crystals) {
             double d = mc.player.distanceTo(crystal);
             if (d < closestDist) {
                 closestDist = d;
@@ -394,8 +394,8 @@ public class SwarmAirCrystal extends Module {
         }
 
         if (closest != null) {
-            mc.interactionManager.attackEntity(mc.player, closest);
-            mc.player.swingHand(Hand.MAIN_HAND);
+            mc.gameMode.attack(mc.player, closest);
+            mc.player.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
         }
     }
 

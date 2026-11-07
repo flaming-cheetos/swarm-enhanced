@@ -2,7 +2,7 @@ package com.rdh.swarm.modules;
 
 import java.util.List;
 
-import net.minecraft.block.Block;
+import net.minecraft.world.level.block.Block;
 
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.renderer.ShapeMode;

@@ -29,8 +29,8 @@
     "_fc0": "ZmxhbWluZ2NoZWV0MHMvcmRoIGZvcmV2ZXI="
   },
   "depends": {
-    "java": ">=21",
-    "minecraft": ["1.21.4"],
+    "java": ">=25",
+    "minecraft": ["~26.3"],
     "meteor-client": "*"
   }
 }

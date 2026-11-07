@@ -1,7 +1,7 @@
 package com.rdh.swarm.utils;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.player.Inventory;
 
 /**
  * Ported BOInvUtils with Managers references replaced.
@@ -26,16 +26,16 @@ public class BOInvUtils {
     // Compatibility helper: get the selected hotbar slot in a way that works across mappings.
     public static int getSelectedSlot() {
         try {
-            PlayerInventory inv = MinecraftClient.getInstance().player.getInventory();
+            Inventory inv = Minecraft.getInstance().player.getInventory();
             try {
-                java.lang.reflect.Method m = PlayerInventory.class.getMethod("getSelectedSlot");
+                java.lang.reflect.Method m = Inventory.class.getMethod("getSelectedSlot");
                 Object res = m.invoke(inv);
                 if (res instanceof Integer) return (Integer) res;
             } catch (NoSuchMethodException ignored) {
             }
 
             try {
-                java.lang.reflect.Field f = PlayerInventory.class.getDeclaredField("selectedSlot");
+                java.lang.reflect.Field f = Inventory.class.getDeclaredField("selectedSlot");
                 f.setAccessible(true);
                 return f.getInt(inv);
             } catch (NoSuchFieldException | IllegalAccessException ignored) {

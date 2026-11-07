@@ -1,6 +1,6 @@
 package com.rdh.swarm.task;
 
-import net.minecraft.item.Item;
+import net.minecraft.world.item.Item;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -76,7 +76,7 @@ public class BotTask {
 
     public String getItemName() {
         try {
-            return targetItem == null ? "" : net.minecraft.registry.Registries.ITEM.getId(targetItem).getPath();
+            return targetItem == null ? "" : net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(targetItem).getPath();
         } catch (Exception e) { return ""; }
     }
 

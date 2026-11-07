@@ -1,9 +1,9 @@
 package com.rdh.swarm.task;
 
-import net.minecraft.item.Item;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 
 import java.util.*;
 
@@ -323,8 +323,8 @@ public class RecipeBook {
                    7, Items.OAK_PLANKS, 8, Items.OAK_PLANKS));
 
         // Bed
-        register(Items.WHITE_BED, 1, true,
-            Map.of(4, Items.WHITE_WOOL, 5, Items.WHITE_WOOL, 6, Items.WHITE_WOOL,
+        register(Items.BED.white(), 1, true,
+            Map.of(4, Items.WOOL.white(), 5, Items.WOOL.white(), 6, Items.WOOL.white(),
                    7, Items.OAK_PLANKS, 8, Items.OAK_PLANKS, 9, Items.OAK_PLANKS));
 
         // Bread
@@ -359,8 +359,8 @@ public class RecipeBook {
     public static boolean hasRecipe(String itemName) {
         try {
             if (itemName == null || itemName.isEmpty()) return false;
-            Identifier id = Identifier.of("minecraft", itemName);
-            Item it = Registries.ITEM.get(id);
+            Identifier id = Identifier.fromNamespaceAndPath("minecraft", itemName);
+            Item it = BuiltInRegistries.ITEM.getValue(id);
             if (it == null) return false;
             return hasRecipe(it);
         } catch (Exception e) {
@@ -418,7 +418,7 @@ public class RecipeBook {
 
     // What pickaxe tier is needed to mine certain blocks
     public static Tier getRequiredTier(Item targetBlock) {
-        String id = net.minecraft.registry.Registries.ITEM.getId(targetBlock).toString();
+        String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(targetBlock).toString();
         if (id.contains("diamond") || id.contains("emerald") || id.contains("gold") || id.contains("redstone")) return Tier.IRON;
         if (id.contains("iron") || id.contains("lapis") || id.contains("copper")) return Tier.STONE;
         if (id.contains("obsidian") || id.contains("ancient_debris") || id.contains("netherite")) return Tier.DIAMOND;
@@ -446,7 +446,7 @@ public class RecipeBook {
         Item oreForm = null;
         for (var entry : SMELTING.entrySet()) {
             if (entry.getValue() == ingot) {
-                String keyId = net.minecraft.registry.Registries.ITEM.getId(entry.getKey()).getPath();
+                String keyId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(entry.getKey()).getPath();
                 if (keyId.startsWith("raw_")) {
                     rawForm = entry.getKey();
                 } else {

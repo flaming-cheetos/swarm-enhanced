@@ -8,7 +8,7 @@ import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 
-import net.minecraft.block.Block;
+import net.minecraft.world.level.block.Block;
 import java.util.List;
 
 public class SwarmAutoTrap extends SwarmProxyModule {

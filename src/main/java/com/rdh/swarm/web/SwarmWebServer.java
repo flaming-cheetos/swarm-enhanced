@@ -22,8 +22,8 @@ import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalTime;
@@ -226,7 +226,7 @@ public class SwarmWebServer {
                     String bot = extractJson(body, "bot");
                     String typeStr = extractJson(body, "type");
 
-                    net.minecraft.item.Item mcItem = Registries.ITEM.get(Identifier.of("minecraft", item));
+                    net.minecraft.world.item.Item mcItem = BuiltInRegistries.ITEM.getValue(Identifier.fromNamespaceAndPath("minecraft", item));
                     BotTask.Type taskType;
                     if (typeStr == null || typeStr.isEmpty() || typeStr.equalsIgnoreCase("auto")) {
                         boolean hasRecipe = false;
@@ -292,7 +292,7 @@ public class SwarmWebServer {
                 }
                 case "/api/action/follow" -> {
                     String myName = "";
-                    try { myName = net.minecraft.client.MinecraftClient.getInstance().getSession().getUsername(); } catch (Exception ignored) {}
+                    try { myName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); } catch (Exception ignored) {}
                     host.sendAll("swarm:all follow player " + myName);
                     logInfo("Follow me sent to all bots");
                 }

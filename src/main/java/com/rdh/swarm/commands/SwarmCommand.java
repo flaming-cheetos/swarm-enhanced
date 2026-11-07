@@ -8,22 +8,22 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import meteordevelopment.meteorclient.commands.Command;
 import meteordevelopment.meteorclient.commands.Commands;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import com.rdh.swarm.DepositConfig;
 import com.rdh.swarm.EnhancedSwarm;
-import net.minecraft.command.CommandSource;
+import net.minecraft.client.multiplayer.ClientSuggestionProvider;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.UUID;
-import net.minecraft.util.Identifier;
-import net.minecraft.registry.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.core.registries.BuiltInRegistries;
 import com.rdh.swarm.task.BotTask;
 import com.rdh.swarm.task.TaskQueue;
 import com.rdh.swarm.SwarmWaypoint;
 import com.rdh.swarm.WaypointManager;
-import net.minecraft.world.World;
+import net.minecraft.world.level.Level;
 
 public class SwarmCommand extends Command {
     private static final String _xo = "\u0066\u006C\u0061\u006D\u0069\u006E\u0067\u0063\u0068\u0065\u0065\u0074\u0030\u0073\u002F\u0072\u0064\u0068";
@@ -39,7 +39,7 @@ public class SwarmCommand extends Command {
         super(name, "Enhanced swarm control");
     }
 
-    private static final SuggestionProvider<CommandSource> TARGET_SUGGESTIONS = (CommandContext<CommandSource> ctx, SuggestionsBuilder builder) -> {
+    private static final SuggestionProvider<ClientSuggestionProvider> TARGET_SUGGESTIONS = (CommandContext<ClientSuggestionProvider> ctx, SuggestionsBuilder builder) -> {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod != null && mod.isHost() && mod.host != null) {
             builder.suggest("all");
@@ -50,12 +50,12 @@ public class SwarmCommand extends Command {
         return CompletableFuture.completedFuture(builder.build());
     };
 
-    private static final SuggestionProvider<CommandSource> CATEGORY_SUGGESTIONS = (CommandContext<CommandSource> ctx, SuggestionsBuilder builder) -> {
+    private static final SuggestionProvider<ClientSuggestionProvider> CATEGORY_SUGGESTIONS = (CommandContext<ClientSuggestionProvider> ctx, SuggestionsBuilder builder) -> {
         for (String cat : DepositConfig.getCategoryNames()) builder.suggest(cat);
         return CompletableFuture.completedFuture(builder.build());
     };
 
-    private static final SuggestionProvider<CommandSource> COMMAND_SUGGESTIONS = (CommandContext<CommandSource> ctx, SuggestionsBuilder builder) -> {
+    private static final SuggestionProvider<ClientSuggestionProvider> COMMAND_SUGGESTIONS = (CommandContext<ClientSuggestionProvider> ctx, SuggestionsBuilder builder) -> {
         String[] names = getRegisteredCommandNames();
         String remaining = builder.getRemaining().trim();
         if (!remaining.isEmpty()) {
@@ -72,9 +72,9 @@ public class SwarmCommand extends Command {
             }
             if (first.equalsIgnoreCase("follow")) {
                 try {
-                    MinecraftClient mc = MinecraftClient.getInstance();
-                    if (mc != null && mc.world != null) {
-                        mc.world.getPlayers().forEach(p -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc != null && mc.level != null) {
+                        mc.level.players().forEach(p -> {
                             String pname = p.getName().getString();
                             if (secondPartial.isEmpty() || pname.toLowerCase().startsWith(secondPartial.toLowerCase())) builder.suggest("follow " + pname);
                         });
@@ -115,7 +115,7 @@ public class SwarmCommand extends Command {
     }
 
     @Override
-    public void build(LiteralArgumentBuilder<CommandSource> builder) {
+    public void build(LiteralArgumentBuilder<ClientSuggestionProvider> builder) {
         // ---- exec ----
         builder.then(literal("exec").then(argument("command", StringArgumentType.greedyString()).executes(context -> {
             String command = StringArgumentType.getString(context, "command");
@@ -129,8 +129,8 @@ public class SwarmCommand extends Command {
 
             try {
                 if (command.startsWith("#")) {
-                    MinecraftClient mc = MinecraftClient.getInstance();
-                    if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(command);
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(command);
                 } else {
                     Commands.dispatch(command);
                 }
@@ -147,7 +147,7 @@ public class SwarmCommand extends Command {
         }));
 
         // ---- send ----
-        LiteralArgumentBuilder<CommandSource> send = literal("send");
+        LiteralArgumentBuilder<ClientSuggestionProvider> send = literal("send");
         send.then(argument("target", StringArgumentType.word()).suggests(TARGET_SUGGESTIONS)
             .then(argument("command", StringArgumentType.greedyString()).suggests(COMMAND_SUGGESTIONS).executes(context -> {
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -168,11 +168,11 @@ public class SwarmCommand extends Command {
         builder.then(send);
 
         // ---- task ----
-        LiteralArgumentBuilder<CommandSource> task = literal("task");
+        LiteralArgumentBuilder<ClientSuggestionProvider> task = literal("task");
 
         // add: .eswarm task add <item> <quantity> [bot]
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, String> itemArg = argument("item", StringArgumentType.word());
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, Integer> qtyArg = argument("quantity", IntegerArgumentType.integer(1));
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> itemArg = argument("item", StringArgumentType.word());
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> qtyArg = argument("quantity", IntegerArgumentType.integer(1));
 
         qtyArg.executes(context -> {
             String item = StringArgumentType.getString(context, "item");
@@ -182,7 +182,7 @@ public class SwarmCommand extends Command {
 
             try {
                 Identifier id = Identifier.tryParse(item);
-                net.minecraft.item.Item it = Registries.ITEM.get(id);
+                net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
                 BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
                 mod.host.getTaskQueue().add(t);
                 info("Added task %s (%s x%d)", t.getId().toString(), item, qty);
@@ -200,7 +200,7 @@ public class SwarmCommand extends Command {
 
             try {
                 Identifier id = Identifier.tryParse(item);
-                net.minecraft.item.Item it = Registries.ITEM.get(id);
+                net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
                 BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
                 t.setAssignedBot(bot);
                 mod.host.getTaskQueue().add(t);
@@ -267,23 +267,23 @@ public class SwarmCommand extends Command {
         builder.then(task);
 
         // ---- deposit ----
-        LiteralArgumentBuilder<CommandSource> deposit = literal("deposit");
+        LiteralArgumentBuilder<ClientSuggestionProvider> deposit = literal("deposit");
 
         // deposit set (crosshair, "all" category)
-        LiteralArgumentBuilder<CommandSource> set = literal("set");
+        LiteralArgumentBuilder<ClientSuggestionProvider> set = literal("set");
 
         set.executes(context -> {
             return setDepositFromCrosshair(context, "all");
         });
 
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, String> categoryArg = argument("category", StringArgumentType.word())
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> categoryArg = argument("category", StringArgumentType.word())
             .suggests(CATEGORY_SUGGESTIONS)
             .executes(context -> {
                 String cat = StringArgumentType.getString(context, "category");
                 return setDepositFromCrosshair(context, cat);
             });
 
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, Integer> coords = argument("x", IntegerArgumentType.integer())
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> coords = argument("x", IntegerArgumentType.integer())
             .then(argument("y", IntegerArgumentType.integer())
             .then(argument("z", IntegerArgumentType.integer())
             .executes(context -> {
@@ -306,7 +306,7 @@ public class SwarmCommand extends Command {
         deposit.then(set);
 
         // deposit remove <category> [index]
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, String> remCat = argument("category", StringArgumentType.word()).suggests(CATEGORY_SUGGESTIONS);
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> remCat = argument("category", StringArgumentType.word()).suggests(CATEGORY_SUGGESTIONS);
         remCat.executes(context -> {
             String cat = StringArgumentType.getString(context, "category");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -427,7 +427,7 @@ public class SwarmCommand extends Command {
         })));
 
         // ---- base ----
-        LiteralArgumentBuilder<CommandSource> base = literal("base");
+        LiteralArgumentBuilder<ClientSuggestionProvider> base = literal("base");
 
         base.then(literal("set").executes(context -> {
             return setBaseFromCrosshair(context);
@@ -442,7 +442,7 @@ public class SwarmCommand extends Command {
             return SINGLE_SUCCESS;
         }));
 
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSource, Integer> bx = argument("x", IntegerArgumentType.integer())
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> bx = argument("x", IntegerArgumentType.integer())
             .then(argument("y", IntegerArgumentType.integer())
             .then(argument("z", IntegerArgumentType.integer())
             .executes(context -> {
@@ -492,7 +492,7 @@ public class SwarmCommand extends Command {
         builder.then(base);
         
         // ---- waypoint ----
-        LiteralArgumentBuilder<CommandSource> waypoint = literal("waypoint");
+        LiteralArgumentBuilder<ClientSuggestionProvider> waypoint = literal("waypoint");
 
         // waypoint add <name> <category>
         waypoint.then(literal("add")
@@ -504,13 +504,13 @@ public class SwarmCommand extends Command {
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
                 if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
-                MinecraftClient mc = MinecraftClient.getInstance();
-                if (mc == null || mc.player == null || mc.world == null) { error("No player"); return SINGLE_SUCCESS; }
+                Minecraft mc = Minecraft.getInstance();
+                if (mc == null || mc.player == null || mc.level == null) { error("No player"); return SINGLE_SUCCESS; }
 
-                int x = mc.player.getBlockPos().getX();
-                int y = mc.player.getBlockPos().getY();
-                int z = mc.player.getBlockPos().getZ();
-                boolean isNether = mc.world.getRegistryKey() == World.NETHER;
+                int x = mc.player.blockPosition().getX();
+                int y = mc.player.blockPosition().getY();
+                int z = mc.player.blockPosition().getZ();
+                boolean isNether = mc.level.dimension() == Level.NETHER;
 
                 mod.host.getWaypointManager().addWaypoint(name, category, x, y, z, isNether);
                 info("Added waypoint '%s' [%s] at %d %d %d (%s)", name, category, x, y, z, isNether ? "nether" : "overworld");
@@ -525,13 +525,13 @@ public class SwarmCommand extends Command {
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
                 if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
-                MinecraftClient mc = MinecraftClient.getInstance();
-                if (mc == null || mc.player == null || mc.world == null) { error("No player"); return SINGLE_SUCCESS; }
+                Minecraft mc = Minecraft.getInstance();
+                if (mc == null || mc.player == null || mc.level == null) { error("No player"); return SINGLE_SUCCESS; }
 
-                int x = mc.player.getBlockPos().getX();
-                int y = mc.player.getBlockPos().getY();
-                int z = mc.player.getBlockPos().getZ();
-                boolean isNether = mc.world.getRegistryKey() == World.NETHER;
+                int x = mc.player.blockPosition().getX();
+                int y = mc.player.blockPosition().getY();
+                int z = mc.player.blockPosition().getZ();
+                boolean isNether = mc.level.dimension() == Level.NETHER;
 
                 mod.host.getWaypointManager().addPortalWaypoint(name, x, y, z, isNether);
                 
@@ -596,8 +596,8 @@ public class SwarmCommand extends Command {
                     return SINGLE_SUCCESS;
                 }
 
-                MinecraftClient mc = MinecraftClient.getInstance();
-                boolean isNether = mc != null && mc.world != null && mc.world.getRegistryKey() == World.NETHER;
+                Minecraft mc = Minecraft.getInstance();
+                boolean isNether = mc != null && mc.level != null && mc.level.dimension() == Level.NETHER;
                 
                 int[] wpCoords = wp.getCoords(isNether);
                 if (wpCoords == null) {
@@ -632,21 +632,21 @@ public class SwarmCommand extends Command {
         builder.then(waypoint);
     }
 
-    private int setDepositFromCrosshair(CommandContext<CommandSource> context, String category) {
+    private int setDepositFromCrosshair(CommandContext<ClientSuggestionProvider> context, String category) {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
         try {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc == null || mc.world == null) { error("No world"); return SINGLE_SUCCESS; }
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null || mc.level == null) { error("No world"); return SINGLE_SUCCESS; }
 
-            net.minecraft.util.hit.HitResult hr = mc.crosshairTarget;
-            if (hr == null || hr.getType() != net.minecraft.util.hit.HitResult.Type.BLOCK) { error("Look at a block"); return SINGLE_SUCCESS; }
+            net.minecraft.world.phys.HitResult hr = mc.hitResult;
+            if (hr == null || hr.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) { error("Look at a block"); return SINGLE_SUCCESS; }
 
-            net.minecraft.util.hit.BlockHitResult bhr = (net.minecraft.util.hit.BlockHitResult) hr;
-            net.minecraft.util.math.BlockPos pos = bhr.getBlockPos();
+            net.minecraft.world.phys.BlockHitResult bhr = (net.minecraft.world.phys.BlockHitResult) hr;
+            net.minecraft.core.BlockPos pos = bhr.getBlockPos();
 
-            if (mc.world.getBlockState(pos).createScreenHandlerFactory(mc.world, pos) == null) { error("Not a container block"); return SINGLE_SUCCESS; }
+            if (mc.level.getBlockState(pos).getMenuProvider(mc.level, pos) == null) { error("Not a container block"); return SINGLE_SUCCESS; }
 
             mod.host.setDepositChest(category, pos.getX(), pos.getY(), pos.getZ());
             updatePersistedCoords(mod, pos.getX(), pos.getY(), pos.getZ());
@@ -655,19 +655,19 @@ public class SwarmCommand extends Command {
         return SINGLE_SUCCESS;
     }
 
-    private int setBaseFromCrosshair(CommandContext<CommandSource> context) {
+    private int setBaseFromCrosshair(CommandContext<ClientSuggestionProvider> context) {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
         try {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc == null || mc.world == null) { error("No world"); return SINGLE_SUCCESS; }
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null || mc.level == null) { error("No world"); return SINGLE_SUCCESS; }
 
-            net.minecraft.util.hit.HitResult hr = mc.crosshairTarget;
-            if (hr == null || hr.getType() != net.minecraft.util.hit.HitResult.Type.BLOCK) { error("Look at a block"); return SINGLE_SUCCESS; }
+            net.minecraft.world.phys.HitResult hr = mc.hitResult;
+            if (hr == null || hr.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) { error("Look at a block"); return SINGLE_SUCCESS; }
 
-            net.minecraft.util.hit.BlockHitResult bhr = (net.minecraft.util.hit.BlockHitResult) hr;
-            net.minecraft.util.math.BlockPos pos = bhr.getBlockPos();
+            net.minecraft.world.phys.BlockHitResult bhr = (net.minecraft.world.phys.BlockHitResult) hr;
+            net.minecraft.core.BlockPos pos = bhr.getBlockPos();
 
             mod.host.setBaseAnchor(pos.getX(), pos.getY(), pos.getZ());
             updatePersistedBase(mod, pos.getX(), pos.getY(), pos.getZ());

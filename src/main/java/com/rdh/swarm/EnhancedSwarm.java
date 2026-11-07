@@ -16,12 +16,12 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.util.math.BlockPos;
+import net.minecraft.core.BlockPos;
 import meteordevelopment.meteorclient.gui.widgets.input.WDropdown;
 import meteordevelopment.meteorclient.gui.widgets.input.WTextBox;
 import meteordevelopment.meteorclient.gui.widgets.containers.WSection;
-import net.minecraft.util.Identifier;
-import net.minecraft.registry.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.core.registries.BuiltInRegistries;
 import com.rdh.swarm.task.BotTask;
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
@@ -217,7 +217,7 @@ public class EnhancedSwarm extends Module {
             WButton followBtn = row1.add(theme.button("Follow Me")).expandX().widget();
             followBtn.action = () -> {
                 if (host == null || !isHost()) return;
-                String myName = mc.getSession().getUsername();
+                String myName = mc.getUser().getName();
                 String cmd = "follow player " + myName;
                 if (selectedTarget.equalsIgnoreCase("All")) host.sendAll("swarm:all " + cmd);
                 else host.sendTo(selectedTarget, "swarm:" + selectedTarget + " " + cmd);
@@ -233,7 +233,7 @@ public class EnhancedSwarm extends Module {
             WButton comeBtn = row1.add(theme.button("Come Here")).expandX().widget();
             comeBtn.action = () -> {
                 if (host == null || !isHost() || mc.player == null) return;
-                BlockPos pos = mc.player.getBlockPos();
+                BlockPos pos = mc.player.blockPosition();
                 String cmd = "goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ();
                 if (selectedTarget.equalsIgnoreCase("All")) host.sendAll("swarm:all " + cmd);
                 else host.sendTo(selectedTarget, "swarm:" + selectedTarget + " " + cmd);
@@ -300,7 +300,7 @@ public class EnhancedSwarm extends Module {
             setChestBtn.action = () -> {
                 if (host == null || !isHost() || mc.player == null) return;
                 try {
-                    if (mc.crosshairTarget instanceof net.minecraft.util.hit.BlockHitResult bhr) {
+                    if (mc.hitResult instanceof net.minecraft.world.phys.BlockHitResult bhr) {
                         BlockPos bp = bhr.getBlockPos();
                         String cat = catDropdown.get();
                         host.setDepositChest(cat, bp.getX(), bp.getY(), bp.getZ());
@@ -372,7 +372,7 @@ public class EnhancedSwarm extends Module {
             depBuild.action = () -> sendToTarget("deposit building");
             WButton depVals = catBtnRow.add(theme.button("Dep. Valuables")).expandX().widget();
             depVals.action = () -> sendToTarget("deposit valuables");
-            // --- Raw Command Box ---
+            // --- Raw Command AABB ---
             list.add(theme.horizontalSeparator()).expandX();
             WHorizontalList cmdRow = list.add(theme.horizontalList()).expandX().widget();
             WTextBox cmdBox = cmdRow.add(theme.textBox("", "Enter command...")).expandX().widget();
@@ -495,7 +495,7 @@ public class EnhancedSwarm extends Module {
                 try { qty = Integer.parseInt(qtyBox.get().trim()); } catch (Exception ignored) {}
                 try {
                     Identifier id = Identifier.tryParse(itemStr);
-                    net.minecraft.item.Item it = Registries.ITEM.get(id);
+                    net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
                     BotTask nt = new BotTask(BotTask.Type.GATHER, it, qty);
                     host.getTaskQueue().addTask(nt);
                     String sel = botDrop.get();
@@ -804,7 +804,7 @@ public class EnhancedSwarm extends Module {
         if (host == null) return;
         try {
             Identifier id = Identifier.tryParse(itemStr);
-            net.minecraft.item.Item it = Registries.ITEM.get(id);
+            net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
             BotTask nt = new BotTask(BotTask.Type.GATHER, it, qty);
             host.getTaskQueue().addTask(nt);
             if (selectedTarget != null && !selectedTarget.equalsIgnoreCase("All")) {

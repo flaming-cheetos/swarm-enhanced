@@ -16,18 +16,18 @@ import meteordevelopment.meteorclient.pathing.PathManagers;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.command.argument.EntityAnchorArgumentType;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.commands.arguments.EntityAnchorArgument;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 
 public class EnhancedSwarmWorker extends Thread {
     private Socket socket;
@@ -39,7 +39,7 @@ public class EnhancedSwarmWorker extends Thread {
     private volatile boolean shouldReconnect;
     private DataOutputStream out;
     private DataInputStream in;
-    private final MinecraftClient mc = MinecraftClient.getInstance();
+    private final Minecraft mc = Minecraft.getInstance();
 
     // Legacy single-chest (backward compat)
     private Integer depositX = null;
@@ -93,7 +93,7 @@ public class EnhancedSwarmWorker extends Thread {
     private boolean shouldKeep(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return true;
         String id;
-        try { id = Registries.ITEM.getId(stack.getItem()).toString(); } catch (Exception e) { return true; }
+        try { id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); } catch (Exception e) { return true; }
         if (KEEP_IDS.contains(id)) return true;
         for (String suffix : TOOL_SUFFIXES) if (id.endsWith(suffix)) return true;
         for (String suffix : ARMOR_SUFFIXES) if (id.endsWith(suffix)) return true;
@@ -130,8 +130,8 @@ public class EnhancedSwarmWorker extends Thread {
         this.shouldReconnect = shouldReconnect;
         String n = "unknown";
         try {
-            if (MinecraftClient.getInstance() != null && MinecraftClient.getInstance().getSession() != null)
-                n = MinecraftClient.getInstance().getSession().getUsername();
+            if (Minecraft.getInstance() != null && Minecraft.getInstance().getUser() != null)
+                n = Minecraft.getInstance().getUser().getName();
         } catch (Exception ignored) {}
         this.name = n;
         setName("EnhancedSwarmWorker-" + n);
@@ -256,8 +256,8 @@ public class EnhancedSwarmWorker extends Thread {
                 case "exec":
                     try {
                         if (args != null && args.startsWith("#")) {
-                            MinecraftClient mc = MinecraftClient.getInstance();
-                            if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(args);
+                            Minecraft mc = Minecraft.getInstance();
+                            if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args);
                         } else {
                             String cleaned = args;
                             if (cleaned != null && cleaned.startsWith(".")) cleaned = cleaned.substring(1);
@@ -269,8 +269,8 @@ public class EnhancedSwarmWorker extends Thread {
                 case "stop":
                     this.currentTask = "";
                     try {
-                        MinecraftClient mc = MinecraftClient.getInstance();
-                        if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage("#stop");
+                        Minecraft mc = Minecraft.getInstance();
+                        if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("#stop");
                     } catch (Exception ignored) {}
                     break;
 
@@ -279,15 +279,15 @@ public class EnhancedSwarmWorker extends Thread {
                     break;
 
                 case "say":
-                    try { MinecraftClient mc = MinecraftClient.getInstance(); if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(args); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args); } catch (Exception ignored) {}
                     break;
 
                 case "where":
-                    try { MinecraftClient mc = MinecraftClient.getInstance(); if (mc != null && mc.player != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.player != null && mc.getConnection() != null) mc.getConnection().sendChat(String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
                     break;
 
                 case "help":
-                    try { MinecraftClient mc = MinecraftClient.getInstance(); if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage("Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
                     break;
 
                 case "deposit":
@@ -334,10 +334,10 @@ public class EnhancedSwarmWorker extends Thread {
                                     java.util.UUID tid = null;
                                     try { tid = java.util.UUID.fromString(taskIdStr); } catch (Exception ignored) {}
 
-                                    net.minecraft.item.Item item = null;
+                                    net.minecraft.world.item.Item item = null;
                                     try { 
-                                        var id = net.minecraft.util.Identifier.tryParse(itemStr);
-                                        if (id != null) item = net.minecraft.registry.Registries.ITEM.get(id);
+                                        var id = net.minecraft.resources.Identifier.tryParse(itemStr);
+                                        if (id != null) item = net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(id);
                                     } catch (Exception ignored) {}
 
                                     com.rdh.swarm.task.BotTask.Type ttype = com.rdh.swarm.task.BotTask.Type.GATHER;
@@ -744,7 +744,7 @@ public class EnhancedSwarmWorker extends Thread {
      * Attempt to deposit to a single chest. Returns: 0 = no transfer, 1 = deposited items, 2 = chest full
      */
     private int performDepositToChest(int chestX, int chestY, int chestZ, String category, boolean keepFilter) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null) return 0;
 
         final int maxAttempts = 3;
@@ -765,8 +765,8 @@ public class EnhancedSwarmWorker extends Thread {
                 int gotoY = standPos.getY();
                 int gotoZ = standPos.getZ();
 
-                if (mc.getNetworkHandler() != null)
-                    mc.getNetworkHandler().sendChatMessage(String.format("#goto %d %d %d", gotoX, gotoY, gotoZ));
+                if (mc.getConnection() != null)
+                    mc.getConnection().sendChat(String.format("#goto %d %d %d", gotoX, gotoY, gotoZ));
 
                 ChatUtils.infoPrefix("Swarm", "Heading to %s chest at %d %d %d (attempt %d)", category, gotoX, gotoY, gotoZ, attempt);
 
@@ -783,14 +783,14 @@ public class EnhancedSwarmWorker extends Thread {
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
 
-                if (mc.world == null) { ChatUtils.warningPrefix("Swarm", "No world"); continue; }
+                if (mc.level == null) { ChatUtils.warningPrefix("Swarm", "No world"); continue; }
                 BlockPos targetPos = new BlockPos(chestX, chestY, chestZ);
 
                 long waitStart = System.currentTimeMillis();
                 boolean hasFactory = false;
                 while (System.currentTimeMillis() - waitStart < openTimeoutMs) {
                     try {
-                        if (mc.world.getBlockState(targetPos).createScreenHandlerFactory(mc.world, targetPos) != null) {
+                        if (mc.level.getBlockState(targetPos).getMenuProvider(mc.level, targetPos) != null) {
                             hasFactory = true; break;
                         }
                     } catch (Exception ignored) {}
@@ -801,9 +801,9 @@ public class EnhancedSwarmWorker extends Thread {
                 mc.execute(() -> {
                     try {
                         if (mc.player == null) return;
-                        try { mc.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(targetPos)); } catch (Exception ignored) {}
-                        BlockHitResult bhr = new BlockHitResult(Vec3d.ofCenter(targetPos), Direction.UP, targetPos, false);
-                        try { mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, bhr); } catch (Exception ignored) {}
+                        try { mc.player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(targetPos)); } catch (Exception ignored) {}
+                        BlockHitResult bhr = new BlockHitResult(Vec3.atCenterOf(targetPos), Direction.UP, targetPos, false);
+                        try { mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, bhr); } catch (Exception ignored) {}
                     } catch (Exception ignored) {}
                 });
 
@@ -820,14 +820,14 @@ public class EnhancedSwarmWorker extends Thread {
                         boolean opened = false;
                         while (System.currentTimeMillis() - ws < openTimeoutMs) {
                             try {
-                                if (mc.currentScreen instanceof HandledScreen && mc.player != null
-                                    && mc.player.currentScreenHandler != mc.player.playerScreenHandler) {
-                                    var handler = mc.player.currentScreenHandler;
+                                if (mc.player != null
+                                    && mc.player.containerMenu != mc.player.inventoryMenu) {
+                                    var handler = mc.player.containerMenu;
                                     int containerSlots = 0;
                                     for (int si = 0; si < handler.slots.size(); si++) {
                                         try {
                                             Slot s = handler.getSlot(si);
-                                            if (s.inventory != mc.player.getInventory()) containerSlots++;
+                                            if (s.container != mc.player.getInventory()) containerSlots++;
                                         } catch (Exception ignored) {}
                                     }
                                     if (containerSlots > 0) { opened = true; break; }
@@ -841,7 +841,7 @@ public class EnhancedSwarmWorker extends Thread {
                             return;
                         }
 
-                        var handler = mc.player.currentScreenHandler;
+                        var handler = mc.player.containerMenu;
                         int playerStart = handler.slots.size() - 36;
 
                         int deposited = 0;
@@ -851,8 +851,8 @@ public class EnhancedSwarmWorker extends Thread {
                             for (int si = 0; si < handler.slots.size(); si++) {
                                 try {
                                     Slot s = handler.getSlot(si);
-                                    if (s.inventory != mc.player.getInventory()) {
-                                        if (s.getStack() == null || s.getStack().isEmpty()) containerEmptySlots++;
+                                    if (s.container != mc.player.getInventory()) {
+                                        if (s.getItem() == null || s.getItem().isEmpty()) containerEmptySlots++;
                                     }
                                 } catch (Exception ignored) {}
                             }
@@ -864,12 +864,12 @@ public class EnhancedSwarmWorker extends Thread {
                             for (int i = playerStart; i < handler.slots.size(); i++) {
                                 try {
                                     Slot slot = handler.getSlot(i);
-                                    ItemStack st = slot.getStack();
+                                    ItemStack st = slot.getItem();
                                     if (st == null || st.isEmpty()) continue;
 
                                     if (fKeepFilter && shouldKeep(st)) continue;
 
-                                    String itemId = Registries.ITEM.getId(st.getItem()).toString();
+                                    String itemId = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                                     if (fCategory != null && !fCategory.equalsIgnoreCase("all")) {
                                         if (!DepositConfig.matchesCategory(fCategory, itemId)) continue;
                                     }
@@ -886,7 +886,7 @@ public class EnhancedSwarmWorker extends Thread {
                             }
                         }
 
-                        mc.execute(() -> { try { if (mc.player != null) mc.player.closeHandledScreen(); } catch (Exception ignored) {} });
+                        mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
                         ChatUtils.infoPrefix("Swarm", "Deposited %d items to %s chest", deposited, fCategory);
                         depositedCount[0] = deposited;
                         transferDone[0] = true;
@@ -918,8 +918,8 @@ public class EnhancedSwarmWorker extends Thread {
         try {
             if (resumeTaskAfterDeposit != null && !resumeTaskAfterDeposit.isEmpty()) {
                 if (resumeTaskAfterDeposit.startsWith("#")) {
-                    MinecraftClient mc = MinecraftClient.getInstance();
-                    if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(resumeTaskAfterDeposit);
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(resumeTaskAfterDeposit);
                 } else {
                     try { Commands.dispatch(resumeTaskAfterDeposit); } catch (Exception ignored) {}
                 }
@@ -931,8 +931,8 @@ public class EnhancedSwarmWorker extends Thread {
     // Find a safe adjacent stand position for interacting with a chest.
     // Returns null if none found.
     private BlockPos findChestStandPos(BlockPos chestPos) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null || mc.world == null) return null;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.level == null) return null;
 
         // Search adjacent positions (horizontal) and small vertical offsets for a safe spot
         for (int yOff = 0; yOff <= 1; yOff++) {
@@ -941,15 +941,15 @@ public class EnhancedSwarmWorker extends Thread {
                     for (int dz = -radius; dz <= radius; dz++) {
                         // only perimeter positions to prefer nearby walkable spots
                         if (Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
-                        BlockPos cand = chestPos.add(dx, -yOff, dz);
+                        BlockPos cand = chestPos.offset(dx, -yOff, dz);
                         try {
                             // don't stand on the chest block itself
                             if (cand.equals(chestPos)) continue;
-                            var state = mc.world.getBlockState(cand);
-                            var below = mc.world.getBlockState(cand.down());
+                            var state = mc.level.getBlockState(cand);
+                            var below = mc.level.getBlockState(cand.below());
                             // prefer non-solid/air space at candidate and solid block beneath
-                            boolean spaceOk = state.isAir() || !state.isOpaque();
-                            boolean supportOk = !below.isAir() && below.isSolidBlock(mc.world, cand.down());
+                            boolean spaceOk = state.isAir() || !state.canOcclude();
+                            boolean supportOk = !below.isAir() && below.isSolid();
                             if (spaceOk && supportOk) {
                                 return cand;
                             }
@@ -961,13 +961,13 @@ public class EnhancedSwarmWorker extends Thread {
 
         // Try same-level cardinal if nothing found
         BlockPos[] fallbacks = new BlockPos[]{
-            chestPos.add(1, 0, 0), chestPos.add(-1, 0, 0), chestPos.add(0, 0, 1), chestPos.add(0, 0, -1)
+            chestPos.offset(1, 0, 0), chestPos.offset(-1, 0, 0), chestPos.offset(0, 0, 1), chestPos.offset(0, 0, -1)
         };
         for (BlockPos c : fallbacks) {
             try {
-                var s = mc.world.getBlockState(c);
-                var b = mc.world.getBlockState(c.down());
-                if ((s.isAir() || !s.isOpaque()) && !b.isAir()) return c;
+                var s = mc.level.getBlockState(c);
+                var b = mc.level.getBlockState(c.below());
+                if ((s.isAir() || !s.canOcclude()) && !b.isAir()) return c;
             } catch (Exception ignored) {}
         }
 
@@ -976,15 +976,15 @@ public class EnhancedSwarmWorker extends Thread {
 
     // Returns true if player's inventory contains items that can be deposited
     private boolean hasAnyDepositableItems() {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null) return false;
         try {
             for (int i = 0; i < 36; i++) {
                 try {
-                    ItemStack st = mc.player.getInventory().getStack(i);
+                    ItemStack st = mc.player.getInventory().getItem(i);
                     if (st == null || st.isEmpty()) continue;
                     if (shouldKeep(st)) continue;
-                    String id = Registries.ITEM.getId(st.getItem()).toString();
+                    String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                     if (depositChests.containsKey("all")) return true;
                     for (String cat : depositChests.keySet()) {
                         if (cat.equalsIgnoreCase("all")) continue;
@@ -1027,12 +1027,12 @@ public class EnhancedSwarmWorker extends Thread {
             }
         } catch (Exception ignored) {}
 
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null) return;
 
         int emptySlots = 0;
         for (int i = 0; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).isEmpty()) emptySlots++;
+            if (mc.player.getInventory().getItem(i).isEmpty()) emptySlots++;
         }
 
         if (emptySlots <= autoDepositThreshold) {
@@ -1053,21 +1053,21 @@ public class EnhancedSwarmWorker extends Thread {
         try {
             Set<String> baritoneVerbs = Set.of("goto", "follow", "mine", "stop", "path", "cancel", "pause", "resume");
             if (baritoneVerbs.contains(verb)) {
-                MinecraftClient mc = MinecraftClient.getInstance();
+                Minecraft mc = Minecraft.getInstance();
                 String toSend = effective;
                 try {
                     if (verb.equalsIgnoreCase("follow")) {
                         String rest = effective.substring(verb.length()).trim();
                         if (!rest.isEmpty()) {
                             String[] parts = rest.split("\\s+");
-                            if (parts.length == 1 && mc != null && mc.world != null) {
-                                boolean found = mc.world.getPlayers().stream().anyMatch(p -> p.getName().getString().equalsIgnoreCase(parts[0]));
+                            if (parts.length == 1 && mc != null && mc.level != null) {
+                                boolean found = mc.level.players().stream().anyMatch(p -> p.getName().getString().equalsIgnoreCase(parts[0]));
                                 if (found) toSend = verb + " player " + parts[0];
                             }
                         }
                     }
                 } catch (Exception ignored) {}
-                if (mc != null && mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage("#" + toSend);
+                if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("#" + toSend);
                 else Commands.dispatch(toSend);
             } else {
                 Commands.dispatch(effective);
@@ -1107,7 +1107,7 @@ public class EnhancedSwarmWorker extends Thread {
                         continue;
                     }
 
-                    if (mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+                    if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
                     long start = System.currentTimeMillis();
                     while (System.currentTimeMillis() - start < 60000) {
                         if (mc.player != null) {
@@ -1123,9 +1123,9 @@ public class EnhancedSwarmWorker extends Thread {
                     mc.execute(() -> {
                         try {
                             if (mc.player == null) return;
-                            try { mc.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(chestPos)); } catch (Exception ignored) {}
-                            BlockHitResult bhr = new BlockHitResult(Vec3d.ofCenter(chestPos), Direction.UP, chestPos, false);
-                            try { mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, bhr); } catch (Exception ignored) {}
+                            try { mc.player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(chestPos)); } catch (Exception ignored) {}
+                            BlockHitResult bhr = new BlockHitResult(Vec3.atCenterOf(chestPos), Direction.UP, chestPos, false);
+                            try { mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, bhr); } catch (Exception ignored) {}
                         } catch (Exception ignored) {}
                     });
 
@@ -1133,11 +1133,11 @@ public class EnhancedSwarmWorker extends Thread {
                     boolean opened = false;
                     while (System.currentTimeMillis() - ws < 10000) {
                         try {
-                            if (mc.currentScreen instanceof HandledScreen && mc.player != null && mc.player.currentScreenHandler != mc.player.playerScreenHandler) {
-                                var handler = mc.player.currentScreenHandler;
+                            if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                                var handler = mc.player.containerMenu;
                                 int containerSlots = 0;
                                 for (int si = 0; si < handler.slots.size(); si++) {
-                                    try { Slot s = handler.getSlot(si); if (s.inventory != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
+                                    try { Slot s = handler.getSlot(si); if (s.container != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
                                 }
                                 if (containerSlots > 0) { opened = true; break; }
                             }
@@ -1151,7 +1151,7 @@ public class EnhancedSwarmWorker extends Thread {
                         continue;
                     }
 
-                    var handler = mc.player.currentScreenHandler;
+                    var handler = mc.player.containerMenu;
                     int playerStart = handler.slots.size() - 36;
                     int used = 0; int total = 0;
                     Map<String, Long> counts = new LinkedHashMap<>();
@@ -1159,12 +1159,12 @@ public class EnhancedSwarmWorker extends Thread {
                         for (int si = 0; si < handler.slots.size(); si++) {
                             try {
                                 Slot s = handler.getSlot(si);
-                                if (s.inventory != mc.player.getInventory()) {
+                                if (s.container != mc.player.getInventory()) {
                                     total++;
-                                    var st = s.getStack();
+                                    var st = s.getItem();
                                     if (st != null && !st.isEmpty()) {
                                         used++;
-                                        String id = Registries.ITEM.getId(st.getItem()).toString();
+                                        String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                                         long q = st.getCount();
                                         counts.merge(id, q, Long::sum);
                                     }
@@ -1174,7 +1174,7 @@ public class EnhancedSwarmWorker extends Thread {
                     } catch (Exception ignored) {}
 
                     // close
-                    mc.execute(() -> { try { if (mc.player != null) mc.player.closeHandledScreen(); } catch (Exception ignored) {} });
+                    mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
 
                     result.addProperty("usedSlots", used);
                     result.addProperty("totalSlots", total);
@@ -1217,7 +1217,7 @@ public class EnhancedSwarmWorker extends Thread {
             String itemId = p[4];
             int needed = Integer.parseInt(p[5]);
 
-            MinecraftClient mc = MinecraftClient.getInstance();
+            Minecraft mc = Minecraft.getInstance();
             if (mc == null) return;
 
             BlockPos chestPos = new BlockPos(x, y, z);
@@ -1227,7 +1227,7 @@ public class EnhancedSwarmWorker extends Thread {
                 return;
             }
 
-            if (mc.getNetworkHandler() != null) mc.getNetworkHandler().sendChatMessage(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+            if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 60000) {
                 if (mc.player != null) {
@@ -1243,9 +1243,9 @@ public class EnhancedSwarmWorker extends Thread {
             mc.execute(() -> {
                 try {
                     if (mc.player == null) return;
-                    try { mc.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(chestPos)); } catch (Exception ignored) {}
-                    BlockHitResult bhr = new BlockHitResult(Vec3d.ofCenter(chestPos), Direction.UP, chestPos, false);
-                    try { mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, bhr); } catch (Exception ignored) {}
+                    try { mc.player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(chestPos)); } catch (Exception ignored) {}
+                    BlockHitResult bhr = new BlockHitResult(Vec3.atCenterOf(chestPos), Direction.UP, chestPos, false);
+                    try { mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, bhr); } catch (Exception ignored) {}
                 } catch (Exception ignored) {}
             });
 
@@ -1253,11 +1253,11 @@ public class EnhancedSwarmWorker extends Thread {
             boolean opened = false;
             while (System.currentTimeMillis() - openStart < 10000) {
                 try {
-                    if (mc.currentScreen instanceof HandledScreen && mc.player != null && mc.player.currentScreenHandler != mc.player.playerScreenHandler) {
-                        var handler = mc.player.currentScreenHandler;
+                    if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                        var handler = mc.player.containerMenu;
                         int containerSlots = 0;
                         for (int si = 0; si < handler.slots.size(); si++) {
-                            try { Slot s = handler.getSlot(si); if (s.inventory != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
+                            try { Slot s = handler.getSlot(si); if (s.container != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
                         }
                         if (containerSlots > 0) { opened = true; break; }
                     }
@@ -1271,17 +1271,17 @@ public class EnhancedSwarmWorker extends Thread {
             }
 
             // transfer desired items from container slots to player inventory by shift-clicking container slots
-            var handler = mc.player.currentScreenHandler;
+            var handler = mc.player.containerMenu;
             int transferred = 0;
             int playerStart = handler.slots.size() - 36;
 
             for (int si = 0; si < handler.slots.size() && transferred < needed; si++) {
                 try {
                     Slot slot = handler.getSlot(si);
-                    if (slot.inventory == mc.player.getInventory()) continue;
-                    ItemStack st = slot.getStack();
+                    if (slot.container == mc.player.getInventory()) continue;
+                    ItemStack st = slot.getItem();
                     if (st == null || st.isEmpty()) continue;
-                    String sid = Registries.ITEM.getId(st.getItem()).toString();
+                    String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                     if (!sid.equals(itemId)) continue;
                     int available = st.getCount();
                     InvUtils.shiftClick().slotId(si);
@@ -1297,9 +1297,9 @@ public class EnhancedSwarmWorker extends Thread {
                 for (int si = playerStart; si < handler.slots.size(); si++) {
                     try {
                         Slot slot = handler.getSlot(si);
-                        ItemStack st = slot.getStack();
+                        ItemStack st = slot.getItem();
                         if (st == null || st.isEmpty()) continue;
-                        String sid = Registries.ITEM.getId(st.getItem()).toString();
+                        String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                         if (sid.equals(itemId)) inInventory += st.getCount();
                     } catch (Exception ignored) {}
                 }
@@ -1308,9 +1308,9 @@ public class EnhancedSwarmWorker extends Thread {
                     for (int si = playerStart; si < handler.slots.size() && excess > 0; si++) {
                         try {
                             Slot slot = handler.getSlot(si);
-                            ItemStack st = slot.getStack();
+                            ItemStack st = slot.getItem();
                             if (st == null || st.isEmpty()) continue;
-                            String sid = Registries.ITEM.getId(st.getItem()).toString();
+                            String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                             if (!sid.equals(itemId)) continue;
                             int cnt = st.getCount();
                             InvUtils.shiftClick().slotId(si);
@@ -1325,7 +1325,7 @@ public class EnhancedSwarmWorker extends Thread {
             transferred = Math.min(transferred, needed);
 
             // close
-            mc.execute(() -> { try { if (mc.player != null) mc.player.closeHandledScreen(); } catch (Exception ignored) {} });
+            mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
 
             ChatUtils.infoPrefix("Swarm", "Withdraw: took %d/%d %s from %d,%d,%d", Math.min(transferred, needed), needed, itemId, x, y, z);
             // notify host of result
@@ -1347,11 +1347,11 @@ public class EnhancedSwarmWorker extends Thread {
         final int _sv = 0x726468;
         try {
             if (out == null) return;
-            MinecraftClient mc = MinecraftClient.getInstance();
+            Minecraft mc = Minecraft.getInstance();
             if (mc == null) return;
-            PlayerEntity p = mc.player;
+            Player p = mc.player;
             if (p == null) return;
-            WorkerStatus ws = new WorkerStatus(name, p.getX(), p.getY(), p.getZ(), p.getHealth(), p.getHungerManager().getFoodLevel(), currentTask == null ? "" : currentTask);
+            WorkerStatus ws = new WorkerStatus(name, p.getX(), p.getY(), p.getZ(), p.getHealth(), p.getFoodData().getFoodLevel(), currentTask == null ? "" : currentTask);
             try { out.writeUTF(ws.serialize()); out.flush(); } catch (IOException ignored) {}
             // Also send BOT_STATUS message for host parsing
                 try {
@@ -1383,7 +1383,7 @@ public class EnhancedSwarmWorker extends Thread {
 
                     // Always use player values for health/food/coords
                     bs.health = p.getHealth();
-                    bs.food = p.getHungerManager().getFoodLevel();
+                    bs.food = p.getFoodData().getFoodLevel();
                     bs.x = p.getX(); bs.y = p.getY(); bs.z = p.getZ();
 
                     try { bs.tier = com.rdh.swarm.task.DependencyResolver.getCurrentTier().name(); } catch (Exception ignored) { bs.tier = "Unknown"; }

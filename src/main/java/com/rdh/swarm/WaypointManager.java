@@ -4,7 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 import java.io.*;
 import java.lang.reflect.Type;
@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class WaypointManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final MinecraftClient mc = MinecraftClient.getInstance();
+    private static final Minecraft mc = Minecraft.getInstance();
     
     // server -> (waypoint name -> waypoint)
     private final Map<String, Map<String, SwarmWaypoint>> waypointsByServer = new ConcurrentHashMap<>();
@@ -93,11 +93,11 @@ public class WaypointManager {
      * Get current server identifier for storage
      */
     public String getCurrentServer() {
-        if (mc.getCurrentServerEntry() != null) {
-            return sanitizeServerName(mc.getCurrentServerEntry().address);
+        if (mc.getCurrentServer() != null) {
+            return sanitizeServerName(mc.getCurrentServer().ip);
         }
-        if (mc.isInSingleplayer() && mc.getServer() != null) {
-            return "singleplayer_" + mc.getServer().getSaveProperties().getLevelName();
+        if (mc.isLocalServer() && mc.getSingleplayerServer() != null) {
+            return "singleplayer_" + mc.getSingleplayerServer().getWorldData().getLevelName();
         }
         return "unknown";
     }
@@ -110,7 +110,7 @@ public class WaypointManager {
      * Get waypoints directory for current server
      */
     private Path getWaypointsDir(String server) {
-        Path mcDir = mc.runDirectory.toPath();
+        Path mcDir = mc.gameDirectory.toPath();
         return mcDir.resolve("enhanced-swarm").resolve("waypoints").resolve(sanitizeServerName(server));
     }
     
