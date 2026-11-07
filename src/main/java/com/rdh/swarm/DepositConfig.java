@@ -1,6 +1,9 @@
 package com.rdh.swarm;
 
 import com.google.gson.*;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.item.ItemStack;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -88,6 +91,49 @@ public class DepositConfig {
             "minecraft:apple", "minecraft:sweet_berries", "minecraft:carrot",
             "minecraft:dried_kelp", "minecraft:rabbit_stew", "minecraft:suspicious_stew"
         ));
+    }
+
+    /**
+     * Stack-aware category check. Shulker contents live in the CONTAINER data
+     * component in 26.3; empty and non-empty shulkers must route differently.
+     */
+    public static boolean matchesCategory(String category, ItemStack stack) {
+        if (stack == null || stack.isEmpty() || category == null) return false;
+        String itemId;
+        try {
+            itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        } catch (Exception e) {
+            return false;
+        }
+        if (category.equalsIgnoreCase("empty_shulkers")) {
+            return isShulkerId(itemId) && isEmptyShulker(stack);
+        }
+        if (category.equalsIgnoreCase("shulkers")) {
+            return isShulkerId(itemId) && !isEmptyShulker(stack);
+        }
+        return matchesCategory(category, itemId);
+    }
+
+    public static boolean isShulkerBox(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        try {
+            return isShulkerId(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isShulkerId(String itemId) {
+        return itemId != null && itemId.contains("shulker_box");
+    }
+
+    private static boolean isEmptyShulker(ItemStack stack) {
+        try {
+            var contents = stack.get(DataComponents.CONTAINER);
+            return contents == null || contents.nonEmptyItemCopyStream().findAny().isEmpty();
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     /** Check if an item ID matches a category. "all" matches everything. */

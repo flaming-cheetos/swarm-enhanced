@@ -6,7 +6,7 @@ import com.rdh.swarm.utils.BOInvUtils;
 import com.rdh.swarm.utils.ExtrapolationUtils;
 import com.rdh.swarm.utils.OLEPOSSUtils;
 import com.rdh.swarm.utils.RotationUtils;
-import com.rdh.swarm.utils.TimerList;
+import com.rdh.swarm.timers.TimerList;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;

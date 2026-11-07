@@ -87,8 +87,7 @@ public class TaskQueue {
     }
 
     public synchronized void addTask(BotTask task) {
-        add(task);
-        save();
+        add(task); // add() persists once; do not save twice
     }
 
     public synchronized void save() {
@@ -201,7 +200,9 @@ public class TaskQueue {
      * Returns null if no pending tasks exist.
      */
     public synchronized BotTask getNextPendingForBot(String botName) {
-        for (BotTask task : toList()) {
+        List<BotTask> ordered = toList();
+        ordered.sort(Comparator.comparingInt(BotTask::getPriority).reversed());
+        for (BotTask task : ordered) {
             if (task.getStatus() == BotTask.Status.PENDING) {
                 String assigned = task.getAssignedBot();
                 if (assigned == null || assigned.isEmpty()

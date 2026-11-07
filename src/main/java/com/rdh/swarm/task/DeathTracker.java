@@ -46,7 +46,7 @@ public class DeathTracker {
 
     // Convenience methods used by BotBrain
     public void load() {
-        // no-op for now (placeholder for persistence)
+        // Intentionally no-op: death persistence is deferred (see DEEPDIVE/16_ROADMAP.md).
     }
 
     public boolean hasDeath() {

@@ -92,6 +92,8 @@ public class EnhancedSwarmWorker extends Thread {
 
     private boolean shouldKeep(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return true;
+        // Shulkers are routed to shulker/empty-shulker deposit categories, never kept.
+        if (DepositConfig.isShulkerBox(stack)) return false;
         String id;
         try { id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); } catch (Exception e) { return true; }
         if (KEEP_IDS.contains(id)) return true;
@@ -303,6 +305,8 @@ public class EnhancedSwarmWorker extends Thread {
                     break;
 
                 case "withdraw":
+                    // Host sends "swarm:<bot> withdraw ..." and run() strips the transport prefix.
+                    // Bare args are: <category> [quantity].
                     try { handleWithdraw(args); } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Withdraw handler error: %s", e.getMessage()); }
                     break;
 
@@ -316,6 +320,8 @@ public class EnhancedSwarmWorker extends Thread {
 
                 case "task":
                     try {
+                        // Host sends "swarm:<bot> task assign ..." and run() strips the transport prefix.
+                        // Here args are bare: <subcmd> <rest>; assign payload is uuid|type|item|qty|bot.
                         // args: <subcmd> <rest>
                         String[] parts = args.split("\\s+", 2);
                         String sub = parts.length > 0 ? parts[0].toLowerCase() : "";
@@ -576,7 +582,7 @@ public class EnhancedSwarmWorker extends Thread {
             MeteorExecutor.execute(() -> {
                 try {
                     resumeTaskAfterDeposit = currentTask;
-                    performDepositToChest(fPos[0], fPos[1], fPos[2], "all", false);
+                    performDepositToChest(fPos[0], fPos[1], fPos[2], "all", true);
                     resumeTask();
                 } finally { isDepositing = false; }
             });
@@ -871,7 +877,7 @@ public class EnhancedSwarmWorker extends Thread {
 
                                     String itemId = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                                     if (fCategory != null && !fCategory.equalsIgnoreCase("all")) {
-                                        if (!DepositConfig.matchesCategory(fCategory, itemId)) continue;
+                                        if (!DepositConfig.matchesCategory(fCategory, st)) continue;
                                     }
 
                                     // DEPOSIT DEBUG: log slot and context to diagnose wrong-slot deposits
@@ -984,11 +990,10 @@ public class EnhancedSwarmWorker extends Thread {
                     ItemStack st = mc.player.getInventory().getItem(i);
                     if (st == null || st.isEmpty()) continue;
                     if (shouldKeep(st)) continue;
-                    String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                     if (depositChests.containsKey("all")) return true;
                     for (String cat : depositChests.keySet()) {
                         if (cat.equalsIgnoreCase("all")) continue;
-                        if (DepositConfig.matchesCategory(cat, id)) return true;
+                        if (DepositConfig.matchesCategory(cat, st)) return true;
                     }
                     if (depositX != null) return true;
                 } catch (Exception ignored) {}

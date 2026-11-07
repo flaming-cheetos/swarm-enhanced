@@ -335,10 +335,14 @@ public class SwarmWebServer {
                 case "/api/command" -> {
                     String target = extractJson(body, "target");
                     String cmd = extractJson(body, "cmd");
-                    if (target.equals("all")) {
-                        host.sendAll("swarm:all " + cmd);
+                    // Send a real exec verb to each worker. "swarm:all <cmd>" makes the
+                    // worker parse "all" as the verb instead of the intended command.
+                    if (target.equalsIgnoreCase("all")) {
+                        for (String workerName : host.getWorkerNames()) {
+                            host.sendTo(workerName, "swarm:" + workerName + " exec " + cmd);
+                        }
                     } else {
-                        host.sendTo(target, "swarm:" + target + " " + cmd);
+                        host.sendTo(target, "swarm:" + target + " exec " + cmd);
                     }
                     logInfo("Command sent to " + target + ": " + cmd);
                 }
