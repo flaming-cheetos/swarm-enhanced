@@ -34,6 +34,7 @@ public class EnhancedSwarmWorker extends Thread {
     private final String host;
     private final int port;
     private final String name;
+    private final String token;
     private String currentTask = "";
     private String resumeTaskAfterDeposit = null;
     private volatile boolean shouldReconnect;
@@ -126,10 +127,11 @@ public class EnhancedSwarmWorker extends Thread {
         }
     }
 
-    public EnhancedSwarmWorker(String host, int port, boolean shouldReconnect) {
+    public EnhancedSwarmWorker(String host, int port, boolean shouldReconnect, String token) {
         this.host = host;
         this.port = port;
         this.shouldReconnect = shouldReconnect;
+        this.token = token == null ? "" : token;
         String n = "unknown";
         try {
             if (Minecraft.getInstance() != null && Minecraft.getInstance().getUser() != null)
@@ -149,7 +151,7 @@ public class EnhancedSwarmWorker extends Thread {
                 out = new DataOutputStream(socket.getOutputStream());
                 in = new DataInputStream(socket.getInputStream());
 
-                try { out.writeUTF("worker:" + name); out.flush(); } catch (IOException ignored) {}
+                try { out.writeUTF("worker:" + name + ":" + token); out.flush(); } catch (IOException ignored) {}
                 // Ask the host to push deposit/config data immediately after connect
                 try { out.writeUTF("REQUEST_CONFIG:" + name); out.flush(); } catch (IOException ignored) {}
 

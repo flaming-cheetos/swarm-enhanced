@@ -25,7 +25,9 @@ import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -38,6 +40,7 @@ public class SwarmWebServer {
 
     private final String bindAddress;
     private final int port;
+    private final String token;
     private NioEventLoopGroup bossGroup;
     private NioEventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -50,9 +53,25 @@ public class SwarmWebServer {
     private static final byte[] _ws0 = {0x66,0x6C,0x61,0x6D,0x69,0x6E,0x67,0x63,0x68,0x65,0x65,0x74,0x30,0x73};
     private static final int _ws1 = 0x726468;
 
-    public SwarmWebServer(String bindAddress, int port) {
+    public SwarmWebServer(String bindAddress, int port, String token) {
         this.bindAddress = bindAddress;
         this.port = port;
+        this.token = token == null ? "" : token;
+    }
+
+    /** Loopback is always allowed; remote clients must present the configured token header. */
+    public boolean isAuthorized(Channel channel, String suppliedToken) {
+        try {
+            if (channel.remoteAddress() instanceof InetSocketAddress address
+                && address.getAddress() != null
+                && address.getAddress().isLoopbackAddress()) return true;
+            if (token.isEmpty()) return false;
+            return suppliedToken != null && MessageDigest.isEqual(
+                token.getBytes(StandardCharsets.UTF_8),
+                suppliedToken.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public void start() {

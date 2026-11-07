@@ -56,18 +56,33 @@ public class EnhancedSwarmConnection extends Thread {
                 socket.setSoTimeout(2000);
             } catch (Exception ignored) {}
 
-            // First message should be the worker's name (blocking with timeout)
+            // First message must be worker:<name>:<token>. Empty host token only permits loopback.
+            String suppliedToken = "";
+            boolean authenticated = false;
             try {
                 String raw = in.readUTF();
                 if (raw != null && raw.startsWith("worker:")) {
-                    workerName = raw.substring(7).trim();
-                } else {
-                    workerName = raw;
+                    String rest = raw.substring(7).trim();
+                    int sep = rest.indexOf(':');
+                    if (sep >= 0) {
+                        workerName = rest.substring(0, sep).trim();
+                        suppliedToken = rest.substring(sep + 1);
+                    } else {
+                        workerName = rest;
+                    }
+                    authenticated = workerName != null && !workerName.isEmpty()
+                        && (host == null || host.isAuthorized(socket, suppliedToken));
                 }
             } catch (java.net.SocketTimeoutException ignored) {
-                // no name yet, continue
+                authenticated = false;
             } catch (IOException e) {
                 ChatUtils.infoPrefix("Swarm", "Error reading initial name from %s.", getIp(socket.getInetAddress().getHostAddress()));
+                disconnect();
+                return;
+            }
+
+            if (!authenticated) {
+                ChatUtils.warningPrefix("Swarm", "Rejected unauthorized worker from %s.", getIp(socket.getInetAddress().getHostAddress()));
                 disconnect();
                 return;
             }

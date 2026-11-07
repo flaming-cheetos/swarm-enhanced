@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Iterator;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.ArrayList;
@@ -21,6 +23,7 @@ import com.rdh.swarm.WaypointManager;
 public class EnhancedSwarmHost extends Thread {
     private final String bindAddress;
     private final int port;
+    private final String token;
     private ServerSocket socket;
     private final CopyOnWriteArrayList<EnhancedSwarmConnection> connections = new CopyOnWriteArrayList<>();
     private final Map<String, WorkerConfig> workerConfigs = new ConcurrentHashMap<>();
@@ -47,9 +50,10 @@ public class EnhancedSwarmHost extends Thread {
     };
     private static final long _he = 0x666C616D696E67L;
 
-    public EnhancedSwarmHost(String bindAddress, int port, int webPort) {
+    public EnhancedSwarmHost(String bindAddress, int port, int webPort, String token) {
         this.bindAddress = bindAddress;
         this.port = port;
+        this.token = token == null ? "" : token;
         try {
             socket = new ServerSocket();
             socket.bind(new InetSocketAddress(bindAddress, port));
@@ -74,7 +78,7 @@ public class EnhancedSwarmHost extends Thread {
                 }
             } catch (Exception ignored) {}
             try {
-                webServer = new SwarmWebServer(bindAddress, webPort);
+                webServer = new SwarmWebServer(bindAddress, webPort, token);
                 webServer.start();
             } catch (Throwable e) {
                 ChatUtils.errorPrefix("Swarm", "Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
@@ -154,6 +158,18 @@ public class EnhancedSwarmHost extends Thread {
                 ChatUtils.errorPrefix("Swarm", "Error making a connection to worker.");
                 e.printStackTrace();
             }
+        }
+    }
+
+    /** Empty token means loopback-only; a configured token is required from any remote address. */
+    public boolean isAuthorized(Socket connection, String suppliedToken) {
+        try {
+            if (token.isEmpty()) return connection.getInetAddress().isLoopbackAddress();
+            return suppliedToken != null && MessageDigest.isEqual(
+                token.getBytes(StandardCharsets.UTF_8),
+                suppliedToken.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
         }
     }
 

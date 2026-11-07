@@ -28,6 +28,11 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
     }
 
     private void handleHttp(ChannelHandlerContext ctx, FullHttpRequest req) {
+        if (!server.isAuthorized(ctx.channel(), req.headers().get("X-Swarm-Token"))) {
+            sendResponse(ctx, FORBIDDEN, "text/plain", "Forbidden");
+            return;
+        }
+
         String uri = req.uri().split("\\?")[0];
 
         // WebSocket upgrade

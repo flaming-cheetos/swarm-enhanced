@@ -83,12 +83,15 @@ tasks {
 
 val jarTask = tasks.named("jar")
 
+// Absolute MMC paths are opt-in only; normal builds never copy into a live instance.
+val copyToMmc = providers.gradleProperty("copyToMmc").map { it.toBoolean() }.orElse(false)
+
 val copyJarToInstance1 = tasks.register<Copy>("copyJarToInstance1") {
     dependsOn(jarTask)
     from(jarTask.map { it.outputs.files.singleFile })
     into(modsFolder1)
     rename { "swarm-improved.jar" }
-    onlyIf { modsFolder1.exists() }
+    onlyIf { copyToMmc.get() && modsFolder1.exists() }
 }
 
 val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
@@ -96,5 +99,5 @@ val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
     from(jarTask.map { it.outputs.files.singleFile })
     into(modsFolder2)
     rename { "swarm-improved.jar" }
-    onlyIf { modsFolder2.exists() }
+    onlyIf { copyToMmc.get() && modsFolder2.exists() }
 }

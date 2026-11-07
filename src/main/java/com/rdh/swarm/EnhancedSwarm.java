@@ -141,6 +141,13 @@ public class EnhancedSwarm extends Module {
         .build()
     );
 
+    private final Setting<String> sharedToken = sgGeneral.add(new StringSetting.Builder()
+        .name("shared-token")
+        .description("Shared worker/web auth token. Empty means loopback-only access.")
+        .defaultValue("")
+        .build()
+    );
+
     public EnhancedSwarmHost host;
     public EnhancedSwarmWorker worker;
     private String selectedTarget = "All";
@@ -169,7 +176,7 @@ public class EnhancedSwarm extends Module {
             if (!isActive()) return;
             close();
             if (mode.get() == Mode.Host) {
-                host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
+                host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get(), sharedToken.get());
                 try {
                     if (host != null && depositXSetting.get() != Integer.MIN_VALUE) {
                         host.setDepositChest(depositXSetting.get(), depositYSetting.get(), depositZSetting.get());
@@ -179,7 +186,7 @@ public class EnhancedSwarm extends Module {
                     }
                 } catch (Exception ignored) {}
             } else {
-                worker = new EnhancedSwarmWorker(ipAddress.get(), serverPort.get(), autoReconnect.get());
+                worker = new EnhancedSwarmWorker(ipAddress.get(), serverPort.get(), autoReconnect.get(), sharedToken.get());
             }
         };
 
@@ -711,7 +718,7 @@ public class EnhancedSwarm extends Module {
     @Override
     public void onActivate() {
         if (mode.get() == Mode.Host) {
-            if (host == null) host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
+            if (host == null) host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get(), sharedToken.get());
             if (host != null) {
                 MeteorExecutor.execute(() -> {
                     try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
@@ -725,7 +732,7 @@ public class EnhancedSwarm extends Module {
                 });
             }
         } else {
-            if (worker == null) worker = new EnhancedSwarmWorker(ipAddress.get(), serverPort.get(), autoReconnect.get());
+            if (worker == null) worker = new EnhancedSwarmWorker(ipAddress.get(), serverPort.get(), autoReconnect.get(), sharedToken.get());
         }
     }
 
@@ -767,7 +774,7 @@ public class EnhancedSwarm extends Module {
     private void onGameJoin(GameJoinedEvent event) {
         if (!isActive()) return;
         if (mode.get() == Mode.Host && host == null) {
-            host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get());
+            host = new EnhancedSwarmHost(bindAddress.get(), serverPort.get(), webPort.get(), sharedToken.get());
         }
         // Workers: DO NOTHING. Already running.
     }
