@@ -1027,7 +1027,7 @@ public class BotBrain extends Module {
                 if (!mineBlock.equals(currentlyMining)) {
                     String cmd = "#mine minecraft:" + mineBlock;
 
-                    ChatUtils.infoPrefix("BotBrain", "GATHER: %s", cmd);
+                    ChatUtils.infoPrefix("BotBrain", "GATHER: item=%s method=mine issuing=%s | dispatch", cleanTarget, cmd);
                     if (currentlyMining != null && !mineBlock.equals(currentlyMining)) {
                         // use sendBaritoneChat to respect cooldown handling
                         sendBaritoneChat("#stop");
@@ -1229,7 +1229,7 @@ public class BotBrain extends Module {
                 if (!mineBlock.equals(cleanTarget)) {
                     ChatUtils.infoPrefix("BotBrain", "Mining %s to get %s", mineBlock, cleanTarget);
                 }
-                ChatUtils.infoPrefix("BotBrain", "GATHERING: %s (have %d/%d)", cmd, mineHave, mineNeed);
+                ChatUtils.infoPrefix("BotBrain", "GATHER: item=%s method=mine issuing=%s | dispatch (have %d/%d)", cleanTarget, cmd, mineHave, mineNeed);
                 if (currentlyMining != null && !mineBlock.equals(currentlyMining)) {
                     sendBaritoneChat("#stop");
                     currentlyMining = null;
@@ -1356,6 +1356,7 @@ public class BotBrain extends Module {
         if (!mineCommandSent) {
             String targetId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).toString();
             if (requiresTool(targetId) && !hasUsableTool()) {
+                ChatUtils.infoPrefix("BotBrain", "GATHER: item=%s method=none issuing=none | skip (no usable tool)", itemName);
                 ChatUtils.warningPrefix("BotBrain", "No usable tool for %s. Pausing.", targetId);
                 setState(BrainState.STUCK);
                 return;
@@ -1364,6 +1365,7 @@ public class BotBrain extends Module {
             
 
             if (canSendBaritone()) {
+                ChatUtils.infoPrefix("BotBrain", "GATHER: item=%s method=mine issuing=#mine minecraft:%s | dispatch", itemName, itemName);
                 sendBaritoneChat("#mine minecraft:" + itemName);
                 mineCommandSent = true;
                 lastProgressTime = System.currentTimeMillis();
