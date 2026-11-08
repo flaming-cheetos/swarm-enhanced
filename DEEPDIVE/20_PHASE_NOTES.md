@@ -202,3 +202,47 @@ com.rdh.swarm.modules.BotBrain.BrainState
 - The grinder does not build or repair a farm; it expects an existing kill chamber or spawn area at the configured position.
 - Creeper explosions and other environmental damage are not avoided beyond Baritone pathing.
 - Inventory-full completion returns to IDLE; the existing deposit logic decides whether to deposit afterward.
+## W — Web dashboard task types
+
+### Summary
+
+- Dashboard task creation now supports item-less task types:
+  - Added `HUNT_FOOD` and kept `GRIND` in the task-type dropdown.
+  - `addTask()` requires an item only for item/task types that need one; `HUNT_FOOD` and `GRIND` submit with an empty item.
+  - Task quantity is interpreted by type: food target for `HUNT_FOOD`, duration seconds for `GRIND`.
+- `/api/task/add` is now null-safe:
+  - Missing `qty` falls back to 64 instead of throwing.
+  - Empty/`none` item skips registry lookup and creates a task with a null item.
+  - Log label uses the task type when no item is present.
+- Worker task assignment no longer uses `Map.of` with a possibly null item; a mutable map stores `item` only as a nullable value, fixing the NPE that would have rejected every item-less task.
+- `/api/state` task objects now include `type`, and the task list renders `item || type`, so HUNT_FOOD/GRIND entries are readable.
+- Existing food bars, state, task description, progress, ETA, coordinates, pause/resume, and the event log were already present and were left unchanged.
+
+### Public signatures
+
+```text
+POST /api/task/add
+  item: string (empty for HUNT_FOOD/GRIND)
+  qty: int (optional, default 64)
+  type: string (optional; AUTO infers CRAFT/GATHER)
+  bot: string (optional)
+```
+
+### Settings
+
+None added in W.
+
+### Commands / endpoints
+
+- `POST /api/task/add` accepts item-less `HUNT_FOOD` and `GRIND` tasks.
+- `/api/state` task entries include `type`.
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+
+### Known issues / not verified
+
+- No browser or live WebSocket test was possible.
+- `SMELT` is still not offered in the dropdown because it needs a raw/result item pair.
+- The dashboard cannot set grinder coordinates; use BotBrain settings for `auto-grind` or a task-data extension.

@@ -209,6 +209,7 @@ public class SwarmWebServer {
                 BotTask task = tasks.get(i);
                 sb.append("{");
                 sb.append("\"id\":\"").append(task.getId()).append("\",");
+                sb.append("\"type\":").append(task.getType().name()).append("\",");
                 sb.append("\"item\":\"").append(esc(task.getItemName())).append("\",");
                 sb.append("\"quantity\":").append(task.getTargetQuantity()).append(",");
                 sb.append("\"progress\":\"").append(esc(task.getProgressString())).append("\",");
@@ -243,11 +244,17 @@ public class SwarmWebServer {
             switch (path) {
                 case "/api/task/add" -> {
                     String item = extractJson(body, "item");
-                    int qty = Integer.parseInt(extractJson(body, "qty"));
+                    int qty = 64;
+                    try { qty = Integer.parseInt(extractJson(body, "qty")); } catch (Exception ignored) {}
                     String bot = extractJson(body, "bot");
                     String typeStr = extractJson(body, "type");
+                    if (item == null) item = "";
+                    boolean itemless = item.isEmpty() || item.equalsIgnoreCase("none");
 
-                    net.minecraft.world.item.Item mcItem = BuiltInRegistries.ITEM.getValue(Identifier.fromNamespaceAndPath("minecraft", item));
+                    net.minecraft.world.item.Item mcItem = null;
+                    if (!itemless) {
+                        try { mcItem = BuiltInRegistries.ITEM.getValue(Identifier.fromNamespaceAndPath("minecraft", item)); } catch (Exception ignored) {}
+                    }
                     BotTask.Type taskType;
                     if (typeStr == null || typeStr.isEmpty() || typeStr.equalsIgnoreCase("auto")) {
                         boolean hasRecipe = false;
@@ -285,7 +292,7 @@ public class SwarmWebServer {
                     // Let the host decide whether to dispatch now (ensures single active task)
                     try { host.dispatchNextTask(targetBot == null ? (host.getWorkerNames().length > 0 ? host.getWorkerNames()[0] : "") : targetBot); } catch (Exception ignored) {}
 
-                    logInfo("Task added: " + item + " x" + qty + " → " + (bot != null ? bot : "any"));
+                    logInfo("Task added: " + (itemless ? taskType.name() : item) + " x" + qty + " → " + (bot != null ? bot : "any"));
                 }
                 case "/api/task/clear_done" -> {
                     if (host.getTaskQueue() != null) host.getTaskQueue().clearCompleted();

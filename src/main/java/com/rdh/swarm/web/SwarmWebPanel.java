@@ -283,6 +283,7 @@ button.warn:hover { background: #5a3a1a; }
         <option value="AUTO">Auto</option>
         <option value="CRAFT">Craft</option>
         <option value="GATHER">Gather</option>
+        <option value="HUNT_FOOD">Hunt food</option>
         <option value="GRIND">Grind</option>
       </select>
       <select id="taskBot">
@@ -448,7 +449,7 @@ function renderTasks() {
   el.innerHTML = state.tasks.map(t => `
     <div class="task-item">
       <div class="task-info">
-        <div class="task-name">${t.item} × ${t.quantity}</div>
+        <div class="task-name">${t.item || t.type} × ${t.quantity}</div>
         <div class="task-meta">${t.progress} | ${t.bot}</div>
       </div>
       <span class="task-status status-${t.status}">${t.status}</span>
@@ -508,7 +509,8 @@ function addTask() {
   const qty = parseInt(document.getElementById('taskQty').value) || 64;
   const type = document.getElementById('taskType').value || 'AUTO';
   const bot = document.getElementById('taskBot').value;
-  if (!item) return;
+  const actionType = type === 'HUNT_FOOD' || type === 'GRIND';
+  if (!item && !actionType) return;
   // If AUTO selected, omit type so server will auto-detect
   const payload = {item, qty, bot};
   if (type && type !== 'AUTO') payload.type = type;

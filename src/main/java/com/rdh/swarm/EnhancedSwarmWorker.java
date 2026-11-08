@@ -356,7 +356,9 @@ public class EnhancedSwarmWorker extends Thread {
 
                                     com.rdh.swarm.task.BotTask task;
                                     if (tid != null) {
-                                        java.util.Map<String, Object> data = java.util.Map.of("item", item, "quantity", Integer.valueOf(qty));
+                                        java.util.Map<String, Object> data = new java.util.HashMap<>();
+                                        data.put("item", item);
+                                        data.put("quantity", Integer.valueOf(qty));
                                         task = new com.rdh.swarm.task.BotTask(tid, ttype, 0, data);
                                     } else {
                                         task = new com.rdh.swarm.task.BotTask(ttype, item, qty);
