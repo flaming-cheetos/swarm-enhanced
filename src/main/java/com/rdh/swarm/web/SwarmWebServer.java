@@ -178,13 +178,16 @@ public class SwarmWebServer {
         if (mod == null || !mod.isHost() || mod.host == null) {
             return "{\"type\":\"state\",\"modVersion\":\"" + esc(MOD_VERSION)
                 + "\",\"buildCommit\":\"" + esc(BUILD_COMMIT)
-                + "\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
+                + "\",\"hostName\":\"\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
         }
 
         EnhancedSwarmHost host = mod.host;
         StringBuilder sb = new StringBuilder();
+        String hostName = "";
+        try { hostName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); } catch (Exception ignored) {}
         sb.append("{\"type\":\"state\",\"modVersion\":\"").append(esc(MOD_VERSION));
         sb.append("\",\"buildCommit\":\"").append(esc(BUILD_COMMIT)).append("\",");
+        sb.append("\"hostName\":\"").append(esc(hostName)).append("\",");
         sb.append("\"connected\":").append(host.getConnectionCount()).append(",");
 
         // Bots

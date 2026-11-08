@@ -306,7 +306,7 @@ button:disabled:hover { background: #151515; color: #666; }
   <div class="card">
     <h2>⚡ Quick Actions</h2>
     <div class="actions-grid">
-      <button onclick="action('follow')" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
+      <button id="followButton" onclick="action('follow')" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
       <button class="danger" onclick="action('stop')" title="swarm:all stop">🛑 Stop All</button>
       <button onclick="action('deposit')" title="swarm:all depositall">📦 Deposit All</button>
       <button onclick="action('deposit_ores')" title="swarm:all deposit ores">⛏ Dep. Ores</button>
@@ -323,8 +323,8 @@ button:disabled:hover { background: #151515; color: #666; }
           <option value="all">All</option>
         </select>
         <input id="cmdInput" placeholder="command..." type="text" title="Type a command; Send wraps it in exec"
-               onkeydown="if(event.key==='Enter')sendCmd()">
-        <button onclick="sendCmd()" title="exec &lt;command from the box&gt;">Send</button>
+               oninput="updateSendTitle()" onkeydown="if(event.key==='Enter')sendCmd()">
+        <button id="sendButton" onclick="sendCmd()" title="exec &lt;command from the box&gt;">Send</button>
       </div>
     </div>
   </div>
@@ -392,6 +392,7 @@ function renderState() {
   document.getElementById('connectedCount').textContent = state.connected || 0;
   document.getElementById('modVersion').textContent = state.modVersion || 'version unknown';
   document.getElementById('buildCommit').textContent = state.buildCommit || 'commit unknown';
+  document.getElementById('followButton').title = 'swarm:all follow player ' + (state.hostName || 'your player name');
   renderBots();
   renderTasks();
 }
@@ -547,12 +548,18 @@ function action(name) {
   post('/api/action/' + name, {});
 }
 
+function updateSendTitle() {
+  const cmd = document.getElementById('cmdInput').value.trim();
+  document.getElementById('sendButton').title = cmd ? 'exec ' + cmd : 'exec <command from the box>';
+}
+
 function sendCmd() {
   const target = document.getElementById('cmdTarget').value;
   const cmd = document.getElementById('cmdInput').value.trim();
   if (!cmd) return;
   post('/api/command', {target, cmd});
   document.getElementById('cmdInput').value = '';
+  updateSendTitle();
 }
 
 function setNick(username, nickname) {
