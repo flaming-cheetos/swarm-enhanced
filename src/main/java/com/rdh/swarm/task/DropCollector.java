@@ -35,6 +35,7 @@ import static meteordevelopment.meteorclient.MeteorClient.mc;
 public final class DropCollector {
     private static final int MAX_CLUSTERS = 3;
     private static final long BLACKLIST_MS = 30_000L;
+    private static final long MIN_SWEEP_INTERVAL_MS = 1_000L;
     private static final long MAX_PATH_MS = 10_000L;
     private static final double CLUSTER_RADIUS_SQ = 9.0D;
     private static final double VANILLA_PICKUP_SQ = 2.25D;
@@ -44,6 +45,7 @@ public final class DropCollector {
     private final Supplier<Boolean> enabled;
     private final Supplier<Double> radius;
     private final Supplier<Integer> waitMs;
+    private final Supplier<Boolean> canSweep;
     private final Runnable afterSweep;
 
     private boolean active;
@@ -64,12 +66,16 @@ public final class DropCollector {
     private List<ItemEntity> cluster = new ArrayList<>();
     private UUID finalSweepTask;
     private UUID finalSweptTask;
+    private long lastSweepStart;
+    private long lastSkipLog;
 
     public DropCollector(Supplier<Boolean> enabled, Supplier<Double> radius,
-                         Supplier<Integer> waitMs, Runnable afterSweep) {
+                         Supplier<Integer> waitMs, Supplier<Boolean> canSweep,
+                         Runnable afterSweep) {
         this.enabled = enabled;
         this.radius = radius;
         this.waitMs = waitMs;
+        this.canSweep = canSweep;
         this.afterSweep = afterSweep;
     }
 
@@ -80,11 +86,21 @@ public final class DropCollector {
     /** Start one bounded sweep after a block break or kill. */
     public boolean startWorkUnit() {
         if (!Boolean.TRUE.equals(enabled.get()) || active) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastSweepStart < MIN_SWEEP_INTERVAL_MS) {
+            logSkippedThrottled("cooldown");
+            return false;
+        }
+        if (canSweep != null && !Boolean.TRUE.equals(canSweep.get())) {
+            logSkippedThrottled("breaking");
+            return false;
+        }
         if (inventoryFull()) {
             logInventoryFull();
             return false;
         }
         loggedInventoryFull = false;
+        lastSweepStart = now;
         resetUnit();
         active = true;
         phase = Phase.SCAN;
@@ -479,6 +495,13 @@ public final class DropCollector {
     private void logSkipped(String reason) {
         skippedLogged = true;
         ChatUtils.info("DROPS: skipped (%s)", reason);
+    }
+
+    private void logSkippedThrottled(String reason) {
+        long now = System.currentTimeMillis();
+        if (now - lastSkipLog < MIN_SWEEP_INTERVAL_MS) return;
+        lastSkipLog = now;
+        logSkipped(reason);
     }
 
     private void blacklist(List<ItemEntity> items, long now) {

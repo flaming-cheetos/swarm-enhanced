@@ -355,7 +355,8 @@ public class BotBrain extends Module {
     private long mineGoalBrokenAt = 0;
     private long lastMineGoalScan = 0;
     private final DropCollector dropCollector = new DropCollector(
-        () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(), this::onSweepFinished);
+        () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(),
+        this::canStartDropSweep, this::onSweepFinished);
     private boolean gatherStagingCommandSent = false;
     private BlockPos stagingTarget = null;
     private BlockPos surfaceTarget = null;
@@ -4296,6 +4297,21 @@ public class BotBrain extends Module {
         mineGoalBrokenAt = 0;
         currentlyMining = null;
         mineCommandSent = false;
+    }
+
+    /** A sweep may only take over when no break and no Baritone path are active. */
+    private boolean canStartDropSweep() {
+        if (mc.player == null || mc.level == null) return false;
+        if (mc.gameMode != null && mc.gameMode.isDestroying()) return false;
+        try {
+            if (baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
+                .getPathingBehavior().isPathing()) return false;
+        } catch (Throwable ignored) {}
+        if (state == BrainState.GATHERING) {
+            Vec3 movement = mc.player.getDeltaMovement();
+            if (movement.x * movement.x + movement.z * movement.z > 0.0025D) return false;
+        }
+        return true;
     }
 
     private void onSweepFinished() {
