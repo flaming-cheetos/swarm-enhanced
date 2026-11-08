@@ -951,12 +951,10 @@ public class EnhancedSwarmWorker extends Thread {
 
                         int inventoryAfter = countInventoryItems(mc);
                         int moved = Math.max(0, inventoryBefore - inventoryAfter);
+                        if (moved > 0) { lastDepositMoved += moved; lastDepositSucceeded = true; }
                         publishChestSnapshot(fCategory, chestX, chestY, chestZ, handler, playerStart);
                         mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
                         ChatUtils.infoPrefix("Swarm", "DEPOSIT: done moved=%d stacks, before=%d after=%d storageDelta=%d", deposited, inventoryBefore, inventoryAfter, moved);
-                        if (moved > 0) { lastDepositMoved += moved; lastDepositSucceeded = true; }
-                        lastDepositMoved += deposited;
-                        if (deposited > 0) lastDepositSucceeded = true;
                         ChatUtils.infoPrefix("Swarm", "Deposited %d items to %s chest", deposited, fCategory);
                         depositedCount[0] = deposited;
                         transferDone[0] = true;
