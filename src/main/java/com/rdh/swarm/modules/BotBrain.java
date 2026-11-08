@@ -2622,12 +2622,9 @@ public class BotBrain extends Module {
                     return;
                 }
                 if (!fuelOk) {
-                    // try to move coal into hotbar for deposit next tick
-                    var coalHot = InvUtils.findInHotbar(Items.COAL);
-                    if (!coalHot.found() && InvUtils.find(Items.COAL).found()) {
-                        InvUtils.move().from(InvUtils.find(Items.COAL).slot()).toHotbar(com.rdh.swarm.utils.BOInvUtils.getSelectedSlot());
-                        return;
-                    }
+                    ChatUtils.warningPrefix("BotBrain", "SMELT: fuel not inserted");
+                    setState(BrainState.STUCK);
+                    return;
                 }
                 if (!oreOk) {
                     // try to move ore into hotbar
@@ -3290,10 +3287,8 @@ public class BotBrain extends Module {
 
     private String cookFuelIds(BlockPos furnace) {
         java.util.List<String> ids = new java.util.ArrayList<>();
-        int coal = CraftingManager.countInInventory(Items.COAL);
-        int charcoal = CraftingManager.countInInventory(Items.CHARCOAL);
-        if (coal > 0) ids.add("coal x" + coal);
-        if (charcoal > 0) ids.add("charcoal x" + charcoal);
+        String inventoryFuel = SmeltingManager.inventoryFuelSummary();
+        if (!"none".equals(inventoryFuel)) ids.add(inventoryFuel);
         if (furnace != null && isCookFurnaceLit(furnace)) ids.add("furnace:lit");
         boolean loggedFurnaceFuel = false;
         if (furnace != null) {

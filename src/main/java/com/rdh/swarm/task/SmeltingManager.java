@@ -71,7 +71,12 @@ public class SmeltingManager {
             (AbstractFurnaceMenu) mc.player.containerMenu;
 
         // Check if fuel slot already has fuel
-        if (!handler.slots.get(1).getItem().isEmpty()) return true;
+        if (isFuel(handler.slots.get(1).getItem())) {
+            ItemStack existing = handler.slots.get(1).getItem();
+            ChatUtils.infoPrefix("Smelting", "FUEL: %s x%d = %d ticks in furnace",
+                net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(existing.getItem()), existing.getCount(), burnTicks(existing));
+            return true;
+        }
 
         int slot = findFuelInInventorySlots(handler);
         if (slot == -1) {
@@ -104,8 +109,7 @@ public class SmeltingManager {
         AbstractFurnaceMenu handler =
             (AbstractFurnaceMenu) mc.player.containerMenu;
 
-        return handler.getLitProgress() > 0 ||
-               !handler.slots.get(1).getItem().isEmpty();
+        return handler.getLitProgress() > 0 || isFuel(handler.slots.get(1).getItem());
     }
 
     private static boolean isFuel(ItemStack stack) {
@@ -145,6 +149,20 @@ public class SmeltingManager {
             }
         }
         return count;
+    }
+
+    /** Human-readable fuel inventory for the cook decision log. */
+    public static String inventoryFuelSummary() {
+        if (mc.player == null) return "none";
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (!isFuel(stack)) continue;
+            if (out.length() > 0) out.append(',');
+            out.append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath())
+               .append(" x").append(stack.getCount()).append(" = ").append(burnTicks(stack)).append(" ticks");
+        }
+        return out.length() == 0 ? "none" : out.toString();
     }
 
     private static int findFuelInInventorySlots(AbstractFurnaceMenu handler) {
