@@ -91,7 +91,7 @@ public final class IdsCommand {
             return 1;
         }
         ItemStack held = mc.player.getMainHandItem();
-        owner.info("hand: %s", BuiltInRegistries.ITEM.getKey(held.getItem()));
+        owner.info("%s", BuiltInRegistries.ITEM.getKey(held.getItem()));
         return 1;
     }
 
@@ -115,7 +115,7 @@ public final class IdsCommand {
 
         BlockPos pos = blockHit.getBlockPos();
         BlockState state = mc.level.getBlockState(pos);
-        owner.info("looking: %s", BuiltInRegistries.BLOCK.getKey(state.getBlock()));
+        owner.info("%s", BuiltInRegistries.BLOCK.getKey(state.getBlock()));
         return 1;
     }
 }

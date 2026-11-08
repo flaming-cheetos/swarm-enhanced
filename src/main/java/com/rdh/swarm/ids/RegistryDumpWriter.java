@@ -91,7 +91,6 @@ public final class RegistryDumpWriter {
             List<String> ids = tag.stream()
                     .map(holder -> itemId(holder.value()))
                     .distinct()
-                    .sorted()
                     .toList();
             lines.add("#" + tag.key().location() + "\t" + String.join(",", ids));
         });
