@@ -239,6 +239,15 @@ public class BotBrain extends Module {
         .build()
     );
 
+    public enum SwarmRole { GENERAL, MINER, GRINDER, FOOD }
+
+    private final Setting<SwarmRole> swarmRole = sgGeneral.add(new EnumSetting.Builder<SwarmRole>()
+        .name("swarm-role")
+        .description("Preferred automatic work for this bot.")
+        .defaultValue(SwarmRole.GENERAL)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
@@ -2861,6 +2870,7 @@ public class BotBrain extends Module {
 
     /** Auto-start a hunt when idle and food is below the low-water mark. */
     private boolean tryAutoHunt() {
+        if (swarmRole.get() != SwarmRole.GENERAL && swarmRole.get() != SwarmRole.FOOD) return false;
         if (mc.player == null || mc.level == null) return false;
         int low = foodLow.get();
         if (low <= 0) return false;
@@ -2957,6 +2967,7 @@ public class BotBrain extends Module {
     }
 
     private boolean tryAutoBuild() {
+        if (swarmRole.get() != SwarmRole.GENERAL) return false;
         if (!autoBuild.get() || currentTask != null) return false;
         String path = buildFile.get();
         if (path == null || path.isEmpty() || !new java.io.File(path).isFile()) return false;
@@ -3088,6 +3099,7 @@ public class BotBrain extends Module {
     }
 
     private boolean tryAutoShulker() {
+        if (swarmRole.get() != SwarmRole.GENERAL) return false;
         if (!autoEmptyShulkers.get() || currentTask != null) return false;
         if (findFilledShulker() == null) return false;
         long now = System.currentTimeMillis();
@@ -3244,6 +3256,7 @@ public class BotBrain extends Module {
     }
 
     private boolean tryAutoSmithing() {
+        if (swarmRole.get() != SwarmRole.GENERAL) return false;
         if (!autoNetherite.get() || currentTask != null) return false;
         if (CraftingManager.countInInventory(Items.NETHERITE_UPGRADE_SMITHING_TEMPLATE) <= 0) return false;
         if (CraftingManager.countInInventory(Items.NETHERITE_INGOT) <= 0) return false;
@@ -3477,6 +3490,7 @@ public class BotBrain extends Module {
     }
 
     private boolean tryAutoGrind() {
+        if (swarmRole.get() != SwarmRole.GENERAL && swarmRole.get() != SwarmRole.GRINDER) return false;
         if (!autoGrind.get()) return false;
         if (currentTask != null) return false;
         if (FoodManager.countFood() < 2) return false;

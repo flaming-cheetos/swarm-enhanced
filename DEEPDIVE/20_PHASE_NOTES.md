@@ -390,3 +390,30 @@ None. Requeueing is automatic on disconnect and host shutdown.
 - Only file-based schematics are supported; open Litematica placement is not.
 - Origin is a raw coordinate setting; no selection or rotation support.
 - No in-game build test.
+## N — Swarm roles
+
+### Summary
+
+- Added `BotBrain.SwarmRole { GENERAL, MINER, GRINDER, FOOD }` and the `swarm-role` enum setting (default `GENERAL`).
+- Automatic work is gated by role:
+  - `GENERAL`: all automatic tasks (food, grind, smith, shulker, build).
+  - `FOOD`: automatic food hunting only.
+  - `GRINDER`: automatic grinder sessions only.
+  - `MINER`: no automatic tasks; queued GATHER work still runs normally.
+- This lets an operator split a swarm into food, grinder, and general workers without changing the queue protocol.
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `swarm-role` | Enum | `GENERAL` |
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+
+### Known issues / not verified
+
+- Roles are local per-bot settings; the host does not assign or report them.
+- `MINER` is a suppression role only; there is no dedicated autonomous mining loop.
+- No in-game multi-bot role test.
