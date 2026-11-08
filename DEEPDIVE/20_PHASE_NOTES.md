@@ -298,3 +298,39 @@ com.rdh.swarm.task.SmithingManager
 - No in-game smithing-table test was possible; slot indices and result timing are verified only by API signatures.
 - Only inventory gear is upgraded. Worn armor is not unequipped first, although `AutoArmor` will equip the result afterward.
 - Automatic smithing runs once per 30 seconds and requires all materials to already be present.
+## K — Logistics: task recovery
+
+### Summary
+
+- Added `TaskQueue.requeueActiveForBot(String botName)`:
+  - Finds ACTIVE tasks assigned to the named worker.
+  - Resets them to PENDING and clears the assignment so any worker can claim them.
+  - Persists the queue and logs one WARN when at least one task is requeued.
+- `EnhancedSwarmHost.cleanDead()` now requeues active tasks for every connection that is interrupted, closed, or has no socket before removing it.
+- `EnhancedSwarmHost.disconnect()` requeues active tasks for each connected worker before closing it.
+- Existing storage-aware withdrawal is unchanged: `handleGathering` already compares inventory against the storage cache and drives `WITHDRAWING` when storage can satisfy missing materials.
+
+### Public signatures
+
+```text
+com.rdh.swarm.task.TaskQueue
+  int requeueActiveForBot(String botName)
+```
+
+### Settings
+
+None added in K.
+
+### Commands / endpoints
+
+None. Requeueing is automatic on disconnect and host shutdown.
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+
+### Known issues / not verified
+
+- A bot that stays connected but stops reporting is not requeued; only socket-closed/interrupted connections trigger recovery.
+- No cross-bot item transfer or courier task was added.
+- Requeued tasks restart from planning; partial `collected` progress is preserved, but BotBrain re-resolves the dependency plan.

@@ -230,6 +230,11 @@ public class EnhancedSwarmHost extends Thread {
     }
 
     public void cleanDead() {
+        for (EnhancedSwarmConnection c : connections) {
+            if (c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed()) {
+                if (c != null && c.workerName != null) taskQueue.requeueActiveForBot(c.workerName);
+            }
+        }
         connections.removeIf(c -> c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed());
     }
 
@@ -237,7 +242,10 @@ public class EnhancedSwarmHost extends Thread {
         // stop run loop first
         running = false;
         for (EnhancedSwarmConnection connection : connections) {
-            if (connection != null) connection.disconnect();
+            if (connection != null) {
+                if (connection.workerName != null) taskQueue.requeueActiveForBot(connection.workerName);
+                connection.disconnect();
+            }
         }
 
         try {

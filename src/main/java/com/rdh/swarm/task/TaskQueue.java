@@ -1,6 +1,7 @@
 package com.rdh.swarm.task;
 
 import com.google.gson.*;
+import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -214,6 +215,29 @@ public class TaskQueue {
             }
         }
         return null;
+    }
+
+    /**
+     * Return ACTIVE tasks assigned to a dead/removed bot to PENDING so another worker can take them.
+     * Returns the number of tasks requeued.
+     */
+    public synchronized int requeueActiveForBot(String botName) {
+        if (botName == null || botName.isEmpty()) return 0;
+        int requeued = 0;
+        for (BotTask task : queue) {
+            if (task == null || task.getStatus() != BotTask.Status.ACTIVE) continue;
+            String assigned = task.getAssignedBot();
+            if (assigned != null && assigned.equalsIgnoreCase(botName)) {
+                task.setStatus(BotTask.Status.PENDING);
+                task.setAssignedBot("");
+                requeued++;
+            }
+        }
+        if (requeued > 0) {
+            save();
+            ChatUtils.warningPrefix("TaskQueue", "Requeued %d active task(s) from %s", requeued, botName);
+        }
+        return requeued;
     }
 
     /**
