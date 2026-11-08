@@ -80,6 +80,30 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> collectDrops = sgGeneral.add(new BoolSetting.Builder()
+        .name("collect-drops")
+        .description("Walk to nearby mining and combat drops in bounded clusters.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Double> pickupRadius = sgGeneral.add(new DoubleSetting.Builder()
+        .name("pickup-radius")
+        .description("Maximum distance to scan for dropped items.")
+        .defaultValue(4.0)
+        .min(1.0)
+        .sliderRange(1.0, 8.0)
+        .build()
+    );
+
+    private final Setting<Integer> pickupWaitMs = sgGeneral.add(new IntSetting.Builder()
+        .name("pickup-wait-ms")
+        .description("Maximum time to wait at a drop cluster for vanilla pickup.")
+        .defaultValue(3000)
+        .range(500, 10000)
+        .build()
+    );
+
     private final Setting<Boolean> manageModules = sgGeneral.add(new BoolSetting.Builder()
         .name("manage-modules")
         .description("Keep the guarded Meteor survival modules enabled while BotBrain is active.")
@@ -325,6 +349,13 @@ public class BotBrain extends Module {
 
     // The current material that Baritone is mining (to avoid resending the same command)
     private String currentlyMining = null;
+    private BlockPos mineGoalTarget = null;
+    private String mineGoalBlockId = null;
+    private long mineGoalStarted = 0;
+    private long mineGoalBrokenAt = 0;
+    private long lastMineGoalScan = 0;
+    private final DropCollector dropCollector = new DropCollector(
+        () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(), this::onSweepFinished);
     private boolean gatherStagingCommandSent = false;
     private BlockPos stagingTarget = null;
     private BlockPos surfaceTarget = null;
@@ -408,6 +439,8 @@ public class BotBrain extends Module {
     private int huntInitialFood = 0;
     private double lastHuntDistance = Double.MAX_VALUE;
     private boolean huntFollowing = false;
+    private UUID lastHuntTargetId = null;
+    private Entity lastHuntTargetEntity = null;
     private long lastAutoHunt = 0;
     private long lastHuntProgress = 0;
     private static final long AUTO_HUNT_COOLDOWN = 120_000L;
@@ -590,6 +623,15 @@ public class BotBrain extends Module {
         stateEnterTime = System.currentTimeMillis();
         lastBrainTick = System.currentTimeMillis();
         lastItemCheckTime = System.currentTimeMillis();
+        dropCollector.cancel();
+        dropCollector.resetTaskTracking();
+        mineGoalTarget = null;
+        mineGoalBlockId = null;
+        mineGoalStarted = 0;
+        mineGoalBrokenAt = 0;
+        lastMineGoalScan = 0;
+        lastHuntTargetId = null;
+        lastHuntTargetEntity = null;
     }
 
     @Override
@@ -607,6 +649,8 @@ public class BotBrain extends Module {
         buildStartTime = 0;
         SmithingManager.close();
         stopHuntMovement();
+        dropCollector.cancel();
+        cancelMineGoal();
         if (manageModules.get()) moduleGuard.deactivate();
         stopBaritoneOnDeactivate();
     }
@@ -677,6 +721,7 @@ public class BotBrain extends Module {
         }
 
         if (paused) return;
+        if (dropCollector.tick()) return;
 
         if (manageModules.get() && moduleGuard.shouldFreezeTimers()) {
             stateEnterTime = System.currentTimeMillis();
@@ -747,6 +792,7 @@ public class BotBrain extends Module {
         }
 
         if (currentTask.isComplete()) {
+            if (dropCollector.startFinalSweep(currentTask.getId())) return;
             ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s",
                 currentTask.getItemName(), currentTask.getProgressString());
             // Notify host
@@ -865,6 +911,14 @@ public class BotBrain extends Module {
         }
     }
 
+    /** Count the inventory result of a mining target, including vanilla drop aliases. */
+    private int countForTask(Item target) {
+        if (target == null) return 0;
+        int count = CraftingManager.countInInventory(target);
+        if (target == Items.STONE) count += CraftingManager.countInInventory(Items.COBBLESTONE);
+        return count;
+    }
+
     private void handleGathering() {
         // Staging debug (once every 200 ticks)
         if (tickCounter % 200 == 0) {
@@ -884,13 +938,14 @@ public class BotBrain extends Module {
 
             // Periodic inventory check every ~20 ticks
             if (tickCounter % 20 == 0) {
-                int have = com.rdh.swarm.task.CraftingManager.countInInventory(tgt);
+                int have = countForTask(tgt);
                 int need = currentTask.getTargetQuantity();
                 ChatUtils.infoPrefix("BotBrain", "Gathering %s: %d/%d", cleanTarget, have, need);
                 long inStorage = lastStorageCache != null ? lastStorageCache.getOrDefault(tgtId, lastStorageCache.getOrDefault(cleanTarget, 0L)) : 0L;
                 int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d", cleanTarget, need, have, inStorage, effectiveHave);
                 if (have >= need) {
+                    if (dropCollector.startFinalSweep(currentTask.getId())) return;
                     if (canSendBaritone()) sendBaritoneChat("#stop");
                     ChatUtils.infoPrefix("BotBrain", "Gathered enough %s (%d/%d)", cleanTarget, have, need);
                     // mark task complete
@@ -935,7 +990,7 @@ public class BotBrain extends Module {
 
             // Query storage availability (non-blocking). Withdraw attempts are disabled here
             try {
-                int have = com.rdh.swarm.task.CraftingManager.countInInventory(tgt);
+                int have = countForTask(tgt);
                 int need = currentTask.getTargetQuantity();
                 int deficit = need - have;
                 if (deficit > 0 && out != null) {
@@ -953,8 +1008,9 @@ public class BotBrain extends Module {
                 }
             } catch (Exception ignored) {}
 
-                // Send mine command once
+                // Send mine command once. First try a goal that ends on the block.
                 if (!ensureStagedAwayFromBase()) return;
+                if (tickMineGoal(mineBlock)) return;
                 if (!mineBlock.equals(currentlyMining)) {
                     String cmd = "#mine minecraft:" + mineBlock;
 
@@ -1153,6 +1209,7 @@ public class BotBrain extends Module {
             } catch (Exception ignored) {}
 
                 if (!ensureStagedAwayFromBase()) return;
+                if (tickMineGoal(mineBlock)) return;
                 if (!mineBlock.equals(currentlyMining)) {
                 String cmd = "#mine minecraft:" + mineBlock;
                 
@@ -1192,7 +1249,7 @@ public class BotBrain extends Module {
         currentTaskDescription = "Mining " + itemName;
 
         // Check current inventory
-        int have = CraftingManager.countInInventory(target);
+        int have = countForTask(target);
 
         // Track progress time for no-progress detection
         if (have > lastProgressCount) {
@@ -1234,8 +1291,9 @@ public class BotBrain extends Module {
 
             // Check if main task is now complete
             if (currentTask != null) {
-                int totalHave = CraftingManager.countInInventory(currentTask.getTargetItem());
+                int totalHave = countForTask(currentTask.getTargetItem());
                 if (totalHave >= currentTask.getTargetQuantity()) {
+                    if (dropCollector.startFinalSweep(currentTask.getId())) return;
                     // update collected count to reflect actual inventory before marking complete
                     try {
                         currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity());
@@ -1283,6 +1341,7 @@ public class BotBrain extends Module {
 
         // Send baritone mine command once when entering gathering — prefer tools for tool-required targets
         if (!ensureStagedAwayFromBase()) return;
+        if (tickMineGoal(itemName)) return;
         if (!mineCommandSent) {
             String targetId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).toString();
             if (requiresTool(targetId) && !hasUsableTool()) {
@@ -2720,6 +2779,8 @@ public class BotBrain extends Module {
         huntInitialFood = FoodManager.countFood();
         lastHuntDistance = Double.MAX_VALUE;
         huntFollowing = false;
+        lastHuntTargetId = null;
+        lastHuntTargetEntity = null;
         moduleGuard.setKillAuraSuppressed(true);
         currentTaskDescription = "Hunting food";
         setState(BrainState.HUNTING);
@@ -2757,8 +2818,17 @@ public class BotBrain extends Module {
             return;
         }
 
+        if (lastHuntTargetEntity != null && !lastHuntTargetEntity.isAlive()) {
+            lastHuntTargetEntity = null;
+            lastHuntTargetId = null;
+            stopHuntMovement();
+            if (dropCollector.startWorkUnit()) return;
+        }
+
         Entity target = findHuntTarget();
         if (target != null) {
+            lastHuntTargetId = target.getUUID();
+            lastHuntTargetEntity = target;
             huntExploreRounds = 0;
             if (!huntFollowing) {
                 try {
@@ -2785,6 +2855,12 @@ public class BotBrain extends Module {
             return;
         }
 
+        if (lastHuntTargetEntity != null && !lastHuntTargetEntity.isAlive()) {
+            lastHuntTargetEntity = null;
+            lastHuntTargetId = null;
+            stopHuntMovement();
+            if (dropCollector.startWorkUnit()) return;
+        }
         if (huntFollowing) stopHuntMovement();
         ItemEntity drop = findHuntDrop();
         if (drop != null) {
@@ -2857,6 +2933,10 @@ public class BotBrain extends Module {
     }
 
     private void completeHunt(String reason) {
+        if (currentTask != null && dropCollector.startFinalSweep(currentTask.getId())) {
+            stopHuntMovement();
+            return;
+        }
         stopHuntMovement();
         BotTask task = currentTask;
         currentTask = null;
@@ -3717,6 +3797,10 @@ public class BotBrain extends Module {
 
     private void completeGrind(String reason) {
         BotTask task = currentTask;
+        if (task != null && dropCollector.startFinalSweep(task.getId())) {
+            currentTaskDescription = "Collecting final grinder drops";
+            return;
+        }
         int seconds = grindStartTime == 0 ? 0 : (int) ((System.currentTimeMillis() - grindStartTime) / 1000L);
         currentTask = null;
         executionPlan = null;
@@ -3793,6 +3877,11 @@ public class BotBrain extends Module {
         }
 
         this.currentTask = task;
+        this.dropCollector.cancel();
+        this.dropCollector.resetTaskTracking();
+        this.cancelMineGoal();
+        this.lastHuntTargetId = null;
+        this.lastHuntTargetEntity = null;
         this.executionPlan = null;
         this.directSmelt = false;
         this.planStep = 0;
@@ -3907,7 +3996,12 @@ public class BotBrain extends Module {
         this.lastProgressCount = 0;
         this.craftingWaitStart = 0;
         this.craftFailCount = 0;
-        if (newState != BrainState.GATHERING) this.currentlyMining = null;
+        if (newState != BrainState.GATHERING) {
+            this.currentlyMining = null;
+            this.mineGoalTarget = null;
+            this.mineGoalBlockId = null;
+            this.mineGoalBrokenAt = 0;
+        }
         // Reset gather staging flags when entering states that begin fresh flows
         if (newState == BrainState.IDLE || newState == BrainState.GATHERING || newState == BrainState.RETURNING_TO_BASE || newState == BrainState.DEPOSITING || newState == BrainState.STUCK) {
             this.gatherStagingCommandSent = false;
@@ -4022,6 +4116,138 @@ public class BotBrain extends Module {
             if (mc.player.getInventory().getItem(i).isEmpty()) empty++;
         }
         return empty <= depositThreshold.get();
+    }
+
+    /**
+     * Mine with a goal that ends on the target block itself, rather than
+     * Baritone's usual standable position below it. Falls back to the normal
+     * #mine command when no target block is in local range.
+     */
+    private boolean tickMineGoal(String blockId) {
+        if (mc.player == null || mc.level == null) return false;
+        long now = System.currentTimeMillis();
+
+        if (mineGoalTarget != null && !blockId.equals(mineGoalBlockId)) {
+            cancelMineGoal();
+        }
+        if (mineGoalTarget == null) {
+            if (now - lastMineGoalScan < 500) return false;
+            lastMineGoalScan = now;
+            BlockPos found = findMineGoalTarget(blockId, 16);
+            if (found == null) return false;
+            return startMineGoal(found, blockId);
+        }
+
+        BlockState state = mc.level.getBlockState(mineGoalTarget);
+        if (state.isAir()) {
+            if (mineGoalBrokenAt == 0) mineGoalBrokenAt = now;
+            double distance = mc.player.position().distanceToSqr(Vec3.atCenterOf(mineGoalTarget));
+            if (distance <= 2.25D || now - mineGoalBrokenAt > 2500L) {
+                if (collectDrops.get()) dropCollector.startWorkUnit();
+                onSweepFinished();
+            } else if (now - mineGoalBrokenAt > 750L) {
+                try {
+                    baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
+                        .getCustomGoalProcess().setGoalAndPath(
+                            new baritone.api.pathing.goals.GoalBlock(mineGoalTarget));
+                } catch (Throwable ignored) {}
+            }
+            return true;
+        }
+
+        String actual = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        if (!actual.equals(blockId)) {
+            cancelMineGoal();
+            return false;
+        }
+
+        double distance = mc.player.position().distanceToSqr(Vec3.atCenterOf(mineGoalTarget));
+        if (distance <= 20.25D && mc.gameMode != null) {
+            try {
+                mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES,
+                    Vec3.atCenterOf(mineGoalTarget));
+                mc.gameMode.destroyBlock(mineGoalTarget);
+            } catch (Exception ignored) {}
+            return true;
+        }
+
+        boolean pathing = false;
+        try {
+            pathing = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
+                .getPathingBehavior().isPathing();
+        } catch (Throwable ignored) {}
+        if (!pathing && now - mineGoalStarted > 3000L) {
+            cancelMineGoal();
+            return false;
+        }
+        return true;
+    }
+
+    private BlockPos findMineGoalTarget(String blockId, int radius) {
+        if (mc.player == null || mc.level == null) return null;
+        String full = blockId.contains(":") ? blockId : "minecraft:" + blockId;
+        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.tryParse(full);
+        if (id == null) return null;
+        var block = BuiltInRegistries.BLOCK.getValue(id);
+        if (block == null || block == Blocks.AIR) return null;
+
+        BlockPos origin = mc.player.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos cursor : BlockPos.betweenClosed(
+            origin.offset(-radius, -8, -radius), origin.offset(radius, 8, radius))) {
+            if (mc.level.getBlockState(cursor).getBlock() != block) continue;
+            double distance = cursor.distSqr(origin);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = cursor.immutable();
+            }
+        }
+        return best;
+    }
+
+    private boolean startMineGoal(BlockPos pos, String blockId) {
+        long now = System.currentTimeMillis();
+        try {
+            baritone.api.IBaritone bar = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            bar.getMineProcess().mine(0, (baritone.api.utils.BlockOptionalMetaLookup) null);
+            bar.getPathingBehavior().cancelEverything();
+            bar.getCustomGoalProcess().setGoalAndPath(
+                new baritone.api.pathing.goals.GoalBlock(pos));
+        } catch (Throwable t) {
+            cancelMineGoal();
+            return false;
+        }
+        mineGoalTarget = pos.immutable();
+        mineGoalBlockId = blockId;
+        mineGoalStarted = now;
+        mineGoalBrokenAt = 0;
+        lastMineGoalScan = now;
+        currentlyMining = blockId;
+        mineCommandSent = true;
+        return true;
+    }
+
+    private void cancelMineGoal() {
+        try {
+            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
+                .getPathingBehavior().cancelEverything();
+        } catch (Throwable ignored) {}
+        mineGoalTarget = null;
+        mineGoalBlockId = null;
+        mineGoalStarted = 0;
+        mineGoalBrokenAt = 0;
+        currentlyMining = null;
+        mineCommandSent = false;
+    }
+
+    private void onSweepFinished() {
+        mineGoalTarget = null;
+        mineGoalBlockId = null;
+        mineGoalStarted = 0;
+        mineGoalBrokenAt = 0;
+        currentlyMining = null;
+        mineCommandSent = false;
     }
 
     private boolean canSendBaritone() {
