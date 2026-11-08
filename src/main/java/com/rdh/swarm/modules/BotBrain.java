@@ -399,6 +399,8 @@ public class BotBrain extends Module {
     private static final long AUTO_HUNT_COOLDOWN = 120_000L;
     private long lastCookAttempt = 0;
     private static final long COOK_COOLDOWN = 300_000L;
+    private String lastCookLog = "";
+    private static final int COOK_FURNACE_RANGE = 45;
     private boolean directSmelt = false;
 
     // Grinder state
@@ -2904,25 +2906,48 @@ public class BotBrain extends Module {
 
     /** After a successful hunt, cook surplus raw food when fuel is available. */
     private void maybeQueueCooking() {
-        if (mc.player == null) return;
+        if (mc.player == null || mc.level == null) return;
         long now = System.currentTimeMillis();
-        if (now - lastCookAttempt < COOK_COOLDOWN) return;
-        if (SmeltingManager.countFuel() <= 0) return;
+
+        BlockPos furnace = findCookFurnace();
+        String rawIds = cookRawIds();
+        String fuelIds = cookFuelIds(furnace);
+        boolean hungry = FoodManager.countFood() < foodLow.get();
+        String furnaceInfo = furnace == null ? "none"
+            : String.valueOf((int) Math.round(Math.sqrt(mc.player.blockPosition().distSqr(furnace))));
+
         Item bestRaw = null;
         int bestCount = 0;
-        for (Item raw : FoodManager.SAFE_RAW) {
+        for (Item raw : FoodManager.COOKING.keySet()) {
             int count = FoodManager.countRaw(raw);
             if (count > bestCount) {
                 bestCount = count;
                 bestRaw = raw;
             }
         }
-        if (bestRaw == null || bestCount < 2) return;
         Item cooked = FoodManager.cookedResult(bestRaw);
-        if (cooked == null) return;
-        int have = CraftingManager.countInInventory(cooked);
-        int want = Math.min(bestCount, Math.max(1, foodTarget.get() - have));
-        if (want <= 0) return;
+        int want = 0;
+        if (cooked != null) {
+            int have = CraftingManager.countInInventory(cooked);
+            want = Math.min(bestCount, Math.max(1, foodTarget.get() - have));
+        }
+
+        String decision;
+        if (now - lastCookAttempt < COOK_COOLDOWN) decision = "skip: cooldown";
+        else if (bestRaw == null || bestCount < 2) decision = "skip: raw<2";
+        else if (SmeltingManager.countFuel() <= 0) decision = "skip: no fuel";
+        else if (cooked == null) decision = "skip: no recipe";
+        else if (want <= 0) decision = "skip: target reached";
+        else decision = "cook";
+
+        String line = String.format("G2: cook check -> raw=%s fuel=%s furnace=%s hungry=%b decision=%s",
+            rawIds, fuelIds, furnaceInfo, hungry, decision);
+        if (!line.equals(lastCookLog)) {
+            ChatUtils.infoPrefix("BotBrain", line);
+            lastCookLog = line;
+        }
+
+        if (!"cook".equals(decision)) return;
         lastCookAttempt = now;
         java.util.Map<String, Object> data = new java.util.HashMap<>();
         data.put("item", cooked);
@@ -2931,6 +2956,62 @@ public class BotBrain extends Module {
         BotTask cook = new BotTask(java.util.UUID.randomUUID(), BotTask.Type.SMELT, 0, data);
         ChatUtils.infoPrefix("BotBrain", "Queuing cooking task: %s x%d", cook.getItemName(), want);
         setTask(cook);
+    }
+
+    private BlockPos findCookFurnace() {
+        if (mc.player == null || mc.level == null) return null;
+        BlockPos playerPos = mc.player.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (int x = -COOK_FURNACE_RANGE; x <= COOK_FURNACE_RANGE; x++) {
+            for (int y = -10; y <= 10; y++) {
+                for (int z = -COOK_FURNACE_RANGE; z <= COOK_FURNACE_RANGE; z++) {
+                    BlockPos pos = playerPos.offset(x, y, z);
+                    var block = mc.level.getBlockState(pos).getBlock();
+                    if (block != Blocks.FURNACE && block != Blocks.BLAST_FURNACE && block != Blocks.SMOKER) continue;
+                    double distance = playerPos.distSqr(pos);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = pos;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean isCookFurnaceLit(BlockPos pos) {
+        if (pos == null || mc.level == null) return false;
+        try {
+            return mc.level.getBlockState(pos)
+                .getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.LIT);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String cookRawIds() {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        for (Item raw : FoodManager.COOKING.keySet()) {
+            int count = FoodManager.countRaw(raw);
+            if (count > 0) ids.add(itemPath(raw) + " x" + count);
+        }
+        ids.sort(String::compareTo);
+        return ids.isEmpty() ? "none" : String.join(",", ids);
+    }
+
+    private String cookFuelIds(BlockPos furnace) {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        int coal = CraftingManager.countInInventory(Items.COAL);
+        int charcoal = CraftingManager.countInInventory(Items.CHARCOAL);
+        if (coal > 0) ids.add("coal x" + coal);
+        if (charcoal > 0) ids.add("charcoal x" + charcoal);
+        if (furnace != null && isCookFurnaceLit(furnace)) ids.add("furnace:lit");
+        if (SmeltingManager.isFurnaceOpen() && mc.player.containerMenu instanceof AbstractFurnaceMenu menu) {
+            var fuel = menu.slots.get(1).getItem();
+            if (!fuel.isEmpty()) ids.add("furnace:" + itemPath(fuel.getItem()) + " x" + fuel.getCount());
+        }
+        return ids.isEmpty() ? "none" : String.join(",", ids);
     }
 
     private void beginBuild() {
