@@ -286,6 +286,7 @@ button.warn:hover { background: #5a3a1a; }
         <option value="HUNT_FOOD">Hunt food</option>
         <option value="GRIND">Grind</option>
         <option value="SMITH">Smith</option>
+        <option value="BUILD">Build</option>
       </select>
       <select id="taskBot">
         <option value="any">Any bot</option>

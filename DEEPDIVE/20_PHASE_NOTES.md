@@ -360,3 +360,33 @@ None. Requeueing is automatic on disconnect and host shutdown.
 - Filling/placing items into shulkers is not implemented; this phase only empties.
 - Dyed shulkers are supported by the item check, but placement/break detection treats any non-air block at the spot as placed.
 - Contents are moved only when the player inventory has room; a full inventory can time out.
+## M — Baritone builder
+
+### Summary
+
+- Added `BotTask.Type.BUILD` and `BrainState.BUILDING`.
+- Settings: `auto-build` (false), `build-file` (path), `build-x/y/z` (schematic origin).
+- `beginBuild` resolves the path from task data `file` or `build-file`, verifies the file exists, and calls the verified `IBuilderProcess.build(String, File, Vec3i)`.
+- `handleBuilding` polls `IBuilderProcess.isActive()` and completes when the process stops; a 30-minute timeout fails the task.
+- Missing file/process logs one WARN and returns to IDLE.
+- The web task dropdown offers `BUILD`.
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `auto-build` | Bool | `false` |
+| BotBrain | `build-file` | String | `""` |
+| BotBrain | `build-x` / `build-y` / `build-z` | Int | `0` |
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+- Verified `IBuilderProcess.build(String, File, Vec3i)` and inherited `isActive()`.
+
+### Known issues / not verified
+
+- No material planning; Baritone decides placeability.
+- Only file-based schematics are supported; open Litematica placement is not.
+- Origin is a raw coordinate setting; no selection or rotation support.
+- No in-game build test.

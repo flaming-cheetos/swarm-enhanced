@@ -201,6 +201,44 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoBuild = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-build")
+        .description("Start a Baritone builder job from the configured schematic when idle.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<String> buildFile = sgGeneral.add(new StringSetting.Builder()
+        .name("build-file")
+        .description("Schematic file path for BUILD tasks.")
+        .defaultValue("")
+        .build()
+    );
+
+    private final Setting<Integer> buildX = sgGeneral.add(new IntSetting.Builder()
+        .name("build-x")
+        .description("Schematic origin X.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .build()
+    );
+
+    private final Setting<Integer> buildY = sgGeneral.add(new IntSetting.Builder()
+        .name("build-y")
+        .description("Schematic origin Y.")
+        .defaultValue(0)
+        .range(-256, 512)
+        .build()
+    );
+
+    private final Setting<Integer> buildZ = sgGeneral.add(new IntSetting.Builder()
+        .name("build-z")
+        .description("Schematic origin Z.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
@@ -209,6 +247,7 @@ public class BotBrain extends Module {
         GRINDING,
         SMITHING,
         SHULKER,
+        BUILDING,
         WITHDRAWING,
         RETURNING_TO_BASE,
         CRAFTING_PREP,
@@ -386,6 +425,10 @@ public class BotBrain extends Module {
     private Item shulkerItem = null;
     private long lastAutoShulker = 0;
 
+    // Builder state
+    private long buildStartTime = 0;
+    private long lastAutoBuild = 0;
+
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
     private static final long BARITONE_COMMAND_COOLDOWN = 3000;
@@ -527,6 +570,7 @@ public class BotBrain extends Module {
         smithPos = null;
         shulkerPos = null;
         shulkerPhase = SHULKER_PLACE;
+        buildStartTime = 0;
         SmithingManager.close();
         stopHuntMovement();
         if (manageModules.get()) moduleGuard.deactivate();
@@ -633,6 +677,7 @@ public class BotBrain extends Module {
             case GRINDING -> handleGrinding();
             case SMITHING -> handleSmithing();
             case SHULKER -> handleShulker();
+            case BUILDING -> handleBuilding();
             case WITHDRAWING -> handleWithdrawing();
             case RETURNING_TO_BASE -> handleReturningToBase();
             case CRAFTING_PREP -> handleCraftingPrep();
@@ -656,6 +701,7 @@ public class BotBrain extends Module {
             if (tryAutoGrind()) return;
             if (tryAutoSmithing()) return;
             if (tryAutoShulker()) return;
+            if (tryAutoBuild()) return;
             currentTaskDescription = "Idle — no task";
             return;
         }
@@ -685,6 +731,10 @@ public class BotBrain extends Module {
         }
         if (taskType == BotTask.Type.SHULKER) {
             if (state != BrainState.SHULKER) beginShulker();
+            return;
+        }
+        if (taskType == BotTask.Type.BUILD) {
+            if (state != BrainState.BUILDING) beginBuild();
             return;
         }
         if (taskType != BotTask.Type.GATHER && taskType != BotTask.Type.CRAFT && taskType != BotTask.Type.SMELT) {
@@ -2873,6 +2923,79 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    private void beginBuild() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        String path = null;
+        Object dataPath = currentTask.getData().get("file");
+        if (dataPath instanceof String s && !s.isEmpty()) path = s;
+        if (path == null || path.isEmpty()) path = buildFile.get();
+        if (path == null || path.isEmpty()) { failBuild("no schematic file configured"); return; }
+        java.io.File file = new java.io.File(path);
+        if (!file.isFile()) { failBuild("schematic file not found: " + path); return; }
+        try {
+            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess()
+                .build("swarm-build", file, new net.minecraft.core.Vec3i(buildX.get(), buildY.get(), buildZ.get()));
+            buildStartTime = System.currentTimeMillis();
+            setState(BrainState.BUILDING);
+            currentTaskDescription = "Building " + file.getName();
+            ChatUtils.infoPrefix("BotBrain", "Builder started: %s", file.getName());
+        } catch (Exception | NoClassDefFoundError e) {
+            failBuild("builder unavailable: " + e.getMessage());
+        }
+    }
+
+    private void handleBuilding() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        try {
+            boolean active = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess().isActive();
+            if (!active) { completeBuild(); return; }
+        } catch (Exception | NoClassDefFoundError e) {
+            failBuild("builder unavailable: " + e.getMessage());
+            return;
+        }
+        if (System.currentTimeMillis() - buildStartTime > 1_800_000L) failBuild("builder timed out after 30 minutes");
+    }
+
+    private boolean tryAutoBuild() {
+        if (!autoBuild.get() || currentTask != null) return false;
+        String path = buildFile.get();
+        if (path == null || path.isEmpty() || !new java.io.File(path).isFile()) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoBuild < 60_000L) return false;
+        lastAutoBuild = now;
+        setTask(new BotTask(BotTask.Type.BUILD, null, 1));
+        return true;
+    }
+
+    private void completeBuild() {
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        buildStartTime = 0;
+        currentTaskDescription = "Idle — build complete";
+        setState(BrainState.IDLE);
+        if (task != null) {
+            task.addCollected(task.getRemaining());
+            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(task); } catch (Exception ignored) {}
+        }
+        ChatUtils.infoPrefix("BotBrain", "Builder complete");
+    }
+
+    private void failBuild(String reason) {
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        buildStartTime = 0;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        ChatUtils.warningPrefix("BotBrain", "Builder failed: %s", reason);
+    }
+
     private void beginShulker() {
         if (currentTask == null) { setState(BrainState.IDLE); return; }
         shulkerItem = findFilledShulker();
@@ -3411,6 +3534,14 @@ public class BotBrain extends Module {
             this.resolverGatherList = null;
             this.resolverCraftPlan = null;
             beginHunt();
+            return;
+        }
+
+        if (task.getType() == BotTask.Type.BUILD) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            setState(BrainState.IDLE);
             return;
         }
 
