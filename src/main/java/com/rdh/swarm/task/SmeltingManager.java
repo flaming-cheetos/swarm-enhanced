@@ -6,6 +6,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.BlockHitResult;
@@ -72,9 +74,8 @@ public class SmeltingManager {
         // Check if fuel slot already has fuel
         if (!handler.slots.get(1).getItem().isEmpty()) return true;
 
-        // Find coal or charcoal
-        int slot = findItemInInventorySlots(handler, Items.COAL);
-        if (slot == -1) slot = findItemInInventorySlots(handler, Items.CHARCOAL);
+        // Find any item in the coals tag.
+        int slot = findFuelInInventorySlots(handler);
         if (slot == -1) return false;
 
         InvUtils.move().fromId(slot).toId(1);
@@ -104,17 +105,41 @@ public class SmeltingManager {
                !handler.slots.get(1).getItem().isEmpty();
     }
 
+    private static boolean isFuel(ItemStack stack) {
+        return !stack.isEmpty() && stack.is(ItemTags.COALS);
+    }
+
+    /** Fuel already sitting in a furnace, readable without opening the screen. */
+    public static ItemStack fuelStackAt(BlockPos pos) {
+        if (pos == null || mc.level == null) return ItemStack.EMPTY;
+        if (mc.level.getBlockEntity(pos) instanceof AbstractFurnaceBlockEntity furnace) {
+            return furnace.getItem(1);
+        }
+        return ItemStack.EMPTY;
+    }
+
+    public static boolean hasFuelAt(BlockPos pos) {
+        return !fuelStackAt(pos).isEmpty();
+    }
+
     // Count fuel in player inventory
     public static int countFuel() {
         int count = 0;
         if (mc.player == null) return 0;
         for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
             ItemStack stack = mc.player.getInventory().getItem(i);
-            if (stack.getItem() == Items.COAL || stack.getItem() == Items.CHARCOAL) {
+            if (isFuel(stack)) {
                 count += stack.getCount();
             }
         }
         return count;
+    }
+
+    private static int findFuelInInventorySlots(AbstractFurnaceMenu handler) {
+        for (int i = 3; i < handler.slots.size(); i++) {
+            if (isFuel(handler.slots.get(i).getItem())) return i;
+        }
+        return -1;
     }
 
     private static int findItemInInventorySlots(AbstractFurnaceMenu handler, Item item) {
