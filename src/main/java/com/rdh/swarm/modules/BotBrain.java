@@ -76,6 +76,20 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> manageModules = sgGeneral.add(new BoolSetting.Builder()
+        .name("manage-modules")
+        .description("Keep the guarded Meteor survival modules enabled while BotBrain is active.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> fightMobs = sgGeneral.add(new BoolSetting.Builder()
+        .name("fight-mobs")
+        .description("Include hostile-mob KillAura in the guarded module set.")
+        .defaultValue(true)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
@@ -202,6 +216,10 @@ public class BotBrain extends Module {
 
     // Death tracking
     private final DeathTracker deathTracker = new DeathTracker();
+    private final ModuleGuard moduleGuard = new ModuleGuard();
+    private BlockPos lastAlivePos = null;
+    private String lastAliveDimension = "";
+    private boolean deathRecorded = false;
 
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
@@ -320,6 +338,10 @@ public class BotBrain extends Module {
         planStep = 0;
         stuckCounter = 0;
         deathTracker.load();
+        lastAlivePos = null;
+        lastAliveDimension = "";
+        deathRecorded = false;
+        if (manageModules.get()) moduleGuard.activate(fightMobs.get());
         stateEnterTime = System.currentTimeMillis();
         lastBrainTick = System.currentTimeMillis();
         lastItemCheckTime = System.currentTimeMillis();
@@ -330,6 +352,50 @@ public class BotBrain extends Module {
         state = BrainState.IDLE;
         currentTask = null;
         executionPlan = null;
+        if (manageModules.get()) moduleGuard.deactivate();
+        stopBaritoneOnDeactivate();
+    }
+
+    private void stopBaritoneOnDeactivate() {
+        try {
+            if (mc.getConnection() != null) mc.getConnection().sendChat("#stop");
+        } catch (Exception ignored) {}
+        try {
+            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
+        } catch (Exception | NoClassDefFoundError ignored) {}
+    }
+
+    /** Record one death per death event, using the last position observed while alive. */
+    private void trackDeath() {
+        if (mc.player == null || mc.level == null) return;
+        float health = mc.player.getHealth();
+        String dimension = mc.level.dimension().identifier().toString();
+        if (health > 0) {
+            lastAlivePos = mc.player.blockPosition();
+            lastAliveDimension = dimension;
+            deathRecorded = false;
+            return;
+        }
+        if (deathRecorded) return;
+        BlockPos pos = lastAlivePos != null ? lastAlivePos : mc.player.blockPosition();
+        String dim = lastAliveDimension.isEmpty() ? dimension : lastAliveDimension;
+        deathTracker.recordDeath(mc.player.getUUID(), "death", pos, dim);
+        deathRecorded = true;
+        ChatUtils.warningPrefix("BotBrain", "Death recorded at %d %d %d (%s)", pos.getX(), pos.getY(), pos.getZ(), dim);
+    }
+
+    private void failUnhandledTask(BotTask step) {
+        String reason = "no handler for " + (step == null ? "unknown" : step.getType());
+        ChatUtils.warningPrefix("BotBrain", "Task failed: %s", reason);
+        BotTask task = currentTask;
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        currentTask = null;
+        executionPlan = null;
+        planStep = 0;
+        setState(BrainState.IDLE);
     }
 
     @EventHandler
@@ -339,16 +405,24 @@ public class BotBrain extends Module {
         if (swarmMod == null || swarmMod.mode.get() == com.rdh.swarm.EnhancedSwarm.Mode.Host) return;
 
         if (mc.player == null || mc.level == null) return;
+        trackDeath();
 
         long now = System.currentTimeMillis();
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
+        if (manageModules.get()) moduleGuard.tick(tickCounter);
         if (tickCounter % 20 == 0 && currentTask != null) {
             ChatUtils.infoPrefix("BotBrain", "tick state=%s planStep=%d planSize=%d task=%s", state, planStep, executionPlan == null ? 0 : executionPlan.size(), currentTask == null ? "" : currentTask.getItemName());
         }
 
         if (paused) return;
+
+        if (manageModules.get() && moduleGuard.shouldFreezeTimers()) {
+            stateEnterTime = System.currentTimeMillis();
+            stuckCounter = 0;
+            return;
+        }
 
         // Check for death recovery first
         if (deathTracker.hasDeath() && deathTracker.canRecover()) {
@@ -407,6 +481,12 @@ public class BotBrain extends Module {
             return;
         }
 
+        BotTask.Type taskType = currentTask.getType();
+        if (taskType != BotTask.Type.GATHER && taskType != BotTask.Type.CRAFT && taskType != BotTask.Type.SMELT) {
+            failUnhandledTask(currentTask);
+            return;
+        }
+
         // Build execution plan
         if (executionPlan == null || executionPlan.isEmpty()) {
             executionPlan = DependencyResolver.resolve(
@@ -445,7 +525,7 @@ public class BotBrain extends Module {
                 if (autoEquip.get()) setState(BrainState.CHECKING_EQUIPMENT);
                 else setState(BrainState.GATHERING);
             }
-            default -> setState(BrainState.GATHERING);
+            default -> failUnhandledTask(step);
         }
     }
 
@@ -2304,6 +2384,14 @@ public class BotBrain extends Module {
 
     private void handleRecovery() {
         if (!deathTracker.canRecover()) {
+            deathTracker.clearDeath();
+            setState(BrainState.IDLE);
+            return;
+        }
+
+        if (mc.level != null && !deathTracker.getDeathDimension().isEmpty()
+            && !deathTracker.getDeathDimension().equals(mc.level.dimension().identifier().toString())) {
+            ChatUtils.warningPrefix("BotBrain", "Death was in %s; refusing cross-dimension recovery", deathTracker.getDeathDimension());
             deathTracker.clearDeath();
             setState(BrainState.IDLE);
             return;

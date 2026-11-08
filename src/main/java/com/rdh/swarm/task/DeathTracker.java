@@ -17,19 +17,29 @@ public class DeathTracker {
         public final Instant time;
         public final String cause;
         public final BlockPos pos;
+        public final String dimension;
 
         public DeathRecord(Instant time, String cause, BlockPos pos) {
+            this(time, cause, pos, "");
+        }
+
+        public DeathRecord(Instant time, String cause, BlockPos pos, String dimension) {
             this.time = time;
             this.cause = cause;
             this.pos = pos;
+            this.dimension = dimension == null ? "" : dimension;
         }
     }
 
     private final Map<UUID, List<DeathRecord>> deaths = new ConcurrentHashMap<>();
 
     public void recordDeath(UUID player, String cause, BlockPos pos) {
+        recordDeath(player, cause, pos, "");
+    }
+
+    public void recordDeath(UUID player, String cause, BlockPos pos, String dimension) {
         deaths.computeIfAbsent(player, k -> Collections.synchronizedList(new ArrayList<>()))
-              .add(new DeathRecord(Instant.now(), cause, pos));
+              .add(new DeathRecord(Instant.now(), cause, pos, dimension));
     }
 
     public List<DeathRecord> getDeaths(UUID player) {
@@ -67,6 +77,13 @@ public class DeathTracker {
         List<DeathRecord> list = getDeaths(mc.player.getUUID());
         if (list.isEmpty()) return new BlockPos(0,0,0);
         return list.get(list.size()-1).pos;
+    }
+
+    public String getDeathDimension() {
+        if (mc.player == null) return "";
+        List<DeathRecord> list = getDeaths(mc.player.getUUID());
+        if (list.isEmpty()) return "";
+        return list.get(list.size()-1).dimension;
     }
 
     public long getTimeRemainingMs() {
