@@ -186,6 +186,10 @@ button.success { background: #1a3a1a; color: #4cff8a; border-color: #4cff8a; }
 button.success:hover { background: #2a5a2a; }
 button.warn { background: #3a2a1a; color: #ffaa44; border-color: #ffaa44; }
 button.warn:hover { background: #5a3a1a; }
+button:disabled { background: #151515; color: #666; border-color: #333; cursor: not-allowed; }
+button:disabled:hover { background: #151515; color: #666; }
+.footer { grid-column: 1 / -1; text-align: center; color: #555; font-size: 0.72rem; padding: 10px 0 4px; }
+.footer .meta { color: #7b7bff; }
 .actions-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -291,10 +295,10 @@ button.warn:hover { background: #5a3a1a; }
       <select id="taskBot">
         <option value="any">Any bot</option>
       </select>
-      <button class="success" onclick="addTask()">+ Add</button>
+      <button class="success" onclick="addTask()" title="Queue a task (/api/task/add)">+ Add</button>
     </div>
     <div style="margin-top:8px;">
-      <button onclick="post('/api/task/clear_done',{})">Clear Done</button>
+      <button onclick="post('/api/task/clear_done',{})" title="Remove COMPLETE and FAILED tasks (/api/task/clear_done)">Clear Done/Failed</button>
     </div>
   </div>
 
@@ -302,15 +306,15 @@ button.warn:hover { background: #5a3a1a; }
   <div class="card">
     <h2>⚡ Quick Actions</h2>
     <div class="actions-grid">
-      <button onclick="action('follow')">👥 Follow Me</button>
-      <button class="danger" onclick="action('stop')">🛑 Stop All</button>
-      <button onclick="action('deposit')">📦 Deposit All</button>
-      <button onclick="action('deposit_ores')">⛏ Dep. Ores</button>
-      <button onclick="action('deposit_shulkers')">📫 Dep. Shulkers</button>
-      <button onclick="action('scan_chests')">🔍 Scan Chests</button>
-      <button onclick="action('check_fuel')">🔥 Check Fuel</button>
-      <button class="success" onclick="action('pvp_on')">⚔ PVP ON</button>
-      <button class="danger" onclick="action('pvp_off')">🕊 PVP OFF</button>
+      <button onclick="action('follow')" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
+      <button class="danger" onclick="action('stop')" title="swarm:all stop">🛑 Stop All</button>
+      <button onclick="action('deposit')" title="swarm:all depositall">📦 Deposit All</button>
+      <button onclick="action('deposit_ores')" title="swarm:all deposit ores">⛏ Dep. Ores</button>
+      <button onclick="action('deposit_shulkers')" title="swarm:all deposit shulkers">📫 Dep. Shulkers</button>
+      <button disabled title="Not implemented: needs the container reader. This control sends no request.">🔍 Scan Chests (unavailable)</button>
+      <button disabled title="Not implemented: needs the container reader. This control sends no request.">🔥 Check Fuel (unavailable)</button>
+      <button class="success" onclick="action('pvp_on')" title="exec .toggle crystal-aura on; exec .toggle kill-aura on; exec .toggle auto-totem on; exec .toggle surround on; exec .toggle auto-trap on; exec .toggle auto-web on; exec .toggle auto-exp on">⚔ PVP ON</button>
+      <button class="danger" onclick="action('pvp_off')" title="exec .toggle crystal-aura off; exec .toggle kill-aura off; exec .toggle auto-totem off; exec .toggle surround off; exec .toggle auto-trap off; exec .toggle auto-web off; exec .toggle auto-exp off">🕊 PVP OFF</button>
     </div>
     <div style="margin-top:10px;">
       <h2 style="margin-bottom:6px;">💬 Send Command</h2>
@@ -318,9 +322,9 @@ button.warn:hover { background: #5a3a1a; }
         <select id="cmdTarget" style="width:100px;flex:none;">
           <option value="all">All</option>
         </select>
-        <input id="cmdInput" placeholder="command..." type="text" 
+        <input id="cmdInput" placeholder="command..." type="text" title="Type a command; Send wraps it in exec"
                onkeydown="if(event.key==='Enter')sendCmd()">
-        <button onclick="sendCmd()">Send</button>
+        <button onclick="sendCmd()" title="exec &lt;command from the box&gt;">Send</button>
       </div>
     </div>
   </div>
@@ -329,14 +333,19 @@ button.warn:hover { background: #5a3a1a; }
   <div class="card log-panel">
     <h2>📜 Live Log</h2>
     <div class="log-controls">
-      <input class="log-filter" id="logFilter" placeholder="Filter logs..." 
+      <input class="log-filter" id="logFilter" placeholder="Filter logs..." title="Filter visible log lines by text"
              type="text" oninput="filterLogs()">
-      <button onclick="clearLogs()">Clear</button>
+      <button onclick="clearLogs()" title="Clear the visible log (no server request)">Clear</button>
       <label style="font-size:0.75rem;color:#888;display:flex;align-items:center;gap:4px;">
-        <input type="checkbox" id="autoScroll" checked> Auto-scroll
+        <input type="checkbox" id="autoScroll" checked title="Keep the newest log line visible"> Auto-scroll
       </label>
     </div>
     <div class="log-entries" id="logEntries"></div>
+  </div>
+
+  <div class="footer">
+    Enhanced Swarm <span class="meta" id="modVersion">version unknown</span>
+    &nbsp;·&nbsp; built from <span class="meta" id="buildCommit">commit unknown</span>
   </div>
 </div>
 
@@ -381,6 +390,8 @@ function connect() {
 
 function renderState() {
   document.getElementById('connectedCount').textContent = state.connected || 0;
+  document.getElementById('modVersion').textContent = state.modVersion || 'version unknown';
+  document.getElementById('buildCommit').textContent = state.buildCommit || 'commit unknown';
   renderBots();
   renderTasks();
 }
@@ -416,7 +427,7 @@ function renderBots() {
         <span class="dot ${bot.online ? 'online' : 'offline'}">●</span>
         <span id="name-${bot.username}">${bot.nickname}</span>
         <span class="tier-badge ${tierClass}">${bot.tier || 'Wood'}</span>
-        <input class="nick-input" value="${bot.nickname}" 
+        <input class="nick-input" value="${bot.nickname}" title="Set this bot's nickname (/api/nickname)"
                placeholder="nickname"
                onblur="setNick('${bot.username}', this.value)">
       </div>
@@ -431,8 +442,8 @@ function renderBots() {
       <div class="bot-progress">${bot.progress || ''} ${bot.eta ? '| ETA ' + bot.eta : ''}</div>
       <div class="bot-coords">${bot.x} ${bot.y} ${bot.z}</div>
       <div class="bot-actions">
-        <button onclick="pauseBot('${bot.username}')">⏸ Pause</button>
-        <button onclick="resumeBot('${bot.username}')">▶ Resume</button>
+        <button onclick="pauseBot('${bot.username}')" title="swarm:${bot.username} task pause">⏸ Pause</button>
+        <button onclick="resumeBot('${bot.username}')" title="swarm:${bot.username} task resume">▶ Resume</button>
       </div>
     </div>`;
   }).join('');
@@ -455,7 +466,7 @@ function renderTasks() {
         <div class="task-meta">${t.progress} | ${t.bot}</div>
       </div>
       <span class="task-status status-${t.status}">${t.status}</span>
-      <button class="danger" onclick="removeTask('${t.id}')" style="padding:3px 8px;">✕</button>
+      <button class="danger" onclick="removeTask('${t.id}')" title="Remove task ${t.id} (/api/task/remove)" style="padding:3px 8px;">✕</button>
     </div>
   `).join('');
 }

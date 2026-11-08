@@ -25,6 +25,7 @@ import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -36,7 +37,25 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Web panel API contract: every endpoint must do only what its path and UI
+ * label document. If a control cannot perform its advertised action, disable
+ * it and send no request; never attach an unrelated game command to an
+ * endpoint just to make the control appear to work.
+ */
 public class SwarmWebServer {
+
+    private static final String MOD_VERSION;
+    private static final String BUILD_COMMIT;
+
+    static {
+        Properties buildInfo = new Properties();
+        try (InputStream in = SwarmWebServer.class.getResourceAsStream("/build-info.properties")) {
+            if (in != null) buildInfo.load(in);
+        } catch (Exception ignored) {}
+        MOD_VERSION = buildInfo.getProperty("version", "unknown");
+        BUILD_COMMIT = buildInfo.getProperty("commit", "unknown");
+    }
 
     private final String bindAddress;
     private final int port;
@@ -157,12 +176,15 @@ public class SwarmWebServer {
     public String buildStateJson() {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod == null || !mod.isHost() || mod.host == null) {
-            return "{\"type\":\"state\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
+            return "{\"type\":\"state\",\"modVersion\":\"" + esc(MOD_VERSION)
+                + "\",\"buildCommit\":\"" + esc(BUILD_COMMIT)
+                + "\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
         }
 
         EnhancedSwarmHost host = mod.host;
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"type\":\"state\",");
+        sb.append("{\"type\":\"state\",\"modVersion\":\"").append(esc(MOD_VERSION));
+        sb.append("\",\"buildCommit\":\"").append(esc(BUILD_COMMIT)).append("\",");
         sb.append("\"connected\":").append(host.getConnectionCount()).append(",");
 
         // Bots
@@ -329,8 +351,8 @@ public class SwarmWebServer {
                     logInfo("Stop sent to all bots");
                 }
                 case "/api/action/deposit" -> {
-                    host.sendAll("swarm:all deposit");
-                    logInfo("Deposit sent to all bots");
+                    host.sendAll("swarm:all depositall");
+                    logInfo("Deposit all sent to all bots");
                 }
                 case "/api/action/deposit_ores" -> {
                     host.sendAll("swarm:all deposit ores");
@@ -351,12 +373,10 @@ public class SwarmWebServer {
                     logInfo("PVP mode DISABLED");
                 }
                 case "/api/action/scan_chests" -> {
-                    host.sendAll("swarm:all deposit list");
-                    logInfo("Chest scan triggered");
+                    logWarn("Scan Chests is not implemented: container reader unavailable; no command sent");
                 }
                 case "/api/action/check_fuel" -> {
-                    host.sendAll("swarm:all exec #stop");
-                    logInfo("Fuel check triggered");
+                    logWarn("Check Fuel is not implemented: container reader unavailable; no command sent");
                 }
                 case "/api/command" -> {
                     String target = extractJson(body, "target");
