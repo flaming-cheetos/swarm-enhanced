@@ -2341,13 +2341,14 @@ public class BotBrain extends Module {
                 if (mc.player == null || mc.level == null) { setState(BrainState.STUCK); return; }
                 BlockPos playerPos = mc.player.blockPosition();
                 int range = 45;
+                boolean cookingTask = isCookingTask();
                 BlockPos found = null;
                 for (int x = -range; x <= range && found == null; x++) {
                     for (int y = -10; y <= 10 && found == null; y++) {
                         for (int z = -range; z <= range; z++) {
                             BlockPos pos = playerPos.offset(x, y, z);
                             var b = mc.level.getBlockState(pos).getBlock();
-                            if (b == net.minecraft.world.level.block.Blocks.FURNACE || b == net.minecraft.world.level.block.Blocks.BLAST_FURNACE || b == net.minecraft.world.level.block.Blocks.SMOKER) {
+                            if (b == Blocks.FURNACE || b == Blocks.SMOKER || (!cookingTask && b == Blocks.BLAST_FURNACE)) {
                                 found = pos;
                                 break;
                             }
@@ -3083,6 +3084,12 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    private boolean isCookingTask() {
+        return currentTask != null && currentTask.getType() == BotTask.Type.SMELT
+            && currentTask.getSourceItem() != null && currentTask.getTargetItem() != null
+            && currentTask.getTargetItem() == SmeltingManager.cookedResult(currentTask.getSourceItem());
+    }
+
     private BlockPos findCookFurnace() {
         if (mc.player == null || mc.level == null) return null;
         BlockPos playerPos = mc.player.blockPosition();
@@ -3093,7 +3100,7 @@ public class BotBrain extends Module {
                 for (int z = -COOK_FURNACE_RANGE; z <= COOK_FURNACE_RANGE; z++) {
                     BlockPos pos = playerPos.offset(x, y, z);
                     var block = mc.level.getBlockState(pos).getBlock();
-                    if (block != Blocks.FURNACE && block != Blocks.BLAST_FURNACE && block != Blocks.SMOKER) continue;
+                    if (block != Blocks.FURNACE && block != Blocks.SMOKER) continue;
                     double distance = playerPos.distSqr(pos);
                     if (distance < bestDistance) {
                         bestDistance = distance;
