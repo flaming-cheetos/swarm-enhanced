@@ -3045,6 +3045,11 @@ public class BotBrain extends Module {
         else if (want <= 0) decision = "skip: target reached";
         else decision = "cook";
 
+        if ("cook".equals(decision) && currentTask != null) {
+            if (currentTask.getType() != BotTask.Type.HUNT_FOOD) decision = "skip: busy";
+            else if (pendingTask != null) decision = "skip: pending task";
+        }
+
         String line = String.format("G2: cook check -> raw=%s fuel=%s furnace=%s hungry=%b decision=%s",
             rawIds, fuelIds, furnaceInfo, hungry, decision);
         if (!line.equals(lastCookLog)) {
