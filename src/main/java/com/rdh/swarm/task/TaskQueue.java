@@ -16,6 +16,7 @@ import java.util.Map;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
 
 public class TaskQueue {
 
@@ -108,6 +109,7 @@ public class TaskQueue {
                 jo.addProperty("collected", t.getCollectedQuantity());
                 try { jo.addProperty("status", t.getStatus().name()); } catch (Exception ignored) { jo.addProperty("status", "PENDING"); }
                 jo.addProperty("assignedBot", t.getAssignedBot() == null ? "" : t.getAssignedBot());
+                if (t.getFailureReason() != null) jo.addProperty("failureReason", t.getFailureReason());
                 tasks.add(jo);
             }
             root.add("tasks", tasks);
@@ -158,8 +160,8 @@ public class TaskQueue {
                         if (itemName != null && !itemName.isEmpty()) {
                             try {
                                 Identifier idf = Identifier.tryParse(itemName);
-                                Item it = BuiltInRegistries.ITEM.getValue(idf);
-                                data.put("item", it);
+                                Item it = BuiltInRegistries.ITEM.getOptional(idf).orElse(null);
+                                if (it != null && it != Items.AIR) data.put("item", it);
                             } catch (Exception ignored) {}
                         }
                         data.put("quantity", targetQty);
@@ -168,6 +170,7 @@ public class TaskQueue {
                         if (collected > 0) t.addCollected(collected);
                         try { t.setStatus(BotTask.Status.valueOf(statusStr)); } catch (Exception ignored) {}
                         if (assigned != null && !assigned.isEmpty()) t.setAssignedBot(assigned);
+                        if (jo.has("failureReason")) t.setFailureReason(jo.get("failureReason").getAsString());
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
                             t.getStatus() != BotTask.Status.FAILED &&

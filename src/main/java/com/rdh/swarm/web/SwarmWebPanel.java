@@ -465,6 +465,7 @@ function renderTasks() {
       <div class="task-info">
         <div class="task-name">${t.item || t.type} × ${t.quantity}</div>
         <div class="task-meta">${t.progress} | ${t.bot}</div>
+        ${t.reason ? `<div class="task-meta" style="color:#c96">${t.reason}</div>` : ''}
       </div>
       <span class="task-status status-${t.status}">${t.status}</span>
       <button class="danger" onclick="removeTask('${t.id}')" title="Remove task ${t.id} (/api/task/remove)" style="padding:3px 8px;">✕</button>

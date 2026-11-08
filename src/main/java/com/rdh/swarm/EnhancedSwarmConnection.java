@@ -314,6 +314,7 @@ public class EnhancedSwarmConnection extends Thread {
                                                 try {
                                                     if (task.getId().toString().equals(tid)) {
                                                         task.setStatus(BotTask.Status.FAILED);
+                                                        task.setFailureReason(reason);
                                                         break;
                                                     }
                                                 } catch (Exception ignored) {}

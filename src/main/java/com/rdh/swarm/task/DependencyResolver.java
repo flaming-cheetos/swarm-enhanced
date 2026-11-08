@@ -236,6 +236,10 @@ public class DependencyResolver {
         return new ExecutionPlan(steps, gatherList, craftPlan, RecipeBook.getRequiredTier(targetItem));
     }
 
+    public static boolean hasKnownSource(Item item) {
+        return RecipeBook.hasKnownSource(item);
+    }
+
     public static RecipeBook.Tier getCurrentTier() {
         if (mc.player == null) return RecipeBook.Tier.WOOD;
 

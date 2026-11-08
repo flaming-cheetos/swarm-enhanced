@@ -489,4 +489,30 @@ public class RecipeBook {
         if (item == null) return 0;
         return FUEL_POWER.getOrDefault(item, 0);
     }
+
+    /**
+     * True when this project knows how to obtain the item: a registered block
+     * item, a recipe, a smeltable ingot, or a known mining drop. This is a
+     * source check, not a claim that the world contains the resource.
+     */
+    public static boolean hasKnownSource(Item item) {
+        if (item == null || item == Items.AIR) return false;
+        if (hasRecipe(item)) return true;
+        if (getOreForIngot(item) != null) return true;
+        try {
+            Identifier id = BuiltInRegistries.ITEM.getKey(item);
+            if (id == null) return false;
+            if (BuiltInRegistries.BLOCK.getOptional(id).isPresent()) return true;
+            String path = id.getPath();
+            return path.endsWith("_ore") || path.endsWith("_log") || path.endsWith("_stem")
+                || path.endsWith("_wood") || KNOWN_GATHER_DROPS.contains(path);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static final Set<String> KNOWN_GATHER_DROPS = Set.of(
+        "coal", "charcoal", "diamond", "emerald", "lapis_lazuli", "redstone",
+        "flint", "raw_iron", "raw_gold", "raw_copper", "quartz", "glowstone_dust"
+    );
 }

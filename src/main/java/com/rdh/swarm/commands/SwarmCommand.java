@@ -186,9 +186,19 @@ public class SwarmCommand extends Command {
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
             try {
-                Identifier id = Identifier.tryParse(item);
-                net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
+                net.minecraft.world.item.Item it = resolveKnownItem(item);
+                if (it == null) {
+                    error("unknown item '%s', not queued", item);
+                    return SINGLE_SUCCESS;
+                }
                 BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
+                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
+                    t.setStatus(BotTask.Status.FAILED);
+                    t.setFailureReason("no known source");
+                    mod.host.getTaskQueue().add(t);
+                    info("TASK: %s failed — no known source", t.getId());
+                    return SINGLE_SUCCESS;
+                }
                 mod.host.getTaskQueue().add(t);
                 info("Added task %s (%s x%d)", t.getId().toString(), item, qty);
             } catch (Exception e) { error("Invalid item: %s", item); }
@@ -204,9 +214,20 @@ public class SwarmCommand extends Command {
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
 
             try {
-                Identifier id = Identifier.tryParse(item);
-                net.minecraft.world.item.Item it = BuiltInRegistries.ITEM.getValue(id);
+                net.minecraft.world.item.Item it = resolveKnownItem(item);
+                if (it == null) {
+                    error("unknown item '%s', not queued", item);
+                    return SINGLE_SUCCESS;
+                }
                 BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
+                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
+                    t.setStatus(BotTask.Status.FAILED);
+                    t.setFailureReason("no known source");
+                    t.setAssignedBot(bot);
+                    mod.host.getTaskQueue().add(t);
+                    info("TASK: %s failed — no known source", t.getId());
+                    return SINGLE_SUCCESS;
+                }
                 t.setAssignedBot(bot);
                 mod.host.getTaskQueue().add(t);
                 mod.host.assignTask(bot, t);
@@ -265,7 +286,7 @@ public class SwarmCommand extends Command {
             List<BotTask> tasks = q.toList();
             if (tasks.isEmpty()) { info("No tasks in queue"); return SINGLE_SUCCESS; }
             info("Tasks in queue (%d):", tasks.size());
-            for (BotTask t : tasks) info("  %s %s x%d assigned=%s status=%s", t.getId().toString(), t.getItemName(), t.getTargetQuantity(), t.getAssignedBot(), t.getStatus());
+            for (BotTask t : tasks) info("  %s %s x%d assigned=%s status=%s reason=%s", t.getId().toString(), t.getItemName(), t.getTargetQuantity(), t.getAssignedBot(), t.getStatus(), t.getFailureReason() == null ? "" : t.getFailureReason());
             return SINGLE_SUCCESS;
         }));
 
@@ -681,6 +702,13 @@ public class SwarmCommand extends Command {
         } catch (Exception ignored) {}
         error("Not hosting and no local BotBrain");
         return SINGLE_SUCCESS;
+    }
+
+    private static net.minecraft.world.item.Item resolveKnownItem(String item) {
+        Identifier id = Identifier.tryParse(item);
+        if (id == null) return null;
+        net.minecraft.world.item.Item resolved = BuiltInRegistries.ITEM.getOptional(id).orElse(null);
+        return resolved == net.minecraft.world.item.Items.AIR ? null : resolved;
     }
 
     private int setDepositFromCrosshair(CommandContext<ClientSuggestionProvider> context, String category) {

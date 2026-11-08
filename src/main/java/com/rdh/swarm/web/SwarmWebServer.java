@@ -240,6 +240,7 @@ public class SwarmWebServer {
                 sb.append("\"quantity\":").append(task.getTargetQuantity()).append(",");
                 sb.append("\"progress\":\"").append(esc(task.getProgressString())).append("\",");
                 sb.append("\"status\":\"").append(task.getStatus().name()).append("\",");
+                sb.append("\"reason\":\"").append(esc(task.getFailureReason() == null ? "" : task.getFailureReason())).append("\",");
                 sb.append("\"bot\":\"").append(esc(task.getAssignedBot() != null ? task.getAssignedBot() : "any")).append("\"");
                 sb.append("}");
                 if (i < tasks.size() - 1) sb.append(",");
@@ -279,7 +280,14 @@ public class SwarmWebServer {
 
                     net.minecraft.world.item.Item mcItem = null;
                     if (!itemless) {
-                        try { mcItem = BuiltInRegistries.ITEM.getValue(Identifier.fromNamespaceAndPath("minecraft", item)); } catch (Exception ignored) {}
+                        try {
+                            Identifier id = Identifier.tryParse(item.contains(":") ? item : "minecraft:" + item);
+                            if (id != null) mcItem = BuiltInRegistries.ITEM.getOptional(id).orElse(null);
+                        } catch (Exception ignored) {}
+                        if (mcItem == null || mcItem == net.minecraft.world.item.Items.AIR) {
+                            logWarn("unknown item '" + item + "', not queued");
+                            return;
+                        }
                     }
                     BotTask.Type taskType;
                     if (typeStr == null || typeStr.isEmpty() || typeStr.equalsIgnoreCase("auto")) {
@@ -293,6 +301,13 @@ public class SwarmWebServer {
                         taskType = BotTask.Type.valueOf(typeStr.toUpperCase());
                     }
                     BotTask task = new BotTask(taskType, mcItem, qty);
+                    if (!itemless && !com.rdh.swarm.task.DependencyResolver.hasKnownSource(mcItem)) {
+                        task.setStatus(BotTask.Status.FAILED);
+                        task.setFailureReason("no known source");
+                        host.getTaskQueue().addTask(task);
+                        logWarn("TASK: " + task.getId() + " failed — no known source");
+                        return;
+                    }
                     // Clear any stale completed/failed tasks before adding a new one
                     try { if (host.getTaskQueue() != null) host.getTaskQueue().clearCompleted(); } catch (Exception ignored) {}
                     host.getTaskQueue().addTask(task);

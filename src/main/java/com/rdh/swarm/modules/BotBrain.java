@@ -938,7 +938,10 @@ public class BotBrain extends Module {
         // Dedicated GATHER task type flow (no dependency resolution)
         if (currentTask != null && currentTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER) {
             net.minecraft.world.item.Item tgt = currentTask.getTargetItem();
-            if (tgt == null) { setState(BrainState.IDLE); return; }
+            if (tgt == null || tgt == Items.AIR) {
+                failUnhandledTask(currentTask);
+                return;
+            }
 
             String tgtId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(tgt).toString();
             String cleanTarget = tgtId.startsWith("minecraft:") ? tgtId.substring(10) : tgtId;
@@ -3873,6 +3876,22 @@ public class BotBrain extends Module {
         if (halted) {
             ChatUtils.warningPrefix("BotBrain", "HALT: task assignment ignored while halted");
             return;
+        }
+        if (task != null && task.getTargetItem() != null) {
+            if (task.getTargetItem() == Items.AIR) {
+                task.setStatus(BotTask.Status.FAILED);
+                task.setFailureReason("refusing to target air");
+                try { sendTaskFailed(task, "refusing to target air"); } catch (Exception ignored) {}
+                ChatUtils.warningPrefix("BotBrain", "TASK: %s failed — refusing to target air", task.getId());
+                return;
+            }
+            if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(task.getTargetItem())) {
+                task.setStatus(BotTask.Status.FAILED);
+                task.setFailureReason("no known source");
+                try { sendTaskFailed(task, "no known source"); } catch (Exception ignored) {}
+                ChatUtils.warningPrefix("BotBrain", "TASK: %s failed — no known source", task.getId());
+                return;
+            }
         }
         // If we're currently depositing, queue the task locally and don't start processing yet
         try {
