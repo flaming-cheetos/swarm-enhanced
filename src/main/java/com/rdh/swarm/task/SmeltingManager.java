@@ -17,6 +17,21 @@ import static meteordevelopment.meteorclient.MeteorClient.mc;
 
 public class SmeltingManager {
 
+    /** Raw food -> cooked result; the existing furnace states consume the raw input. */
+    public static final java.util.Map<Item, Item> COOKING = java.util.Map.copyOf(FoodManager.COOKING);
+
+    public static boolean isCookable(Item item) {
+        return item != null && COOKING.containsKey(item);
+    }
+
+    public static Item cookedResult(Item item) {
+        return item == null ? null : COOKING.get(item);
+    }
+
+    public static boolean depositFood(Item raw) {
+        return isCookable(raw) && depositOre(raw);
+    }
+
     public static boolean isFurnaceOpen() {
         return mc.player != null &&
                mc.player.containerMenu instanceof AbstractFurnaceMenu;

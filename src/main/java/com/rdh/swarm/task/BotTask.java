@@ -8,7 +8,7 @@ import java.util.UUID;
 
 public class BotTask {
 
-    public enum Type { GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS }
+    public enum Type { GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD }
     public enum Status { PENDING, ACTIVE, BLOCKED, COMPLETE, FAILED }
 
     private final UUID id;

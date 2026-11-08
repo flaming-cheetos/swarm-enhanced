@@ -73,7 +73,10 @@ public class EnhancedSwarmWorker extends Thread {
     private static final Set<String> KEEP_IDS = Set.of(
         "minecraft:cooked_beef", "minecraft:cooked_porkchop", "minecraft:cooked_chicken",
         "minecraft:cooked_mutton", "minecraft:cooked_cod", "minecraft:cooked_salmon",
-        "minecraft:cooked_rabbit", "minecraft:bread", "minecraft:golden_apple",
+        "minecraft:cooked_rabbit", "minecraft:beef", "minecraft:porkchop", "minecraft:mutton",
+        "minecraft:chicken", "minecraft:rabbit", "minecraft:cod", "minecraft:salmon",
+        "minecraft:potato", "minecraft:kelp", "minecraft:flint_and_steel", "minecraft:coal",
+        "minecraft:charcoal", "minecraft:oak_planks", "minecraft:bread", "minecraft:golden_apple",
         "minecraft:enchanted_golden_apple", "minecraft:golden_carrot",
         "minecraft:baked_potato", "minecraft:mushroom_stew", "minecraft:beetroot_soup",
         "minecraft:pumpkin_pie", "minecraft:cookie", "minecraft:melon_slice",

@@ -66,3 +66,79 @@ None added in G1.
 - `KillAura`'s pause flag is private; `isBaritonePaused()` approximates it with `KillAura.attacking` and `AutoEat.eating`, so a paused path outside those states may still age timers.
 - Death recovery still only navigates to the last death position; it does not guarantee item pickup or safe routing.
 - The guard re-enables modules every 20 ticks, so it will also override a manual disable while BotBrain is active by design.
+## G2 — Food hunting, cooking, and raw-food fallback
+
+### Summary
+
+- Added `com.rdh.swarm.task.FoodManager`:
+  - `countFood()` counts every inventory stack with a `DataComponents.FOOD` component.
+  - `cookedCount()` counts cooked/safe-prepared food; `countRaw(Item)` counts a specific raw item.
+  - `COOKING` maps raw food to its cooked result (beef, porkchop, mutton, chicken, rabbit, cod, salmon, potato, kelp).
+  - `SAFE_RAW` is the subset AutoEat may consume uncooked: beef, porkchop, mutton, rabbit, cod, salmon. Raw chicken and raw potato are intentionally excluded.
+- Added `BotTask.Type.HUNT_FOOD` and `BrainState.HUNTING`.
+- BotBrain food settings:
+  - `food-low` (6): idle auto-hunt water mark.
+  - `food-target` (20): hunt stop count and default HUNT_FOOD quantity.
+  - `hunt-range` (96): animal search radius.
+  - `eat-raw-fallback` (true): allow safe raw food in AutoEat.
+- Hunting loop:
+  - Targets adult, unnamed, unleashed cows, pigs, sheep, chickens, and rabbits; tamed animals are skipped via `TamableAnimal.isTame()`.
+  - Uses Baritone `IFollowProcess.follow(Predicate<Entity>)` while a target exists; cancels it when no target remains or the hunt ends.
+  - Attacks within 3 blocks using `Rotations` plus `GameMode.attack` and the 26.3 swing call `swing(InteractionHand, SwingAnimation.DEFAULT, true)`.
+  - Collects nearby item drops, explores up to 3 times when no animal is visible, times out after 5 minutes, and reports progress every 10 seconds.
+- Automatic food management:
+  - `handleIdle` starts HUNT_FOOD when food is below `food-low` (120 s cooldown).
+  - Every 40 ticks, a task in GATHERING/IDLE is interrupted when food reaches zero; the interrupted task is stored in `pendingTask` and resumed when the hunt ends.
+  - A successful hunt queues a direct cooking task when at least two safe raw items and fuel are available (5 min cooldown).
+- Direct cooking task:
+  - A `SMELT` task whose target is `FoodManager.cookedResult(source)` bypasses `DependencyResolver` and drives the existing SMELTING_DEPOSIT/SMELTING_WAIT states via `directSmelt`.
+  - `getCurrentStep()` returns the main task while `directSmelt`, and completion marks the task fully collected so `handleIdle` sends `TASK_COMPLETE`.
+- `ModuleGuard`:
+  - `setKillAuraSuppressed(true)` disables KillAura during a hunt; leaving HUNTING restores it through the normal guard tick.
+  - `setRawFoodFallback(boolean)` edits AutoEat's `blacklist` `ItemListSetting` for `FoodManager.SAFE_RAW`; a missing setting logs one WARN and leaves behavior unchanged.
+- `EnhancedSwarmWorker.KEEP_IDS` now also keeps raw meats/fish, potato, kelp, flint-and-steel, coal/charcoal, and oak planks.
+- `SmeltingManager` exposes `COOKING`, `isCookable`, `cookedResult`, and `depositFood`.
+
+### Public signatures
+
+```text
+com.rdh.swarm.task.FoodManager
+  static final Map<Item, Item> COOKING
+  static final Set<Item> SAFE_RAW
+  static boolean isFood(ItemStack)
+  static int countFood()
+  static int cookedCount()
+  static int countRaw(Item)
+  static boolean isCookable(Item)
+  static Item cookedResult(Item)
+
+com.rdh.swarm.modules.ModuleGuard
+  void setKillAuraSuppressed(boolean)
+  void setRawFoodFallback(boolean)
+```
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `food-low` | Int | `6` |
+| BotBrain | `food-target` | Int | `20` |
+| BotBrain | `hunt-range` | Int | `96` |
+| BotBrain | `eat-raw-fallback` | Bool | `true` |
+
+### Commands / endpoints
+
+None added in G2. Food hunts can be requested with a `HUNT_FOOD` task through the existing task queue.
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**; `compileJava` and `jar` both ran.
+- Verified against the 26.3 merged jar: `EntityTypes.COW/PIG/SHEEP/CHICKEN/RABBIT`, `TamableAnimal.isTame()`, `LivingEntity.swing(InteractionHand, SwingAnimation, boolean)`, and `SwingAnimation.DEFAULT`.
+
+### Known issues / not verified
+
+- No in-game hunt, kill, cooking, or AutoEat fallback test was possible.
+- AutoEat's setting name `blacklist` is assumed; the guard fails soft with one WARN if Meteor renames it.
+- Hunting only covers five overworld animals; no nether or fish hunting.
+- A direct cooking task still requires the normal furnace scan/placement path and will end in STUCK if no furnace or cobblestone is available.
+- Raw chicken and potato remain blacklisted because of their hunger/poison effects.

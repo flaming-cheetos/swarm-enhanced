@@ -19,6 +19,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.entity.*;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.phys.AABB;
+import meteordevelopment.meteorclient.utils.player.Rotations;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.core.Direction;
@@ -90,10 +94,42 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Integer> foodLow = sgGeneral.add(new IntSetting.Builder()
+        .name("food-low")
+        .description("Start a food hunt when total food drops below this count.")
+        .defaultValue(6)
+        .range(0, 64)
+        .build()
+    );
+
+    private final Setting<Integer> foodTarget = sgGeneral.add(new IntSetting.Builder()
+        .name("food-target")
+        .description("Stop a food hunt at this total food count.")
+        .defaultValue(20)
+        .range(1, 128)
+        .build()
+    );
+
+    private final Setting<Integer> huntRange = sgGeneral.add(new IntSetting.Builder()
+        .name("hunt-range")
+        .description("Maximum animal search radius for food hunts.")
+        .defaultValue(96)
+        .range(16, 256)
+        .build()
+    );
+
+    private final Setting<Boolean> eatRawFallback = sgGeneral.add(new BoolSetting.Builder()
+        .name("eat-raw-fallback")
+        .description("Allow AutoEat to eat safe raw meat when no cooked food is available.")
+        .defaultValue(true)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
         GATHERING,
+        HUNTING,
         WITHDRAWING,
         RETURNING_TO_BASE,
         CRAFTING_PREP,
@@ -221,6 +257,23 @@ public class BotBrain extends Module {
     private String lastAliveDimension = "";
     private boolean deathRecorded = false;
 
+    // Food hunt state
+    private static final Set<EntityType<?>> HUNT_TYPES = Set.of(
+        EntityTypes.COW, EntityTypes.PIG, EntityTypes.SHEEP, EntityTypes.CHICKEN, EntityTypes.RABBIT
+    );
+    private long huntStartTime = 0;
+    private long lastHuntExplore = 0;
+    private int huntExploreRounds = 0;
+    private int huntInitialFood = 0;
+    private double lastHuntDistance = Double.MAX_VALUE;
+    private boolean huntFollowing = false;
+    private long lastAutoHunt = 0;
+    private long lastHuntProgress = 0;
+    private static final long AUTO_HUNT_COOLDOWN = 120_000L;
+    private long lastCookAttempt = 0;
+    private static final long COOK_COOLDOWN = 300_000L;
+    private boolean directSmelt = false;
+
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
     private static final long BARITONE_COMMAND_COOLDOWN = 3000;
@@ -341,7 +394,10 @@ public class BotBrain extends Module {
         lastAlivePos = null;
         lastAliveDimension = "";
         deathRecorded = false;
-        if (manageModules.get()) moduleGuard.activate(fightMobs.get());
+        if (manageModules.get()) {
+            moduleGuard.activate(fightMobs.get());
+            moduleGuard.setRawFoodFallback(eatRawFallback.get());
+        }
         stateEnterTime = System.currentTimeMillis();
         lastBrainTick = System.currentTimeMillis();
         lastItemCheckTime = System.currentTimeMillis();
@@ -351,7 +407,10 @@ public class BotBrain extends Module {
     public void onDeactivate() {
         state = BrainState.IDLE;
         currentTask = null;
+        pendingTask = null;
         executionPlan = null;
+        directSmelt = false;
+        stopHuntMovement();
         if (manageModules.get()) moduleGuard.deactivate();
         stopBaritoneOnDeactivate();
     }
@@ -411,7 +470,11 @@ public class BotBrain extends Module {
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
-        if (manageModules.get()) moduleGuard.tick(tickCounter);
+        if (manageModules.get()) {
+            moduleGuard.tick(tickCounter);
+            moduleGuard.setRawFoodFallback(eatRawFallback.get());
+        }
+        if (tickCounter % 40 == 0) maybeInterruptForFood();
         if (tickCounter % 20 == 0 && currentTask != null) {
             ChatUtils.infoPrefix("BotBrain", "tick state=%s planStep=%d planSize=%d task=%s", state, planStep, executionPlan == null ? 0 : executionPlan.size(), currentTask == null ? "" : currentTask.getItemName());
         }
@@ -448,6 +511,7 @@ public class BotBrain extends Module {
             case IDLE -> handleIdle();
             case CHECKING_EQUIPMENT -> handleEquipmentCheck();
             case GATHERING -> handleGathering();
+            case HUNTING -> handleHunting();
             case WITHDRAWING -> handleWithdrawing();
             case RETURNING_TO_BASE -> handleReturningToBase();
             case CRAFTING_PREP -> handleCraftingPrep();
@@ -467,6 +531,7 @@ public class BotBrain extends Module {
 
     private void handleIdle() {
         if (currentTask == null) {
+            if (tryAutoHunt()) return;
             currentTaskDescription = "Idle — no task";
             return;
         }
@@ -482,6 +547,14 @@ public class BotBrain extends Module {
         }
 
         BotTask.Type taskType = currentTask.getType();
+        if (directSmelt && taskType == BotTask.Type.SMELT) {
+            setState(BrainState.SMELTING_DEPOSIT);
+            return;
+        }
+        if (taskType == BotTask.Type.HUNT_FOOD) {
+            if (state != BrainState.HUNTING) beginHunt();
+            return;
+        }
         if (taskType != BotTask.Type.GATHER && taskType != BotTask.Type.CRAFT && taskType != BotTask.Type.SMELT) {
             failUnhandledTask(currentTask);
             return;
@@ -2333,6 +2406,7 @@ public class BotBrain extends Module {
             if (have >= need) {
                 ChatUtils.infoPrefix("BotBrain", "SMELT: complete, have %d/%d %s", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
                 step.setStatus(BotTask.Status.COMPLETE);
+                if (directSmelt && step == currentTask) currentTask.addCollected(currentTask.getRemaining());
                 try { sendTaskProgress(step); } catch (Exception ignored) {}
                 advancePlan();
                 setState(BrainState.IDLE);
@@ -2417,6 +2491,256 @@ public class BotBrain extends Module {
         }
     }
 
+    private void beginHunt() {
+        huntStartTime = System.currentTimeMillis();
+        lastHuntProgress = huntStartTime;
+        lastHuntExplore = 0;
+        huntExploreRounds = 0;
+        huntInitialFood = FoodManager.countFood();
+        lastHuntDistance = Double.MAX_VALUE;
+        huntFollowing = false;
+        moduleGuard.setKillAuraSuppressed(true);
+        currentTaskDescription = "Hunting food";
+        setState(BrainState.HUNTING);
+        ChatUtils.infoPrefix("BotBrain", "Food hunt started (food=%d target=%d)", huntInitialFood, currentTask == null ? 0 : currentTask.getTargetQuantity());
+    }
+
+    private void handleHunting() {
+        if (currentTask == null) {
+            stopHuntMovement();
+            setState(BrainState.IDLE);
+            return;
+        }
+        if (huntStartTime == 0) {
+            beginHunt();
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        int targetFood = currentTask.getTargetQuantity() > 0 ? currentTask.getTargetQuantity() : foodTarget.get();
+        int food = FoodManager.countFood();
+        if (now - lastHuntProgress >= 10_000L) {
+            lastHuntProgress = now;
+            try { sendTaskProgress(currentTask); } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "Food hunt: %d/%d food, gained %d", food, targetFood, Math.max(0, food - huntInitialFood));
+        }
+        int gained = Math.max(0, food - huntInitialFood);
+        if (gained > currentTask.getCollectedQuantity()) currentTask.addCollected(gained - currentTask.getCollectedQuantity());
+        if (food >= targetFood) {
+            currentTask.addCollected(currentTask.getRemaining());
+            completeHunt("food target reached");
+            return;
+        }
+        if (now - huntStartTime > 300_000L) {
+            failHunt("food hunt timeout");
+            return;
+        }
+
+        Entity target = findHuntTarget();
+        if (target != null) {
+            huntExploreRounds = 0;
+            if (!huntFollowing) {
+                try {
+                    baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getFollowProcess().follow(this::isHuntTarget);
+                    huntFollowing = true;
+                } catch (Exception | NoClassDefFoundError e) {
+                    ChatUtils.warningPrefix("BotBrain", "Food hunt follow unavailable");
+                }
+            }
+
+            double distance = mc.player.distanceToSqr(target);
+            if (distance + 1.0 < lastHuntDistance) {
+                lastHuntDistance = distance;
+                stateEnterTime = now;
+            }
+            currentTaskDescription = "Hunting " + target.getType().getDescription().getString();
+            if (distance <= 9.0 && mc.gameMode != null) {
+                Rotations.rotate(Rotations.getYaw(target), Rotations.getPitch(target));
+                if (mc.player.getAttackStrengthScale(0.5f) >= 1.0f) {
+                    mc.gameMode.attack(mc.player, target);
+                    mc.player.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
+                }
+            }
+            return;
+        }
+
+        if (huntFollowing) stopHuntMovement();
+        ItemEntity drop = findHuntDrop();
+        if (drop != null) {
+            currentTaskDescription = "Collecting food drops";
+            if (canSendBaritone()) {
+                sendBaritoneChat(String.format("#goto %d %d %d", drop.blockPosition().getX(), drop.blockPosition().getY(), drop.blockPosition().getZ()));
+            }
+            return;
+        }
+
+        if (now - lastHuntExplore >= 60_000L) {
+            huntExploreRounds++;
+            if (huntExploreRounds > 3) {
+                failHunt("no animals found after 3 rounds");
+                return;
+            }
+            currentTaskDescription = "Searching for animals (" + huntExploreRounds + "/3)";
+            if (canSendBaritone()) sendBaritoneChat("#explore");
+            lastHuntExplore = now;
+        }
+    }
+
+    private Entity findHuntTarget() {
+        if (mc.player == null || mc.level == null) return null;
+        AABB box = new AABB(mc.player.blockPosition()).inflate(huntRange.get());
+        Entity best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Entity entity : mc.level.getEntities(mc.player, box, this::isHuntTarget)) {
+            double distance = entity.distanceToSqr(mc.player);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = entity;
+            }
+        }
+        return best;
+    }
+
+    private boolean isHuntTarget(Entity entity) {
+        if (!(entity instanceof Mob mob) || !mob.isAlive() || !HUNT_TYPES.contains(mob.getType())) return false;
+        if (mob instanceof AgeableMob ageable && ageable.isBaby()) return false;
+        if (mob.hasCustomName()) return false;
+        if (mob instanceof TamableAnimal tamable && tamable.isTame()) return false;
+        return mob.getLeashData() == null;
+    }
+
+    private ItemEntity findHuntDrop() {
+        if (mc.player == null || mc.level == null) return null;
+        AABB box = new AABB(mc.player.blockPosition()).inflate(8.0);
+        ItemEntity best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Entity entity : mc.level.getEntities(mc.player, box, e -> e instanceof ItemEntity)) {
+            if (!(entity instanceof ItemEntity drop)) continue;
+            if (drop.getItem().isEmpty()) continue;
+            double distance = drop.distanceToSqr(mc.player);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = drop;
+            }
+        }
+        return best;
+    }
+
+    private void stopHuntMovement() {
+        if (huntFollowing) {
+            try {
+                baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getFollowProcess().cancel();
+            } catch (Exception | NoClassDefFoundError ignored) {}
+            huntFollowing = false;
+        }
+    }
+
+    private void completeHunt(String reason) {
+        stopHuntMovement();
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(task); } catch (Exception ignored) {}
+        }
+        ChatUtils.infoPrefix("BotBrain", "Food hunt complete: %s", reason);
+        resumeAfterHunt(true);
+    }
+
+    private void failHunt(String reason) {
+        stopHuntMovement();
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        ChatUtils.warningPrefix("BotBrain", "Food hunt failed: %s", reason);
+        lastAutoHunt = System.currentTimeMillis();
+        resumeAfterHunt(false);
+    }
+
+    private void resumeAfterHunt(boolean success) {
+        if (pendingTask != null) {
+            BotTask next = pendingTask;
+            pendingTask = null;
+            ChatUtils.infoPrefix("BotBrain", "Resuming interrupted task: %s x%d", next.getItemName(), next.getTargetQuantity());
+            setTask(next);
+            return;
+        }
+        if (success) maybeQueueCooking();
+    }
+
+    /** Auto-start a hunt when idle and food is below the low-water mark. */
+    private boolean tryAutoHunt() {
+        if (mc.player == null || mc.level == null) return false;
+        int low = foodLow.get();
+        if (low <= 0) return false;
+        int food = FoodManager.countFood();
+        if (food >= low) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoHunt < AUTO_HUNT_COOLDOWN) return false;
+        lastAutoHunt = now;
+        ChatUtils.warningPrefix("BotBrain", "Food low (%d < %d), starting automatic food hunt", food, low);
+        setTask(new BotTask(BotTask.Type.HUNT_FOOD, null, foodTarget.get()));
+        return true;
+    }
+
+    /** Interrupt a gathering task when the bot is completely out of food. */
+    private void maybeInterruptForFood() {
+        if (currentTask == null || currentTask.getType() == BotTask.Type.HUNT_FOOD) return;
+        if (state != BrainState.GATHERING && state != BrainState.IDLE) return;
+        if (FoodManager.countFood() > 0) return;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoHunt < AUTO_HUNT_COOLDOWN) return;
+        lastAutoHunt = now;
+        pendingTask = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        directSmelt = false;
+        stopHuntMovement();
+        if (canSendBaritone()) sendBaritoneChat("#stop");
+        ChatUtils.warningPrefix("BotBrain", "Out of food; interrupting current task to hunt");
+        setTask(new BotTask(BotTask.Type.HUNT_FOOD, null, foodTarget.get()));
+    }
+
+    /** After a successful hunt, cook surplus raw food when fuel is available. */
+    private void maybeQueueCooking() {
+        if (mc.player == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastCookAttempt < COOK_COOLDOWN) return;
+        if (SmeltingManager.countFuel() <= 0) return;
+        Item bestRaw = null;
+        int bestCount = 0;
+        for (Item raw : FoodManager.SAFE_RAW) {
+            int count = FoodManager.countRaw(raw);
+            if (count > bestCount) {
+                bestCount = count;
+                bestRaw = raw;
+            }
+        }
+        if (bestRaw == null || bestCount < 2) return;
+        Item cooked = FoodManager.cookedResult(bestRaw);
+        if (cooked == null) return;
+        int have = CraftingManager.countInInventory(cooked);
+        int want = Math.min(bestCount, Math.max(1, foodTarget.get() - have));
+        if (want <= 0) return;
+        lastCookAttempt = now;
+        java.util.Map<String, Object> data = new java.util.HashMap<>();
+        data.put("item", cooked);
+        data.put("quantity", want);
+        data.put("source", bestRaw);
+        BotTask cook = new BotTask(java.util.UUID.randomUUID(), BotTask.Type.SMELT, 0, data);
+        ChatUtils.infoPrefix("BotBrain", "Queuing cooking task: %s x%d", cook.getItemName(), want);
+        setTask(cook);
+    }
+
     private void handleStuck() {
         currentTaskDescription = "Stuck — waiting";
         stuckCounter++;
@@ -2450,11 +2774,31 @@ public class BotBrain extends Module {
 
         this.currentTask = task;
         this.executionPlan = null;
+        this.directSmelt = false;
         this.planStep = 0;
         this.lastReportedCount = 0;
         this.basePos = null;
         this.baseReturnCommandSent = false;
         try { task.setStatus(BotTask.Status.ACTIVE); } catch (Exception ignored) {}
+
+        if (task.getType() == BotTask.Type.HUNT_FOOD) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            beginHunt();
+            return;
+        }
+
+        if (task.getType() == BotTask.Type.SMELT && task.getSourceItem() != null && task.getTargetItem() != null
+            && task.getTargetItem() == SmeltingManager.cookedResult(task.getSourceItem())) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            this.directSmelt = true;
+            setState(BrainState.IDLE);
+            ChatUtils.infoPrefix("BotBrain", "Cooking task queued: %s x%d", task.getItemName(), task.getTargetQuantity());
+            return;
+        }
 
         // Resolve dependencies once at assignment and store results
         try {
@@ -2501,6 +2845,7 @@ public class BotBrain extends Module {
 
     private void setState(BrainState newState) {
         this.state = newState;
+        if (newState != BrainState.HUNTING) moduleGuard.setKillAuraSuppressed(false);
         this.stateEnterTime = System.currentTimeMillis();
         // Reset misc state trackers when entering a new state
         // Only reset mining state when leaving GATHERING
@@ -2599,11 +2944,18 @@ public class BotBrain extends Module {
     }
 
     private BotTask getCurrentStep() {
+        if (directSmelt && currentTask != null) return currentTask;
         if (executionPlan == null || planStep >= executionPlan.size()) return null;
         return executionPlan.get(planStep);
     }
 
     private void advancePlan() {
+        if (directSmelt) {
+            directSmelt = false;
+            executionPlan = null;
+            planStep = 0;
+            return;
+        }
         planStep++;
         if (planStep >= executionPlan.size()) {
             executionPlan = null;

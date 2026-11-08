@@ -17,6 +17,8 @@ import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.item.Item;
+import com.rdh.swarm.task.FoodManager;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -99,6 +101,9 @@ public final class ModuleGuard {
     private final Map<Class<? extends Module>, Module> guarded = new LinkedHashMap<>();
     private final Map<Class<? extends Module>, Boolean> originalState = new LinkedHashMap<>();
     private boolean active;
+    private boolean killAuraSuppressed;
+    private Boolean rawFoodFallback;
+    private boolean warnedNoBlacklist;
 
     public void activate(boolean fightMobs) {
         if (active) return;
@@ -142,6 +147,7 @@ public final class ModuleGuard {
         if (mc.player == null || mc.level == null) return;
 
         for (Module module : guarded.values()) {
+            if (killAuraSuppressed && module instanceof KillAura) continue;
             if (!module.isActive()) {
                 try {
                     module.enable();
@@ -175,6 +181,43 @@ public final class ModuleGuard {
         originalState.clear();
         active = false;
         ChatUtils.infoPrefix("ModuleGuard", "Restored guarded module state (%d changes)", restored);
+    }
+
+    public void setKillAuraSuppressed(boolean suppressed) {
+        killAuraSuppressed = suppressed;
+        if (suppressed) {
+            Module killAura = guarded.get(KillAura.class);
+            if (killAura != null && killAura.isActive()) killAura.disable();
+        }
+    }
+
+    /** Allow safe raw meat in AutoEat by removing it from the blacklist; false restores it. */
+    public void setRawFoodFallback(boolean allow) {
+        if (rawFoodFallback != null && rawFoodFallback == allow) return;
+        AutoEat autoEat = Modules.get().get(AutoEat.class);
+        if (autoEat == null) return;
+        Setting<?> raw = autoEat.settings.get("blacklist");
+        if (raw == null) {
+            if (!warnedNoBlacklist) {
+                warnedNoBlacklist = true;
+                ChatUtils.warningPrefix("ModuleGuard", "AutoEat has no blacklist setting; raw-food fallback unavailable");
+            }
+            return;
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            Setting<java.util.List<Item>> blacklist = (Setting<java.util.List<Item>>) raw;
+            java.util.List<Item> items = new ArrayList<>(blacklist.get());
+            boolean changed = false;
+            for (Item rawFood : FoodManager.SAFE_RAW) {
+                if (allow) changed |= items.remove(rawFood);
+                else if (!items.contains(rawFood)) { items.add(rawFood); changed = true; }
+            }
+            if (changed) blacklist.set(items);
+            rawFoodFallback = allow;
+        } catch (Exception e) {
+            ChatUtils.warningPrefix("ModuleGuard", "Could not update AutoEat blacklist: %s", e.getMessage());
+        }
     }
 
     public boolean isEating() {
