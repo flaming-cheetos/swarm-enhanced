@@ -630,6 +630,9 @@ public class SwarmCommand extends Command {
         }));
 
         builder.then(waypoint);
+
+        // ---- ids (local registry inspection; no gameplay side effects) ----
+        IdsCommand.attach(this, builder);
     }
 
     private int setDepositFromCrosshair(CommandContext<ClientSuggestionProvider> context, String category) {
