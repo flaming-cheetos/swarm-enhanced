@@ -417,3 +417,4 @@ None. Requeueing is automatic on disconnect and host shutdown.
 - Roles are local per-bot settings; the host does not assign or report them.
 - `MINER` is a suppression role only; there is no dedicated autonomous mining loop.
 - No in-game multi-bot role test.
+- Registry dump: `DEEPDIVE/26.3_IDS/` holds `items.txt`, `blocks.txt`, `item-tags.txt`, and `foods.txt`; regenerate with `/eswarm ids all` (writes `<gamedir>/swarm-ids/`).
