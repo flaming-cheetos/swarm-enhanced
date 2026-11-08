@@ -70,6 +70,8 @@ public class WaypointManager {
         RESOURCE_CATEGORIES.put("red_sand", "surface");
         RESOURCE_CATEGORIES.put("clay", "surface");
         RESOURCE_CATEGORIES.put("gravel", "surface");
+        RESOURCE_CATEGORIES.put("stone", "cave");
+        RESOURCE_CATEGORIES.put("cobblestone", "cave");
     }
     
     /**
@@ -79,6 +81,7 @@ public class WaypointManager {
     public static String getCategoryForResource(String resourceName) {
         if (resourceName == null) return "far";
         String clean = resourceName.toLowerCase().replace("minecraft:", "");
+        if (clean.equals("cobblestone")) clean = "stone";
         return RESOURCE_CATEGORIES.getOrDefault(clean, "far");
     }
     

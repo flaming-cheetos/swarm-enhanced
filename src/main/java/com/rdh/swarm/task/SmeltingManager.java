@@ -5,7 +5,7 @@ import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.tags.ItemTags;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.InteractionHand;
@@ -73,10 +73,14 @@ public class SmeltingManager {
         // Check if fuel slot already has fuel
         if (!handler.slots.get(1).getItem().isEmpty()) return true;
 
-        // Find any item in the coals tag.
         int slot = findFuelInInventorySlots(handler);
-        if (slot == -1) return false;
-
+        if (slot == -1) {
+            ChatUtils.infoPrefix("Smelting", "FUEL: none — no valid fuel in inventory or furnace");
+            return false;
+        }
+        ItemStack fuel = handler.slots.get(slot).getItem();
+        ChatUtils.infoPrefix("Smelting", "FUEL: %s x%d = %d ticks available",
+            net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(fuel.getItem()), fuel.getCount(), burnTicks(fuel));
         InvUtils.move().fromId(slot).toId(1);
         return true;
     }
@@ -105,7 +109,16 @@ public class SmeltingManager {
     }
 
     private static boolean isFuel(ItemStack stack) {
-        return !stack.isEmpty() && stack.is(ItemTags.COALS);
+        return stack != null && !stack.isEmpty() && stack.has(DataComponents.COOKING_FUEL);
+    }
+
+    private static int burnTicks(ItemStack stack) {
+        if (!isFuel(stack)) return 0;
+        try {
+            return stack.get(DataComponents.COOKING_FUEL).burnTime().get(null, 0);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** Fuel already sitting in a furnace, readable without opening the screen. */
@@ -118,7 +131,7 @@ public class SmeltingManager {
     }
 
     public static boolean hasFuelAt(BlockPos pos) {
-        return !fuelStackAt(pos).isEmpty();
+        return isFuel(fuelStackAt(pos));
     }
 
     // Count fuel in player inventory
@@ -128,7 +141,7 @@ public class SmeltingManager {
         for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
             ItemStack stack = mc.player.getInventory().getItem(i);
             if (isFuel(stack)) {
-                count += stack.getCount();
+                count += burnTicks(stack);
             }
         }
         return count;

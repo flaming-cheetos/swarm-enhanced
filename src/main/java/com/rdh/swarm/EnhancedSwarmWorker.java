@@ -76,7 +76,7 @@ public class EnhancedSwarmWorker extends Thread {
         "minecraft:cooked_rabbit", "minecraft:beef", "minecraft:porkchop", "minecraft:mutton",
         "minecraft:chicken", "minecraft:rabbit", "minecraft:cod", "minecraft:salmon",
         "minecraft:potato", "minecraft:kelp", "minecraft:flint_and_steel", "minecraft:coal",
-        "minecraft:charcoal", "minecraft:oak_planks", "minecraft:bread", "minecraft:golden_apple",
+        "minecraft:charcoal", "minecraft:bread", "minecraft:golden_apple",
         "minecraft:enchanted_golden_apple", "minecraft:golden_carrot",
         "minecraft:baked_potato", "minecraft:mushroom_stew", "minecraft:beetroot_soup",
         "minecraft:pumpkin_pie", "minecraft:cookie", "minecraft:melon_slice",
@@ -950,8 +950,11 @@ public class EnhancedSwarmWorker extends Thread {
                         }
 
                         int inventoryAfter = countInventoryItems(mc);
+                        int moved = Math.max(0, inventoryBefore - inventoryAfter);
+                        publishChestSnapshot(fCategory, chestX, chestY, chestZ, handler, playerStart);
                         mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
-                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: done moved=%d stacks, before=%d after=%d storageDelta=unknown", deposited, inventoryBefore, inventoryAfter);
+                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: done moved=%d stacks, before=%d after=%d storageDelta=%d", deposited, inventoryBefore, inventoryAfter, moved);
+                        if (moved > 0) { lastDepositMoved += moved; lastDepositSucceeded = true; }
                         lastDepositMoved += deposited;
                         if (deposited > 0) lastDepositSucceeded = true;
                         ChatUtils.infoPrefix("Swarm", "Deposited %d items to %s chest", deposited, fCategory);
@@ -982,6 +985,48 @@ public class EnhancedSwarmWorker extends Thread {
         if (!lastDepositSucceeded && lastDepositFailure.isEmpty()) lastDepositFailure = "transfer did not run";
         ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — %s", lastDepositFailure);
         return 0;
+    }
+
+    private void publishChestSnapshot(String category, int x, int y, int z, net.minecraft.world.inventory.AbstractContainerMenu handler, int playerStart) {
+        try {
+            if (out == null || handler == null) return;
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            int used = 0;
+            int total = 0;
+            for (int i = 0; i < handler.slots.size(); i++) {
+                Slot s = handler.getSlot(i);
+                if (s.container == mc.player.getInventory()) continue;
+                total++;
+                ItemStack st = s.getItem();
+                if (st == null || st.isEmpty()) continue;
+                used++;
+                String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
+                counts.merge(id, st.getCount(), Integer::sum);
+            }
+            StringBuilder json = new StringBuilder("{\"counts\":{");
+            boolean first = true;
+            for (var e : counts.entrySet()) {
+                if (!first) json.append(',');
+                first = false;
+                json.append('"').append(e.getKey()).append("\":").append(e.getValue());
+            }
+            json.append("},\"lastScan\":").append(System.currentTimeMillis())
+                .append(",\"usedSlots\":").append(used)
+                .append(",\"totalSlots\":").append(total)
+                .append(",\"status\":\"FRESH\"}");
+            synchronized (out) {
+                out.writeUTF("SCAN_CHEST_RESULT:" + category + ":" + x + ":" + y + ":" + z + "|" + json);
+                out.flush();
+            }
+            try {
+                var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                if (brain != null && lastDepositMoved > 0) {
+                    Map<String, Long> delta = new LinkedHashMap<>();
+                    for (var e : counts.entrySet()) delta.put(e.getKey(), (long) e.getValue());
+                    brain.mergeLocalStorageCounts(delta);
+                }
+            } catch (Exception ignored) {}
+        } catch (Exception ignored) {}
     }
 
     private int countInventoryItems(Minecraft mc) {

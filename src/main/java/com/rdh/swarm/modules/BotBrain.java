@@ -361,6 +361,7 @@ public class BotBrain extends Module {
     private BlockPos surfaceTarget = null;
     private boolean surfaceCommandSent = false;
     private boolean stagingComplete = false;
+    private int stagingAttempts = 0;
     private boolean pendingDepositAfterReturn = false;
     // Waypoint manager for worker-side waypoint lookups
     private WaypointManager waypointManager = null;
@@ -535,6 +536,16 @@ public class BotBrain extends Module {
 
     // Storage query response cache (non-blocking)
     private volatile Map<String, Long> lastStorageCache = Collections.emptyMap();
+
+    /** Reflect a completed chest transfer in the local storage cache immediately. */
+    public void mergeLocalStorageCounts(Map<String, Long> delta) {
+        if (delta == null || delta.isEmpty()) return;
+        synchronized (this) {
+            Map<String, Long> merged = new HashMap<>(lastStorageCache == null ? Collections.emptyMap() : lastStorageCache);
+            for (var e : delta.entrySet()) merged.merge(e.getKey(), e.getValue(), Long::sum);
+            lastStorageCache = merged;
+        }
+    }
     private volatile long lastCacheTime = 0L;
     private volatile boolean storageQueryPending = false;
     // Pending withdrawals requested by planner (itemId -> qty)
@@ -2738,6 +2749,11 @@ public class BotBrain extends Module {
                         pathing, atChest, swarmMod.worker.lastDepositTransferRan, swarmMod.worker.lastDepositMoved, swarmMod.worker.lastDepositSucceeded);
                 }
                 if (!swarmMod.worker.isDepositing) {
+                    if (!swarmMod.worker.lastDepositSucceeded) {
+                        ChatUtils.warningPrefix("BotBrain", "DEPOSIT: aborted — %s", swarmMod.worker.lastDepositFailure.isEmpty() ? "transfer did not complete" : swarmMod.worker.lastDepositFailure);
+                        setState(BrainState.IDLE);
+                        return;
+                    }
                     ChatUtils.infoPrefix("BotBrain", "Deposit complete, going idle");
                     setState(BrainState.IDLE);
                     // If a task was queued while depositing, start it now
@@ -4050,6 +4066,7 @@ public class BotBrain extends Module {
             this.gatherStagingCommandSent = false;
             this.stagingTarget = null;
             this.stagingComplete = false;
+            this.stagingAttempts = 0;
         }
         // Reset tick-driven crafting state
         this.craftingStep = 0;
@@ -4654,25 +4671,43 @@ public class BotBrain extends Module {
                 return true; 
             }
             
-            double angle = Math.random() * 2 * Math.PI;
-            int distance = 100 + (int)(Math.random() * 200);
-            int targetX = stagingOrigin.getX() + (int)(Math.cos(angle) * distance);
-            int targetZ = stagingOrigin.getZ() + (int)(Math.sin(angle) * distance);
-            int targetY = isInNether() ? stagingOrigin.getY() : stagingOrigin.getY();
-            stagingTarget = new BlockPos(targetX, targetY, targetZ);
-            boolean floor = false;
-            boolean reachable = false;
-            try {
-                floor = mc.level != null && !mc.level.getBlockState(new BlockPos(targetX, targetY - 1, targetZ)).isAir();
-                reachable = mc.level != null && mc.level.getBlockState(stagingTarget).isAir();
-            } catch (Exception ignored) {}
-            ChatUtils.infoPrefix("BotBrain", "STAGING: waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
+            if (stagingAttempts >= 2) {
+                ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts; mining locally");
+                stagingComplete = true;
+                return true;
+            }
+            stagingAttempts++;
+            BlockPos safe = null;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                double angle = Math.random() * 2 * Math.PI;
+                int distance = 100 + (int)(Math.random() * 200);
+                int targetX = stagingOrigin.getX() + (int)(Math.cos(angle) * distance);
+                int targetZ = stagingOrigin.getZ() + (int)(Math.sin(angle) * distance);
+                int targetY = stagingOrigin.getY();
+                BlockPos candidate = new BlockPos(targetX, targetY, targetZ);
+                boolean floor = false;
+                boolean reachable = false;
+                try {
+                    floor = mc.level != null && !mc.level.getBlockState(candidate.below()).isAir()
+                        && mc.level.getBlockState(candidate.below()).getFluidState().isEmpty();
+                    reachable = mc.level != null && mc.level.getBlockState(candidate).isAir()
+                        && mc.level.getBlockState(candidate).getFluidState().isEmpty()
+                        && mc.level.getBlockState(candidate.above()).isAir();
+                } catch (Exception ignored) {}
+                ChatUtils.infoPrefix("BotBrain", "STAGING: waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
+                    currentGatherResource != null ? currentGatherResource : "unknown", targetX, targetY, targetZ, floor, reachable);
+                if (floor && reachable) { safe = candidate; break; }
+                ChatUtils.warningPrefix("BotBrain", "STAGING: rejected point %d,%d,%d (floor=%b reachable=%b)", targetX, targetY, targetZ, floor, reachable);
+            }
+            if (safe == null) {
+                ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts; mining locally");
+                stagingComplete = true;
+                return true;
+            }
+            stagingTarget = safe;
+            ChatUtils.infoPrefix("BotBrain", "No waypoint for '%s', random staging from %s: goto %d %d %d",
                 currentGatherResource != null ? currentGatherResource : "unknown",
-                targetX, targetY, targetZ, floor, reachable);
-            ChatUtils.infoPrefix("BotBrain", "No waypoint for '%s', random staging from %s: goto %d ~ %d (%d blocks)", 
-                currentGatherResource != null ? currentGatherResource : "unknown",
-                isInNether() ? "nether portal" : "base",
-                targetX, targetZ, distance);
+                isInNether() ? "nether portal" : "base", safe.getX(), safe.getY(), safe.getZ());
         }
 
         return continueToStagingTarget(base);
