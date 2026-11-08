@@ -194,6 +194,13 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoEmptyShulkers = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-empty-shulkers")
+        .description("Place and empty filled shulker boxes when idle.")
+        .defaultValue(false)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
@@ -201,6 +208,7 @@ public class BotBrain extends Module {
         HUNTING,
         GRINDING,
         SMITHING,
+        SHULKER,
         WITHDRAWING,
         RETURNING_TO_BASE,
         CRAFTING_PREP,
@@ -366,6 +374,18 @@ public class BotBrain extends Module {
     private long lastSmithGoto = 0;
     private long lastAutoSmith = 0;
 
+    // Shulker emptying
+    private static final int SHULKER_PLACE = 0;
+    private static final int SHULKER_OPEN = 1;
+    private static final int SHULKER_EMPTY = 2;
+    private static final int SHULKER_BREAK = 3;
+    private static final int SHULKER_COLLECT = 4;
+    private int shulkerPhase = SHULKER_PLACE;
+    private int shulkerTicks = 0;
+    private BlockPos shulkerPos = null;
+    private Item shulkerItem = null;
+    private long lastAutoShulker = 0;
+
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
     private static final long BARITONE_COMMAND_COOLDOWN = 3000;
@@ -505,6 +525,8 @@ public class BotBrain extends Module {
         grindPos = null;
         grindStartTime = 0;
         smithPos = null;
+        shulkerPos = null;
+        shulkerPhase = SHULKER_PLACE;
         SmithingManager.close();
         stopHuntMovement();
         if (manageModules.get()) moduleGuard.deactivate();
@@ -610,6 +632,7 @@ public class BotBrain extends Module {
             case HUNTING -> handleHunting();
             case GRINDING -> handleGrinding();
             case SMITHING -> handleSmithing();
+            case SHULKER -> handleShulker();
             case WITHDRAWING -> handleWithdrawing();
             case RETURNING_TO_BASE -> handleReturningToBase();
             case CRAFTING_PREP -> handleCraftingPrep();
@@ -632,6 +655,7 @@ public class BotBrain extends Module {
         if (tryAutoHunt()) return;
             if (tryAutoGrind()) return;
             if (tryAutoSmithing()) return;
+            if (tryAutoShulker()) return;
             currentTaskDescription = "Idle — no task";
             return;
         }
@@ -657,6 +681,10 @@ public class BotBrain extends Module {
         }
         if (taskType == BotTask.Type.SMITH) {
             if (state != BrainState.SMITHING) beginSmithing();
+            return;
+        }
+        if (taskType == BotTask.Type.SHULKER) {
+            if (state != BrainState.SHULKER) beginShulker();
             return;
         }
         if (taskType != BotTask.Type.GATHER && taskType != BotTask.Type.CRAFT && taskType != BotTask.Type.SMELT) {
@@ -2845,6 +2873,135 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    private void beginShulker() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        shulkerItem = findFilledShulker();
+        if (shulkerItem == null) { failShulker("no filled shulker box in inventory"); return; }
+        shulkerPos = null;
+        shulkerPhase = SHULKER_PLACE;
+        shulkerTicks = 0;
+        setState(BrainState.SHULKER);
+        currentTaskDescription = "Emptying " + itemPath(shulkerItem);
+        ChatUtils.infoPrefix("BotBrain", "Shulker emptying started: %s", itemPath(shulkerItem));
+    }
+
+    private void handleShulker() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        shulkerTicks++;
+        switch (shulkerPhase) {
+            case SHULKER_PLACE -> {
+                if (mc.player == null || mc.level == null) { setState(BrainState.STUCK); return; }
+                if (shulkerPos != null && mc.level.getBlockState(shulkerPos).getBlock() != Blocks.AIR) {
+                    shulkerPhase = SHULKER_OPEN; shulkerTicks = 0; return;
+                }
+                BlockPos placePos = findPlacementSpot();
+                if (placePos == null) placePos = mc.player.blockPosition().above();
+                if (!ensureItemInMainHand(shulkerItem)) {
+                    if (shulkerTicks > 60) failShulker("could not hold shulker box");
+                    return;
+                }
+                if (com.rdh.swarm.utils.PlacementHelper.placeBlockSafely(placePos, shulkerItem)) {
+                    shulkerPos = placePos; shulkerTicks = 0;
+                } else if (shulkerTicks > 100) failShulker("could not place shulker box");
+            }
+            case SHULKER_OPEN -> {
+                if (mc.player.containerMenu instanceof net.minecraft.world.inventory.ShulkerBoxMenu) {
+                    shulkerPhase = SHULKER_EMPTY; shulkerTicks = 0; return;
+                }
+                if (shulkerPos == null) { failShulker("shulker position lost"); return; }
+                try {
+                    mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(shulkerPos));
+                    mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND,
+                        new BlockHitResult(Vec3.atCenterOf(shulkerPos), Direction.UP, shulkerPos, false));
+                } catch (Exception ignored) {}
+                if (shulkerTicks > 60) failShulker("could not open shulker box");
+            }
+            case SHULKER_EMPTY -> {
+                if (!(mc.player.containerMenu instanceof net.minecraft.world.inventory.ShulkerBoxMenu menu)) {
+                    shulkerPhase = SHULKER_OPEN; shulkerTicks = 0; return;
+                }
+                boolean moved = false;
+                for (int i = 0; i < 27 && i < menu.slots.size(); i++) {
+                    if (!menu.slots.get(i).getItem().isEmpty()) {
+                        InvUtils.shiftClick().slotId(i);
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) {
+                    mc.setScreenAndShow(null);
+                    shulkerPhase = SHULKER_BREAK; shulkerTicks = 0;
+                } else if (shulkerTicks > 400) failShulker("shulker empty timed out");
+            }
+            case SHULKER_BREAK -> {
+                if (shulkerPos == null) { failShulker("shulker position lost"); return; }
+                if (mc.level.getBlockState(shulkerPos).getBlock() == Blocks.AIR) {
+                    shulkerPhase = SHULKER_COLLECT; shulkerTicks = 0; return;
+                }
+                if (mc.gameMode != null) mc.gameMode.destroyBlock(shulkerPos);
+                if (shulkerTicks > 200) failShulker("could not break shulker box");
+            }
+            case SHULKER_COLLECT -> {
+                ItemEntity drop = findHuntDrop();
+                if (drop != null && canSendBaritone()) {
+                    sendBaritoneChat(String.format("#goto %d %d %d",
+                        drop.blockPosition().getX(), drop.blockPosition().getY(), drop.blockPosition().getZ()));
+                }
+                if (drop == null || shulkerTicks > 200) completeShulker();
+            }
+            default -> failShulker("unknown shulker phase");
+        }
+    }
+
+    private Item findFilledShulker() {
+        if (mc.player == null) return null;
+        for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
+            var stack = mc.player.getInventory().getItem(i);
+            if (!com.rdh.swarm.DepositConfig.isShulkerBox(stack)) continue;
+            var contents = stack.get(net.minecraft.core.component.DataComponents.CONTAINER);
+            if (contents != null && contents.size() > 0) return stack.getItem();
+        }
+        return null;
+    }
+
+    private boolean tryAutoShulker() {
+        if (!autoEmptyShulkers.get() || currentTask != null) return false;
+        if (findFilledShulker() == null) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoShulker < 60_000L) return false;
+        lastAutoShulker = now;
+        setTask(new BotTask(BotTask.Type.SHULKER, null, 1));
+        return true;
+    }
+
+    private void completeShulker() {
+        BotTask task = currentTask;
+        currentTask = null; executionPlan = null;
+        shulkerPos = null; shulkerPhase = SHULKER_PLACE; shulkerTicks = 0;
+        currentTaskDescription = "Idle — shulker emptied";
+        setState(BrainState.IDLE);
+        if (task != null) {
+            task.addCollected(task.getRemaining());
+            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(task); } catch (Exception ignored) {}
+        }
+        ChatUtils.infoPrefix("BotBrain", "Shulker emptied and collected");
+    }
+
+    private void failShulker(String reason) {
+        try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {}
+        BotTask task = currentTask;
+        currentTask = null; executionPlan = null;
+        shulkerPos = null; shulkerPhase = SHULKER_PLACE; shulkerTicks = 0;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        ChatUtils.warningPrefix("BotBrain", "Shulker failed: %s", reason);
+    }
+
     private void beginSmithing() {
         if (currentTask == null) { setState(BrainState.IDLE); return; }
         Item base = currentTask.getTargetItem();
@@ -3254,6 +3411,14 @@ public class BotBrain extends Module {
             this.resolverGatherList = null;
             this.resolverCraftPlan = null;
             beginHunt();
+            return;
+        }
+
+        if (task.getType() == BotTask.Type.SHULKER) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            setState(BrainState.IDLE);
             return;
         }
 

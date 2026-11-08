@@ -334,3 +334,29 @@ None. Requeueing is automatic on disconnect and host shutdown.
 - A bot that stays connected but stops reporting is not requeued; only socket-closed/interrupted connections trigger recovery.
 - No cross-bot item transfer or courier task was added.
 - Requeued tasks restart from planning; partial `collected` progress is preserved, but BotBrain re-resolves the dependency plan.
+## L — Shulker emptying
+
+### Summary
+
+- Added `BotTask.Type.SHULKER` and `BrainState.SHULKER`.
+- BotBrain setting `auto-empty-shulkers` (false) starts an emptying task from IDLE when a filled shulker is carried.
+- Flow: find a filled shulker via `DepositConfig.isShulkerBox` and a non-empty `DataComponents.CONTAINER`; place it with `PlacementHelper`; open it with `useItemOn` and a verified `ShulkerBoxMenu`; shift-click each of the 27 container slots into inventory; close; destroy the block; walk to the drop.
+- Every phase has a tick timeout and fails with one WARN, closing the screen and returning to IDLE.
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `auto-empty-shulkers` | Bool | `false` |
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+- Verified 26.3 APIs: `ShulkerBoxMenu`, `Blocks.SHULKER_BOX`, `MultiPlayerGameMode.destroyBlock(BlockPos)`, `ItemContainerContents.size()`, `DataComponents.CONTAINER`.
+
+### Known issues / not verified
+
+- No in-game test. Breaking uses `destroyBlock` every tick; survival break time and tool choice are not optimized.
+- Filling/placing items into shulkers is not implemented; this phase only empties.
+- Dyed shulkers are supported by the item check, but placement/break detection treats any non-air block at the spot as placed.
+- Contents are moved only when the player inventory has room; a full inventory can time out.
