@@ -94,6 +94,20 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoHunt = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-hunt")
+        .description("Start a food hunt when total food drops below food-low.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> autoCook = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-cook")
+        .description("Cook raw food at a nearby furnace when fuel is available.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<Integer> foodLow = sgGeneral.add(new IntSetting.Builder()
         .name("food-low")
         .description("Start a food hunt when total food drops below this count.")
@@ -401,6 +415,9 @@ public class BotBrain extends Module {
     private static final long COOK_COOLDOWN = 300_000L;
     private String lastCookLog = "";
     private boolean noCookFurnaceWarned = false;
+    private boolean autoHuntWasEnabled = true;
+    private boolean autoHuntSkipLogged = false;
+    private boolean autoCookSkipLogged = false;
     private static final int COOK_FURNACE_RANGE = 45;
     private boolean directSmelt = false;
 
@@ -563,6 +580,9 @@ public class BotBrain extends Module {
         deathRecorded = false;
         lastCookLog = "";
         noCookFurnaceWarned = false;
+        autoHuntWasEnabled = autoHunt.get();
+        autoHuntSkipLogged = false;
+        autoCookSkipLogged = false;
         if (manageModules.get()) {
             moduleGuard.activate(fightMobs.get());
             moduleGuard.setRawFoodFallback(eatRawFallback.get());
@@ -646,6 +666,7 @@ public class BotBrain extends Module {
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
+        tickFoodToggles();
         if (manageModules.get()) {
             moduleGuard.tick(tickCounter);
             moduleGuard.setRawFoodFallback(eatRawFallback.get());
@@ -677,7 +698,7 @@ public class BotBrain extends Module {
         }
 
         // Standing food-cooking check: raw food plus a furnace/fuel in range.
-        if (tickCounter % 20 == 0 && currentTask == null && state == BrainState.IDLE) {
+        if (tickCounter % 20 == 0 && (state == BrainState.IDLE || state == BrainState.HUNTING)) {
             maybeQueueCooking();
         }
 
@@ -2865,6 +2886,37 @@ public class BotBrain extends Module {
         resumeAfterHunt(false);
     }
 
+    private void cancelHunt(String reason) {
+        boolean hunting = state == BrainState.HUNTING
+            || (currentTask != null && currentTask.getType() == BotTask.Type.HUNT_FOOD);
+        if (!hunting) return;
+
+        stopHuntMovement();
+        if (canSendBaritone()) sendBaritoneChat("#stop");
+        try {
+            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
+        } catch (Exception | NoClassDefFoundError ignored) {}
+
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        directSmelt = false;
+        huntStartTime = 0;
+        currentTaskDescription = "Idle — " + reason;
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        setState(BrainState.IDLE);
+        ChatUtils.infoPrefix("BotBrain", "G2: hunt cancelled (%s)", reason);
+
+        if (pendingTask != null) {
+            BotTask next = pendingTask;
+            pendingTask = null;
+            setTask(next);
+        }
+    }
+
     private void resumeAfterHunt(boolean success) {
         if (pendingTask != null) {
             BotTask next = pendingTask;
@@ -2878,12 +2930,29 @@ public class BotBrain extends Module {
 
     /** Auto-start a hunt when idle and food is below the low-water mark. */
     private boolean tryAutoHunt() {
-        if (swarmRole.get() != SwarmRole.GENERAL && swarmRole.get() != SwarmRole.FOOD) return false;
+        if (swarmRole.get() != SwarmRole.GENERAL && swarmRole.get() != SwarmRole.FOOD) {
+            autoHuntSkipLogged = false;
+            return false;
+        }
         if (mc.player == null || mc.level == null) return false;
         int low = foodLow.get();
-        if (low <= 0) return false;
+        if (low <= 0) {
+            autoHuntSkipLogged = false;
+            return false;
+        }
         int food = FoodManager.countFood();
-        if (food >= low) return false;
+        if (food >= low) {
+            autoHuntSkipLogged = false;
+            return false;
+        }
+        if (!autoHunt.get()) {
+            if (!autoHuntSkipLogged) {
+                ChatUtils.infoPrefix("BotBrain", "G2: hunt skipped (auto-hunt off)");
+                autoHuntSkipLogged = true;
+            }
+            return false;
+        }
+        autoHuntSkipLogged = false;
         long now = System.currentTimeMillis();
         if (now - lastAutoHunt < AUTO_HUNT_COOLDOWN) return false;
         lastAutoHunt = now;
@@ -2896,7 +2965,18 @@ public class BotBrain extends Module {
     private void maybeInterruptForFood() {
         if (currentTask == null || currentTask.getType() == BotTask.Type.HUNT_FOOD) return;
         if (state != BrainState.GATHERING && state != BrainState.IDLE) return;
-        if (FoodManager.countFood() > 0) return;
+        if (FoodManager.countFood() > 0) {
+            autoHuntSkipLogged = false;
+            return;
+        }
+        if (!autoHunt.get()) {
+            if (!autoHuntSkipLogged) {
+                ChatUtils.infoPrefix("BotBrain", "G2: hunt skipped (auto-hunt off)");
+                autoHuntSkipLogged = true;
+            }
+            return;
+        }
+        autoHuntSkipLogged = false;
         long now = System.currentTimeMillis();
         if (now - lastAutoHunt < AUTO_HUNT_COOLDOWN) return;
         lastAutoHunt = now;
@@ -2913,6 +2993,13 @@ public class BotBrain extends Module {
     /** After a successful hunt, cook surplus raw food when fuel is available. */
     private void maybeQueueCooking() {
         if (mc.player == null || mc.level == null) return;
+        if (!autoCook.get()) {
+            if (hasAnyRawFood() && !autoCookSkipLogged) {
+                ChatUtils.infoPrefix("BotBrain", "G2: cook skipped (auto-cook off)");
+                autoCookSkipLogged = true;
+            }
+            return;
+        }
         long now = System.currentTimeMillis();
 
         BlockPos furnace = findCookFurnace();
@@ -2966,6 +3053,21 @@ public class BotBrain extends Module {
         }
 
         if (!"cook".equals(decision)) return;
+        if (currentTask != null) {
+            if (currentTask.getType() != BotTask.Type.HUNT_FOOD || pendingTask != null) return;
+            BotTask hunt = currentTask;
+            currentTask = null;
+            executionPlan = null;
+            stopHuntMovement();
+            if (canSendBaritone()) sendBaritoneChat("#stop");
+            try {
+                baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
+            } catch (Exception | NoClassDefFoundError ignored) {}
+            try { hunt.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(hunt); } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "Food hunt complete: raw food ready to cook");
+            setState(BrainState.IDLE);
+        }
         lastCookAttempt = now;
         java.util.Map<String, Object> data = new java.util.HashMap<>();
         data.put("item", cooked);
@@ -3005,6 +3107,35 @@ public class BotBrain extends Module {
                 .getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.LIT);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private boolean hasAnyRawFood() {
+        for (Item raw : FoodManager.COOKING.keySet()) {
+            if (FoodManager.countRaw(raw) > 0) return true;
+        }
+        return false;
+    }
+
+    private void tickFoodToggles() {
+        boolean huntEnabled = autoHunt.get();
+        if (huntEnabled != autoHuntWasEnabled) {
+            autoHuntWasEnabled = huntEnabled;
+            autoHuntSkipLogged = false;
+            if (!huntEnabled) cancelHunt("auto-hunt off");
+        }
+
+        if (!autoCook.get()) {
+            if (hasAnyRawFood()) {
+                if (!autoCookSkipLogged) {
+                    ChatUtils.infoPrefix("BotBrain", "G2: cook skipped (auto-cook off)");
+                    autoCookSkipLogged = true;
+                }
+            } else {
+                autoCookSkipLogged = false;
+            }
+        } else {
+            autoCookSkipLogged = false;
         }
     }
 
