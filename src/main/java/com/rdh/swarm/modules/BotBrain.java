@@ -349,6 +349,13 @@ public class BotBrain extends Module {
 
     // The current material that Baritone is mining (to avoid resending the same command)
     private String currentlyMining = null;
+    private BlockPos breakWatchPos = null;
+    private String breakWatchBlock = null;
+    private long breakWatchStarted = 0;
+    private long breakWatchAirAt = 0;
+    private int breakWatchTicks = 0;
+    private long lastBreakWatchScan = 0;
+    private int breakWatchInventory = 0;
     private final DropCollector dropCollector = new DropCollector(
         () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(),
         this::canStartDropSweep, this::onSweepFinished);
@@ -931,6 +938,8 @@ public class BotBrain extends Module {
     }
 
     private void handleGathering() {
+        if (tickBreakConfirmation()) return;
+        maybeArmBreakWatch();
         // Staging debug (once every 200 ticks)
         if (tickCounter % 200 == 0) {
             ChatUtils.infoPrefix("BotBrain", "[STAGING DEBUG] gatherStaging=%s distance=%d",
@@ -1039,6 +1048,7 @@ public class BotBrain extends Module {
                         sendBaritoneChat(cmd);
                         currentlyMining = mineBlock;
                         mineCommandSent = true;
+                        armBreakWatch(mineBlock);
                     }
                 }
 
@@ -1240,6 +1250,7 @@ public class BotBrain extends Module {
                     sendBaritoneChat(cmd);
                     currentlyMining = mineBlock;
                     mineCommandSent = true;
+                    armBreakWatch(mineBlock);
                 }
             }
 
@@ -1369,17 +1380,28 @@ public class BotBrain extends Module {
                 sendBaritoneChat("#mine minecraft:" + itemName);
                 mineCommandSent = true;
                 lastProgressTime = System.currentTimeMillis();
+                armBreakWatch(itemName);
             } else {
                 ChatUtils.infoPrefix("BotBrain", "Waiting for baritone cooldown before sending mine command");
             }
         }
 
-        // No-progress timeout: if we sent mine and nothing changed for 30 seconds, retry
-        if (mineCommandSent && System.currentTimeMillis() - lastProgressTime > 30000) {
-            ChatUtils.warningPrefix("BotBrain", "No progress for 30 seconds. Retrying.");
+        // No-progress timeout: stop and report. Re-issuing the same mine here
+        // is how an unacknowledged client break becomes a ghost block.
+        if (mineCommandSent && System.currentTimeMillis() - lastProgressTime > 30_000L) {
+            ChatUtils.warningPrefix("BotBrain", "MINE: no progress for 30 seconds — aborting without retry");
+            sendBaritoneChat("#stop");
             mineCommandSent = false;
             currentlyMining = null;
-            lastProgressTime = System.currentTimeMillis();
+            if (currentTask != null) {
+                try { currentTask.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+                try { sendTaskFailed(currentTask, "no mining progress"); } catch (Exception ignored) {}
+                currentTask = null;
+                executionPlan = null;
+                planStep = 0;
+            }
+            setState(BrainState.IDLE);
+            return;
         }
 
         // Track progress for ETA
@@ -4040,6 +4062,7 @@ public class BotBrain extends Module {
         this.craftFailCount = 0;
         if (newState != BrainState.GATHERING) {
             this.currentlyMining = null;
+            clearBreakWatch();
         }
         // Reset gather staging flags when entering states that begin fresh flows
         if (newState == BrainState.IDLE || newState == BrainState.GATHERING || newState == BrainState.RETURNING_TO_BASE || newState == BrainState.DEPOSITING || newState == BrainState.STUCK) {
@@ -4156,6 +4179,126 @@ public class BotBrain extends Module {
             if (mc.player.getInventory().getItem(i).isEmpty()) empty++;
         }
         return empty <= depositThreshold.get();
+    }
+
+    /** Track the nearest candidate so a break can be confirmed or bounded. */
+    private void armBreakWatch(String blockId) {
+        if (blockId == null) return;
+        if (breakWatchPos != null && blockId.equals(breakWatchBlock)) return;
+        clearBreakWatch();
+        long now = System.currentTimeMillis();
+        lastBreakWatchScan = now;
+        BlockPos found = findBreakTarget(blockId, 16);
+        if (found == null) {
+            breakWatchBlock = blockId;
+            return;
+        }
+        breakWatchPos = found.immutable();
+        breakWatchBlock = blockId;
+        breakWatchStarted = now;
+        breakWatchInventory = countAllInventoryItems();
+    }
+
+    private void maybeArmBreakWatch() {
+        if (breakWatchPos != null || !mineCommandSent || currentlyMining == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastBreakWatchScan < 1_000L) return;
+        lastBreakWatchScan = now;
+        armBreakWatch(currentlyMining);
+    }
+
+    /**
+     * A client air transition only starts the timer. Success requires a
+     * server-originated item entity or inventory increase; prediction alone
+     * never counts as a confirmed break.
+     */
+    private boolean tickBreakConfirmation() {
+        if (breakWatchPos == null || mc.level == null || mc.player == null) return false;
+        long now = System.currentTimeMillis();
+        BlockState state = mc.level.getBlockState(breakWatchPos);
+        if (!state.isAir()) {
+            if (now - breakWatchStarted > 30_000L) clearBreakWatch();
+            return false;
+        }
+        if (breakWatchAirAt == 0L) {
+            breakWatchAirAt = now;
+            breakWatchTicks = 0;
+            breakWatchInventory = countAllInventoryItems();
+        }
+        breakWatchTicks++;
+        if (countAllInventoryItems() > breakWatchInventory || hasServerDropNear(breakWatchPos)) {
+            ChatUtils.infoPrefix("BotBrain", "BLOCK: broke %d,%d,%d %s confirmed=true",
+                breakWatchPos.getX(), breakWatchPos.getY(), breakWatchPos.getZ(), breakWatchBlock);
+            clearBreakWatch();
+            return false;
+        }
+        if (now - breakWatchAirAt > 2_000L || breakWatchTicks >= 8) {
+            ChatUtils.warningPrefix("BotBrain", "BLOCK: unconfirmed break at %d,%d,%d after %d ticks — aborting",
+                breakWatchPos.getX(), breakWatchPos.getY(), breakWatchPos.getZ(), breakWatchTicks);
+            sendBaritoneChat("#stop");
+            currentlyMining = null;
+            mineCommandSent = false;
+            if (currentTask != null) {
+                try { currentTask.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+                try { sendTaskFailed(currentTask, "unconfirmed break"); } catch (Exception ignored) {}
+                currentTask = null;
+                executionPlan = null;
+                planStep = 0;
+            }
+            clearBreakWatch();
+            setState(BrainState.IDLE);
+            return true;
+        }
+        return true;
+    }
+
+    private boolean hasServerDropNear(BlockPos pos) {
+        if (mc.level == null || mc.player == null) return false;
+        AABB box = new AABB(pos).inflate(4.0D);
+        for (Entity entity : mc.level.getEntities(mc.player, box, e -> e instanceof ItemEntity)) {
+            if (entity instanceof ItemEntity item && item.isAlive() && !item.getItem().isEmpty()) return true;
+        }
+        return false;
+    }
+
+    private int countAllInventoryItems() {
+        if (mc.player == null) return 0;
+        int total = 0;
+        for (int i = 0; i < Math.min(36, mc.player.getInventory().getContainerSize()); i++) {
+            total += mc.player.getInventory().getItem(i).getCount();
+        }
+        return total;
+    }
+
+    private BlockPos findBreakTarget(String blockId, int radius) {
+        if (mc.player == null || mc.level == null) return null;
+        String full = blockId.contains(":") ? blockId : "minecraft:" + blockId;
+        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.tryParse(full);
+        if (id == null) return null;
+        var block = BuiltInRegistries.BLOCK.getValue(id);
+        if (block == null || block == Blocks.AIR) return null;
+        BlockPos origin = mc.player.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos cursor : BlockPos.betweenClosed(
+            origin.offset(-radius, -8, -radius), origin.offset(radius, 8, radius))) {
+            if (mc.level.getBlockState(cursor).getBlock() != block) continue;
+            double distance = cursor.distSqr(origin);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = cursor.immutable();
+            }
+        }
+        return best;
+    }
+
+    private void clearBreakWatch() {
+        breakWatchPos = null;
+        breakWatchBlock = null;
+        breakWatchStarted = 0;
+        breakWatchAirAt = 0;
+        breakWatchTicks = 0;
+        breakWatchInventory = 0;
     }
 
     /** A sweep may only take over when no break and no Baritone path are active. */
