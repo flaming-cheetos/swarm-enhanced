@@ -170,7 +170,8 @@ public class TaskQueue {
                         if (assigned != null && !assigned.isEmpty()) t.setAssignedBot(assigned);
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
-                            t.getStatus() != BotTask.Status.FAILED) {
+                            t.getStatus() != BotTask.Status.FAILED &&
+                            t.getStatus() != BotTask.Status.CANCELLED) {
                             addTask(t);
                         }
                     } catch (Exception ignored) {}
@@ -184,13 +185,13 @@ public class TaskQueue {
     }
 
     public synchronized void clearStale() {
-        queue.removeIf(t -> t == null || t.getStatus() == BotTask.Status.COMPLETE || t.getStatus() == BotTask.Status.FAILED);
+        queue.removeIf(t -> t == null || t.getStatus() == BotTask.Status.COMPLETE || t.getStatus() == BotTask.Status.FAILED || t.getStatus() == BotTask.Status.CANCELLED);
         save();
     }
 
     // Backwards compatible name requested by web UI code
     public synchronized void clearCompleted() {
-        queue.removeIf(t -> t == null || t.getStatus() == BotTask.Status.COMPLETE || t.getStatus() == BotTask.Status.FAILED);
+        queue.removeIf(t -> t == null || t.getStatus() == BotTask.Status.COMPLETE || t.getStatus() == BotTask.Status.FAILED || t.getStatus() == BotTask.Status.CANCELLED);
         save();
     }
 

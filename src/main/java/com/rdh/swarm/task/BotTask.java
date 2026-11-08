@@ -9,7 +9,7 @@ import java.util.UUID;
 public class BotTask {
 
     public enum Type { GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD, GRIND, SMITH, SHULKER, BUILD }
-    public enum Status { PENDING, ACTIVE, BLOCKED, COMPLETE, FAILED }
+    public enum Status { PENDING, ACTIVE, BLOCKED, COMPLETE, FAILED, CANCELLED }
 
     private final UUID id;
     private final Type type;

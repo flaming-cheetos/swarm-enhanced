@@ -325,6 +325,30 @@ public class EnhancedSwarmConnection extends Thread {
                                     try { if (host != null) host.dispatchNextTask(w); } catch (Exception ignored) {}
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_FAILED: %s", e.getMessage()); }
+                        } else if (read.startsWith("TASK_CANCELLED:")) {
+                            try {
+                                // TASK_CANCELLED:<workerName>:<taskId>:<reason>
+                                String[] parts = read.split(":", 4);
+                                if (parts.length >= 4) {
+                                    String w = parts[1];
+                                    String tid = parts[2];
+                                    String reason = parts[3];
+                                    ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
+                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
+                                    try {
+                                        if (host != null && host.getTaskQueue() != null && tid != null && !tid.isEmpty()) {
+                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
+                                                try {
+                                                    if (task.getId().toString().equals(tid)) {
+                                                        task.setStatus(BotTask.Status.CANCELLED);
+                                                        break;
+                                                    }
+                                                } catch (Exception ignored) {}
+                                            }
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_CANCELLED: %s", e.getMessage()); }
                         } else if (read.startsWith("BOT_STATUS:")) {
                             try {
                                 BotStatus bs = BotStatus.deserialize(read);

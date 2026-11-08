@@ -214,7 +214,8 @@ public class SwarmWebServer {
                 sb.append("\"progress\":\"").append(esc(status.getProgressString())).append("\",");
                 sb.append("\"eta\":\"").append(esc(status.eta != null ? status.eta : "")).append("\",");
                 sb.append("\"tier\":\"").append(esc(status.tier != null ? status.tier : "Wood")).append("\",");
-                sb.append("\"state\":\"").append(esc(status.state != null ? status.state : "IDLE")).append("\"");
+                sb.append("\"state\":\"").append(esc(status.state != null ? status.state : "IDLE")).append("\",");
+                sb.append("\"halted\":").append(status.halted);
             } else {
                 sb.append("\"online\":false,");
                 sb.append("\"health\":0,\"food\":0,\"x\":0,\"y\":0,\"z\":0,");
@@ -340,8 +341,16 @@ public class SwarmWebServer {
                 }
                 case "/api/task/resume" -> {
                     String bot = extractJson(body, "bot");
-                    host.sendTo(bot, "swarm:" + bot + " task resume");
-                    logInfo("Resumed: " + bot);
+                    BotStatus status = host.getBotStatus(bot);
+                    if (status != null) status.halted = false;
+                    host.sendTo(bot, "swarm:" + bot + " resume");
+                    host.dispatchNextTask(bot);
+                    logInfo("resume received for " + bot);
+                }
+                case "/api/task/cancel" -> {
+                    String bot = extractJson(body, "bot");
+                    host.sendTo(bot, "swarm:" + bot + " cancel");
+                    logInfo("cancel received for " + bot);
                 }
                 case "/api/action/follow" -> {
                     String myName = "";
@@ -349,9 +358,15 @@ public class SwarmWebServer {
                     host.sendAll("swarm:all follow player " + myName);
                     logInfo("Follow me sent to all bots");
                 }
-                case "/api/action/stop" -> {
-                    host.sendAll("swarm:all stop");
-                    logInfo("Stop sent to all bots");
+                case "/api/action/cancel", "/api/action/stop" -> {
+                    host.sendAll("swarm:all cancel");
+                    logInfo("cancel received — sent to all bots");
+                }
+                case "/api/action/resume" -> {
+                    host.clearHaltedFlags();
+                    host.sendAll("swarm:all resume");
+                    host.dispatchPendingForAll();
+                    logInfo("resume received — sent to all bots");
                 }
                 case "/api/action/deposit" -> {
                     host.sendAll("swarm:all depositall");

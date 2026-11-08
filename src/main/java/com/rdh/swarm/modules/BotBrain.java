@@ -499,6 +499,8 @@ public class BotBrain extends Module {
     private long craftingTableOpenTime = 0;
     private boolean waitingForCraftingOpen = false;
     private volatile boolean paused = false;
+    private volatile boolean halted = false;
+    private long lastHaltLog = 0L;
 
     // Tick-driven crafting fields
     private int craftingStep = 0;
@@ -710,11 +712,19 @@ public class BotBrain extends Module {
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
-        tickFoodToggles();
         if (manageModules.get()) {
             moduleGuard.tick(tickCounter);
             moduleGuard.setRawFoodFallback(eatRawFallback.get());
         }
+        if (halted) {
+            releaseMovementKeys();
+            if (now - lastHaltLog >= 10000L) {
+                lastHaltLog = now;
+                ChatUtils.infoPrefix("BotBrain", "HALT: still halted, planner suppressed");
+            }
+            return;
+        }
+        tickFoodToggles();
         if (tickCounter % 40 == 0) maybeInterruptForFood();
         if (tickCounter % 20 == 0 && currentTask != null) {
             ChatUtils.infoPrefix("BotBrain", "tick state=%s planStep=%d planSize=%d task=%s", state, planStep, executionPlan == null ? 0 : executionPlan.size(), currentTask == null ? "" : currentTask.getItemName());
@@ -3860,6 +3870,10 @@ public class BotBrain extends Module {
     // === TASK MANAGEMENT ===
 
     public void setTask(BotTask task) {
+        if (halted) {
+            ChatUtils.warningPrefix("BotBrain", "HALT: task assignment ignored while halted");
+            return;
+        }
         // If we're currently depositing, queue the task locally and don't start processing yet
         try {
             var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
@@ -4694,6 +4708,18 @@ public class BotBrain extends Module {
         } catch (IOException ignored) {}
     }
 
+    private void sendTaskCancelled(BotTask task, String reason) {
+        if (task == null || out == null) return;
+        try {
+            String worker = getWorkerName();
+            String msg = String.format("TASK_CANCELLED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason);
+            synchronized (out) {
+                out.writeUTF(msg);
+                out.flush();
+            }
+        } catch (IOException ignored) {}
+    }
+
     private void resolveDependenciesForCurrentTask() {
         if (currentTask == null) return;
         try {
@@ -4721,13 +4747,63 @@ public class BotBrain extends Module {
     // === PAUSE/CANCEL/RESUME ===
 
     public void cancel() {
-        try { sendTaskFailed(currentTask, "cancelled"); } catch (Exception ignored) {}
+        // Set the latch first: the next tick must not re-plan between the
+        // Baritone cancel and the task cleanup.
+        halted = true;
+        paused = false;
+        long now = System.currentTimeMillis();
+        lastHaltLog = now;
+        ChatUtils.infoPrefix("BotBrain", "HALT: requested by command");
+
+        BotTask abandoned = this.currentTask;
+        if (abandoned != null) {
+            try { abandoned.setStatus(BotTask.Status.CANCELLED); } catch (Exception ignored) {}
+            try { sendTaskCancelled(abandoned, "cancelled by user"); } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "HALT: bot idle, task '%s' abandoned", abandoned.getId());
+        }
         this.currentTask = null;
         this.executionPlan = null;
         this.planStep = 0;
-        sendBaritoneChat("#stop");
+        this.directSmelt = false;
+        this.resolverGatherList = null;
+        this.resolverCraftPlan = null;
+        this.pendingWithdrawals = null;
+        this.withdrawInProgress = false;
+
+        try {
+            var bar = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            bar.getPathingBehavior().cancelEverything();
+            bar.getCustomGoalProcess().onLostControl();
+        } catch (Throwable ignored) {}
+        releaseMovementKeys();
+        dropCollector.cancel();
+        cancelMineGoal();
+        stopHuntMovement();
+        moduleGuard.setKillAuraSuppressed(false);
+        try { SmithingManager.close(); } catch (Exception ignored) {}
+        try {
+            if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                mc.execute(() -> { try { mc.setScreenAndShow(null); } catch (Exception ignored) {} });
+            }
+        } catch (Exception ignored) {}
         setState(BrainState.IDLE);
     }
+
+    private void releaseMovementKeys() {
+        try {
+            var options = mc.options;
+            if (options == null) return;
+            options.keyUp.setDown(false);
+            options.keyDown.setDown(false);
+            options.keyLeft.setDown(false);
+            options.keyRight.setDown(false);
+            options.keyJump.setDown(false);
+            options.keyShift.setDown(false);
+            options.keySprint.setDown(false);
+        } catch (Exception ignored) {}
+    }
+
+    public boolean isHalted() { return halted; }
 
     public void pause() {
         paused = true;
@@ -4735,7 +4811,10 @@ public class BotBrain extends Module {
     }
 
     public void resume() {
+        halted = false;
         paused = false;
+        lastHaltLog = 0L;
+        ChatUtils.infoPrefix("BotBrain", "HALT: resumed by command");
         setState(BrainState.IDLE);
     }
 

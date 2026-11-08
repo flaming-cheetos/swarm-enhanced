@@ -116,6 +116,11 @@ public class SwarmCommand extends Command {
 
     @Override
     public void build(LiteralArgumentBuilder<ClientSuggestionProvider> builder) {
+        // ---- halt/resume ----
+        builder.then(literal("cancel").executes(context -> haltAll()));
+        builder.then(literal("stop").executes(context -> haltAll()));
+        builder.then(literal("resume").executes(context -> resumeAll()));
+
         // ---- exec ----
         builder.then(literal("exec").then(argument("command", StringArgumentType.greedyString()).executes(context -> {
             String command = StringArgumentType.getString(context, "command");
@@ -633,6 +638,49 @@ public class SwarmCommand extends Command {
 
         // ---- ids (local registry inspection; no gameplay side effects) ----
         IdsCommand.attach(this, builder);
+    }
+
+    private int haltAll() {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            long queued = mod.host.getTaskQueue().getAllTasks().stream()
+                .filter(t -> t != null && t.getStatus() == BotTask.Status.PENDING)
+                .count();
+            mod.host.sendAll("swarm:all cancel");
+            info("swarm: halted — current task cancelled, %d queued task(s) kept", queued);
+            return SINGLE_SUCCESS;
+        }
+        try {
+            var brain = Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+            if (brain != null) {
+                brain.cancel();
+                info("swarm: halted — current task cancelled");
+                return SINGLE_SUCCESS;
+            }
+        } catch (Exception ignored) {}
+        error("Not hosting and no local BotBrain");
+        return SINGLE_SUCCESS;
+    }
+
+    private int resumeAll() {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            mod.host.clearHaltedFlags();
+            mod.host.sendAll("swarm:all resume");
+            mod.host.dispatchPendingForAll();
+            info("swarm: resumed");
+            return SINGLE_SUCCESS;
+        }
+        try {
+            var brain = Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+            if (brain != null) {
+                brain.resume();
+                info("swarm: resumed");
+                return SINGLE_SUCCESS;
+            }
+        } catch (Exception ignored) {}
+        error("Not hosting and no local BotBrain");
+        return SINGLE_SUCCESS;
     }
 
     private int setDepositFromCrosshair(CommandContext<ClientSuggestionProvider> context, String category) {

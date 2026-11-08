@@ -368,6 +368,10 @@ public class EnhancedSwarmHost extends Thread {
     public void dispatchNextTask(String botName) {
         if (botName == null || botName.isEmpty()) return;
         try {
+            // A halted bot accepts no planner work until an explicit resume.
+            BotStatus st = botStatuses.get(botName);
+            if (st != null && st.halted) return;
+
             // Don't send if bot already has an active task
             if (taskQueue.hasActiveTask(botName)) return;
 
@@ -406,5 +410,16 @@ public class EnhancedSwarmHost extends Thread {
     void putBotStatus(BotStatus status) {
         if (status == null || status.workerName == null) return;
         botStatuses.put(status.workerName, status);
+    }
+
+    /** Resume is only useful if the queued tasks are dispatched after the flag clears. */
+    public void dispatchPendingForAll() {
+        for (String name : getWorkerNames()) {
+            dispatchNextTask(name);
+        }
+    }
+
+    public void clearHaltedFlags() {
+        for (BotStatus status : botStatuses.values()) status.halted = false;
     }
 }

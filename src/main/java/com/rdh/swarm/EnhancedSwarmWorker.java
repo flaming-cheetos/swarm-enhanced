@@ -276,8 +276,22 @@ public class EnhancedSwarmWorker extends Thread {
                 case "stop":
                     this.currentTask = "";
                     try {
-                        Minecraft mc = Minecraft.getInstance();
-                        if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("#stop");
+                        var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                        if (brain != null) brain.cancel();
+                    } catch (Exception ignored) {}
+                    break;
+
+                case "cancel":
+                    try {
+                        var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                        if (brain != null) brain.cancel();
+                    } catch (Exception ignored) {}
+                    break;
+
+                case "resume":
+                    try {
+                        var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                        if (brain != null) brain.resume();
                     } catch (Exception ignored) {}
                     break;
 
@@ -1382,6 +1396,7 @@ public class EnhancedSwarmWorker extends Thread {
                         if (brain != null) {
                             try { brainState = brain.getState() != null ? brain.getState().name() : "WORKER"; } catch (Exception ignored) { brainState = "WORKER"; }
                             try { taskDesc = brain.getTaskDescription(); } catch (Exception ignored) { taskDesc = null; }
+                            try { bs.halted = brain.isHalted(); } catch (Exception ignored) {}
                             // BotBrain specific collection/eta getters may not exist; leave defaults
                         }
                     } catch (Throwable ignored) {}

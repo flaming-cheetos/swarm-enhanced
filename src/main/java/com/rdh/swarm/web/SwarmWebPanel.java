@@ -307,7 +307,8 @@ button:disabled:hover { background: #151515; color: #666; }
     <h2>⚡ Quick Actions</h2>
     <div class="actions-grid">
       <button id="followButton" onclick="action('follow')" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
-      <button class="danger" onclick="action('stop')" title="swarm:all stop">🛑 Stop All</button>
+      <button class="danger" onclick="action('cancel')" title="swarm:all cancel">🛑 Stop All</button>
+      <button class="success" onclick="action('resume')" title="swarm:all resume">▶ Resume All</button>
       <button onclick="action('deposit')" title="swarm:all depositall">📦 Deposit All</button>
       <button onclick="action('deposit_ores')" title="swarm:all deposit ores">⛏ Dep. Ores</button>
       <button onclick="action('deposit_shulkers')" title="swarm:all deposit shulkers">📫 Dep. Shulkers</button>
@@ -437,14 +438,13 @@ function renderBots() {
       <div class="bot-stats">
         <span>❤ ${bot.health}</span>
         <span>🍗 ${bot.food}</span>
-        <span>${bot.state || 'IDLE'}</span>
+        <span>${bot.halted ? 'halted' : (bot.state || 'IDLE')}</span>
       </div>
       <div class="bot-task">${bot.task || 'Idle'}</div>
       <div class="bot-progress">${bot.progress || ''} ${bot.eta ? '| ETA ' + bot.eta : ''}</div>
       <div class="bot-coords">${bot.x} ${bot.y} ${bot.z}</div>
       <div class="bot-actions">
-        <button onclick="pauseBot('${bot.username}')" title="swarm:${bot.username} task pause">⏸ Pause</button>
-        <button onclick="resumeBot('${bot.username}')" title="swarm:${bot.username} task resume">▶ Resume</button>
+        <button class="${bot.halted ? 'success' : 'danger'}" onclick="${bot.halted ? 'resumeBot' : 'cancelBot'}('${bot.username}')" title="swarm:${bot.username} ${bot.halted ? 'resume' : 'cancel'}">${bot.halted ? '▶ Resume' : '⏹ Stop'}</button>
       </div>
     </div>`;
   }).join('');
@@ -536,8 +536,8 @@ function removeTask(id) {
   post('/api/task/remove', {id});
 }
 
-function pauseBot(username) {
-  post('/api/task/pause', {bot: username});
+function cancelBot(username) {
+  post('/api/task/cancel', {bot: username});
 }
 
 function resumeBot(username) {
