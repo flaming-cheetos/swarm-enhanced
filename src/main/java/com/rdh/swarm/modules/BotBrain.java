@@ -4142,7 +4142,7 @@ public class BotBrain extends Module {
         if (state.isAir()) {
             if (mineGoalBrokenAt == 0) mineGoalBrokenAt = now;
             double distance = mc.player.position().distanceToSqr(Vec3.atCenterOf(mineGoalTarget));
-            if (distance <= 2.25D || now - mineGoalBrokenAt > 2500L) {
+            if (distance <= 16.0D || now - mineGoalBrokenAt > 5000L) {
                 if (collectDrops.get()) dropCollector.startWorkUnit();
                 onSweepFinished();
             } else if (now - mineGoalBrokenAt > 750L) {
@@ -4212,8 +4212,10 @@ public class BotBrain extends Module {
             baritone.api.IBaritone bar = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
             bar.getMineProcess().mine(0, (baritone.api.utils.BlockOptionalMetaLookup) null);
             bar.getPathingBehavior().cancelEverything();
+            // A solid target is not a standable GoalBlock. Approach it within
+            // one block, then use the exact block goal after it breaks.
             bar.getCustomGoalProcess().setGoalAndPath(
-                new baritone.api.pathing.goals.GoalBlock(pos));
+                new baritone.api.pathing.goals.GoalGetToBlock(pos));
         } catch (Throwable t) {
             cancelMineGoal();
             return false;
