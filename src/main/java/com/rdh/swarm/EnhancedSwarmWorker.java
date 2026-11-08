@@ -94,21 +94,39 @@ public class EnhancedSwarmWorker extends Thread {
     private static final Set<String> TOOL_SUFFIXES = Set.of("sword", "pickaxe", "axe", "shovel", "hoe");
     private static final Set<String> ARMOR_SUFFIXES = Set.of("helmet", "chestplate", "leggings", "boots");
 
-    private boolean shouldKeep(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return true;
+    // Phase 3 instrumentation: these describe the last real transfer attempt.
+    public volatile boolean lastDepositTransferRan = false;
+    public volatile boolean lastDepositSucceeded = false;
+    public volatile int lastDepositMoved = 0;
+    public volatile String lastDepositFailure = "";
+
+    private String keepReason(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return "empty";
         // Shulkers are routed to shulker/empty-shulker deposit categories, never kept.
-        if (DepositConfig.isShulkerBox(stack)) return false;
+        if (DepositConfig.isShulkerBox(stack)) return null;
         String id;
-        try { id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); } catch (Exception e) { return true; }
-        if (KEEP_IDS.contains(id)) return true;
-        for (String suffix : TOOL_SUFFIXES) if (id.endsWith(suffix)) return true;
-        for (String suffix : ARMOR_SUFFIXES) if (id.endsWith(suffix)) return true;
-        for (String p : KEEP_PREFIXES) if (id.startsWith(p)) return true;
-        return false;
+        try { id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); } catch (Exception e) { return "unreadable item id"; }
+        if (KEEP_IDS.contains(id)) return "keep list";
+        for (String suffix : TOOL_SUFFIXES) if (id.endsWith(suffix)) return "tool";
+        for (String suffix : ARMOR_SUFFIXES) if (id.endsWith(suffix)) return "armour";
+        for (String p : KEEP_PREFIXES) if (id.startsWith(p)) return "protected prefix";
+        return null;
+    }
+
+    private boolean shouldKeep(ItemStack stack) {
+        return keepReason(stack) != null;
+    }
+
+    private void resetDepositTracking() {
+        lastDepositTransferRan = false;
+        lastDepositSucceeded = false;
+        lastDepositMoved = 0;
+        lastDepositFailure = "";
     }
 
     public void triggerDeposit() {
         if (isDepositing) return;
+        resetDepositTracking();
         isDepositing = true;
         if (!depositChests.isEmpty()) {
             MeteorExecutor.execute(() -> {
@@ -703,6 +721,7 @@ public class EnhancedSwarmWorker extends Thread {
 
     private void performCategoryDeposit() {
         if (depositChests.isEmpty()) return;
+        resetDepositTracking();
         resumeTaskAfterDeposit = currentTask;
 
         List<String> cats = new ArrayList<>();
@@ -773,6 +792,15 @@ public class EnhancedSwarmWorker extends Thread {
     private int performDepositToChest(int chestX, int chestY, int chestZ, String category, boolean keepFilter) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) return 0;
+        int menuSlots = -1;
+        boolean screenOpen = false;
+        try {
+            if (mc.player != null) {
+                screenOpen = mc.player.containerMenu != mc.player.inventoryMenu;
+                menuSlots = mc.player.containerMenu.slots.size();
+            }
+        } catch (Exception ignored) {}
+        ChatUtils.infoPrefix("Swarm", "DEPOSIT: start chest=%d,%d,%d screenOpen=%b slots=%d", chestX, chestY, chestZ, screenOpen, menuSlots);
 
         final int maxAttempts = 3;
         final long openTimeoutMs = 10_000;
@@ -784,7 +812,8 @@ public class EnhancedSwarmWorker extends Thread {
                 BlockPos standPos = findChestStandPos(chestPos);
 
                 if (standPos == null) {
-                    ChatUtils.warningPrefix("Swarm", "No safe stand position near chest at %d %d %d, skipping (attempt %d)", chestX, chestY, chestZ, attempt);
+                    lastDepositFailure = "no safe stand position";
+                    ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — no safe stand position near chest at %d %d %d (attempt %d)", chestX, chestY, chestZ, attempt);
                     continue;
                 }
 
@@ -864,12 +893,15 @@ public class EnhancedSwarmWorker extends Thread {
                         }
 
                         if (!opened) {
-                            ChatUtils.warningPrefix("Swarm", "Chest didn't open (attempt %d)", attemptLocal);
+                            lastDepositFailure = "chest did not open";
+                            ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — chest did not open (attempt %d)", attemptLocal);
                             return;
                         }
 
+                        lastDepositTransferRan = true;
                         var handler = mc.player.containerMenu;
                         int playerStart = handler.slots.size() - 36;
+                        int inventoryBefore = countInventoryItems(mc);
 
                         int deposited = 0;
                         // check container empty slots to detect full chest
@@ -887,6 +919,8 @@ public class EnhancedSwarmWorker extends Thread {
 
                         if (containerEmptySlots == 0) {
                             chestFull[0] = true;
+                            lastDepositFailure = "chest full";
+                            ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — chest at %d,%d,%d is full", chestX, chestY, chestZ);
                         } else {
                             for (int i = playerStart; i < handler.slots.size(); i++) {
                                 try {
@@ -894,26 +928,32 @@ public class EnhancedSwarmWorker extends Thread {
                                     ItemStack st = slot.getItem();
                                     if (st == null || st.isEmpty()) continue;
 
-                                    if (fKeepFilter && shouldKeep(st)) continue;
-
                                     String itemId = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
-                                    if (fCategory != null && !fCategory.equalsIgnoreCase("all")) {
-                                        if (!DepositConfig.matchesCategory(fCategory, st)) continue;
+                                    String keep = fKeepFilter ? keepReason(st) : null;
+                                    if (keep != null) {
+                                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> keep (%s)", itemId, st.getCount(), keep);
+                                        continue;
                                     }
-
-                                    // DEPOSIT DEBUG: log slot and context to diagnose wrong-slot deposits
-                                    try {
-                                        System.out.println("DEPOSIT DEBUG: slotId=" + i + " item=" + itemId + " playerStart=" + playerStart + " totalSlots=" + handler.slots.size());
-                                    } catch (Exception ignored) {}
+                                    if (fCategory != null && !fCategory.equalsIgnoreCase("all")) {
+                                        if (!DepositConfig.matchesCategory(fCategory, st)) {
+                                            ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> keep (category %s)", itemId, st.getCount(), fCategory);
+                                            continue;
+                                        }
+                                    }
 
                                     InvUtils.shiftClick().slotId(i);
                                     deposited++;
+                                    ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> deposit", itemId, st.getCount());
                                     try { Thread.sleep(50 + ThreadLocalRandom.current().nextInt(90)); } catch (InterruptedException ignored) {}
                                 } catch (Exception ignored) {}
                             }
                         }
 
+                        int inventoryAfter = countInventoryItems(mc);
                         mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
+                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: done moved=%d stacks, before=%d after=%d storageDelta=unknown", deposited, inventoryBefore, inventoryAfter);
+                        lastDepositMoved += deposited;
+                        if (deposited > 0) lastDepositSucceeded = true;
                         ChatUtils.infoPrefix("Swarm", "Deposited %d items to %s chest", deposited, fCategory);
                         depositedCount[0] = deposited;
                         transferDone[0] = true;
@@ -931,6 +971,7 @@ public class EnhancedSwarmWorker extends Thread {
                     if (chestFull[0]) return 2;
                     return depositedCount[0] > 0 ? 1 : 0;
                 }
+                if (lastDepositFailure.isEmpty()) lastDepositFailure = "transfer did not run";
 
             } catch (Exception e) {
                 ChatUtils.errorPrefix("Swarm", "Deposit attempt %d failed: %s", attempt, e.getMessage());
@@ -938,7 +979,17 @@ public class EnhancedSwarmWorker extends Thread {
 
             try { Thread.sleep(500 + ThreadLocalRandom.current().nextInt(500)); } catch (InterruptedException ignored) {}
         }
+        if (!lastDepositSucceeded && lastDepositFailure.isEmpty()) lastDepositFailure = "transfer did not run";
+        ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — %s", lastDepositFailure);
         return 0;
+    }
+
+    private int countInventoryItems(Minecraft mc) {
+        int total = 0;
+        try {
+            for (int i = 0; i < 36; i++) total += mc.player.getInventory().getItem(i).getCount();
+        } catch (Exception ignored) {}
+        return total;
     }
 
     private void resumeTask() {

@@ -2720,6 +2720,8 @@ public class BotBrain extends Module {
         setState(BrainState.SMELTING_WAIT);
     }
 
+    private long lastDepositCheckLog = 0L;
+
     private void handleDepositing() {
         currentTaskDescription = "Depositing items";
         
@@ -2727,6 +2729,14 @@ public class BotBrain extends Module {
             var swarmMod = Modules.get()
                 .get(com.rdh.swarm.EnhancedSwarm.class);
             if (swarmMod != null && swarmMod.worker != null) {
+                if (!swarmMod.worker.isDepositing && System.currentTimeMillis() - lastDepositCheckLog >= 5000) {
+                    lastDepositCheckLog = System.currentTimeMillis();
+                    boolean pathing = false;
+                    try { pathing = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing(); } catch (Throwable ignored) {}
+                    boolean atChest = mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu;
+                    ChatUtils.infoPrefix("BotBrain", "DEPOSIT: completion check pathing=%b distance=unknown atChest=%b transferRan=%b moved=%d success=%b",
+                        pathing, atChest, swarmMod.worker.lastDepositTransferRan, swarmMod.worker.lastDepositMoved, swarmMod.worker.lastDepositSucceeded);
+                }
                 if (!swarmMod.worker.isDepositing) {
                     ChatUtils.infoPrefix("BotBrain", "Deposit complete, going idle");
                     setState(BrainState.IDLE);
@@ -4609,6 +4619,9 @@ public class BotBrain extends Module {
             }
         }
 
+        ChatUtils.infoPrefix("BotBrain", "STAGING: waypoint for '%s' -> %s",
+            currentGatherResource != null ? currentGatherResource : "unknown", waypoint == null ? "none" : "found");
+
         if (waypoint != null) {
             int[] coords = waypoint.getCoords(isInNether());
             if (coords != null) {
@@ -4647,6 +4660,15 @@ public class BotBrain extends Module {
             int targetZ = stagingOrigin.getZ() + (int)(Math.sin(angle) * distance);
             int targetY = isInNether() ? stagingOrigin.getY() : stagingOrigin.getY();
             stagingTarget = new BlockPos(targetX, targetY, targetZ);
+            boolean floor = false;
+            boolean reachable = false;
+            try {
+                floor = mc.level != null && !mc.level.getBlockState(new BlockPos(targetX, targetY - 1, targetZ)).isAir();
+                reachable = mc.level != null && mc.level.getBlockState(stagingTarget).isAir();
+            } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "STAGING: waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
+                currentGatherResource != null ? currentGatherResource : "unknown",
+                targetX, targetY, targetZ, floor, reachable);
             ChatUtils.infoPrefix("BotBrain", "No waypoint for '%s', random staging from %s: goto %d ~ %d (%d blocks)", 
                 currentGatherResource != null ? currentGatherResource : "unknown",
                 isInNether() ? "nether portal" : "base",
