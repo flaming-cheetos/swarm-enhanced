@@ -349,11 +349,6 @@ public class BotBrain extends Module {
 
     // The current material that Baritone is mining (to avoid resending the same command)
     private String currentlyMining = null;
-    private BlockPos mineGoalTarget = null;
-    private String mineGoalBlockId = null;
-    private long mineGoalStarted = 0;
-    private long mineGoalBrokenAt = 0;
-    private long lastMineGoalScan = 0;
     private final DropCollector dropCollector = new DropCollector(
         () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(),
         this::canStartDropSweep, this::onSweepFinished);
@@ -639,11 +634,6 @@ public class BotBrain extends Module {
         lastItemCheckTime = System.currentTimeMillis();
         dropCollector.cancel();
         dropCollector.resetTaskTracking();
-        mineGoalTarget = null;
-        mineGoalBlockId = null;
-        mineGoalStarted = 0;
-        mineGoalBrokenAt = 0;
-        lastMineGoalScan = 0;
         lastHuntTargetId = null;
         lastHuntTargetEntity = null;
     }
@@ -664,7 +654,6 @@ public class BotBrain extends Module {
         SmithingManager.close();
         stopHuntMovement();
         dropCollector.cancel();
-        cancelMineGoal();
         if (manageModules.get()) moduleGuard.deactivate();
         stopBaritoneOnDeactivate();
     }
@@ -1035,7 +1024,6 @@ public class BotBrain extends Module {
 
                 // Send mine command once. First try a goal that ends on the block.
                 if (!ensureStagedAwayFromBase()) return;
-                if (tickMineGoal(mineBlock)) return;
                 if (!mineBlock.equals(currentlyMining)) {
                     String cmd = "#mine minecraft:" + mineBlock;
 
@@ -1234,7 +1222,6 @@ public class BotBrain extends Module {
             } catch (Exception ignored) {}
 
                 if (!ensureStagedAwayFromBase()) return;
-                if (tickMineGoal(mineBlock)) return;
                 if (!mineBlock.equals(currentlyMining)) {
                 String cmd = "#mine minecraft:" + mineBlock;
                 
@@ -1366,7 +1353,6 @@ public class BotBrain extends Module {
 
         // Send baritone mine command once when entering gathering — prefer tools for tool-required targets
         if (!ensureStagedAwayFromBase()) return;
-        if (tickMineGoal(itemName)) return;
         if (!mineCommandSent) {
             String targetId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(target).toString();
             if (requiresTool(targetId) && !hasUsableTool()) {
@@ -3934,7 +3920,6 @@ public class BotBrain extends Module {
         this.currentTask = task;
         this.dropCollector.cancel();
         this.dropCollector.resetTaskTracking();
-        this.cancelMineGoal();
         this.lastHuntTargetId = null;
         this.lastHuntTargetEntity = null;
         this.executionPlan = null;
@@ -4053,9 +4038,6 @@ public class BotBrain extends Module {
         this.craftFailCount = 0;
         if (newState != BrainState.GATHERING) {
             this.currentlyMining = null;
-            this.mineGoalTarget = null;
-            this.mineGoalBlockId = null;
-            this.mineGoalBrokenAt = 0;
         }
         // Reset gather staging flags when entering states that begin fresh flows
         if (newState == BrainState.IDLE || newState == BrainState.GATHERING || newState == BrainState.RETURNING_TO_BASE || newState == BrainState.DEPOSITING || newState == BrainState.STUCK) {
@@ -4174,131 +4156,6 @@ public class BotBrain extends Module {
         return empty <= depositThreshold.get();
     }
 
-    /**
-     * Mine with a goal that ends on the target block itself, rather than
-     * Baritone's usual standable position below it. Falls back to the normal
-     * #mine command when no target block is in local range.
-     */
-    private boolean tickMineGoal(String blockId) {
-        if (mc.player == null || mc.level == null) return false;
-        long now = System.currentTimeMillis();
-
-        if (mineGoalTarget != null && !blockId.equals(mineGoalBlockId)) {
-            cancelMineGoal();
-        }
-        if (mineGoalTarget == null) {
-            if (now - lastMineGoalScan < 500) return false;
-            lastMineGoalScan = now;
-            BlockPos found = findMineGoalTarget(blockId, 16);
-            if (found == null) return false;
-            return startMineGoal(found, blockId);
-        }
-
-        BlockState state = mc.level.getBlockState(mineGoalTarget);
-        if (state.isAir()) {
-            if (mineGoalBrokenAt == 0) mineGoalBrokenAt = now;
-            double distance = mc.player.position().distanceToSqr(Vec3.atCenterOf(mineGoalTarget));
-            if (distance <= 16.0D || now - mineGoalBrokenAt > 5000L) {
-                if (collectDrops.get()) dropCollector.startWorkUnit();
-                onSweepFinished();
-            } else if (now - mineGoalBrokenAt > 750L) {
-                try {
-                    baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
-                        .getCustomGoalProcess().setGoalAndPath(
-                            new baritone.api.pathing.goals.GoalBlock(mineGoalTarget));
-                } catch (Throwable ignored) {}
-            }
-            return true;
-        }
-
-        String actual = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        if (!actual.equals(blockId)) {
-            cancelMineGoal();
-            return false;
-        }
-
-        double distance = mc.player.position().distanceToSqr(Vec3.atCenterOf(mineGoalTarget));
-        if (distance <= 20.25D && mc.gameMode != null) {
-            try {
-                mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES,
-                    Vec3.atCenterOf(mineGoalTarget));
-                mc.gameMode.destroyBlock(mineGoalTarget);
-            } catch (Exception ignored) {}
-            return true;
-        }
-
-        boolean pathing = false;
-        try {
-            pathing = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
-                .getPathingBehavior().isPathing();
-        } catch (Throwable ignored) {}
-        if (!pathing && now - mineGoalStarted > 3000L) {
-            cancelMineGoal();
-            return false;
-        }
-        return true;
-    }
-
-    private BlockPos findMineGoalTarget(String blockId, int radius) {
-        if (mc.player == null || mc.level == null) return null;
-        String full = blockId.contains(":") ? blockId : "minecraft:" + blockId;
-        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.tryParse(full);
-        if (id == null) return null;
-        var block = BuiltInRegistries.BLOCK.getValue(id);
-        if (block == null || block == Blocks.AIR) return null;
-
-        BlockPos origin = mc.player.blockPosition();
-        BlockPos best = null;
-        double bestDistance = Double.MAX_VALUE;
-        for (BlockPos cursor : BlockPos.betweenClosed(
-            origin.offset(-radius, -8, -radius), origin.offset(radius, 8, radius))) {
-            if (mc.level.getBlockState(cursor).getBlock() != block) continue;
-            double distance = cursor.distSqr(origin);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = cursor.immutable();
-            }
-        }
-        return best;
-    }
-
-    private boolean startMineGoal(BlockPos pos, String blockId) {
-        long now = System.currentTimeMillis();
-        try {
-            baritone.api.IBaritone bar = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
-            bar.getMineProcess().mine(0, (baritone.api.utils.BlockOptionalMetaLookup) null);
-            bar.getPathingBehavior().cancelEverything();
-            // A solid target is not a standable GoalBlock. Approach it within
-            // one block, then use the exact block goal after it breaks.
-            bar.getCustomGoalProcess().setGoalAndPath(
-                new baritone.api.pathing.goals.GoalGetToBlock(pos));
-        } catch (Throwable t) {
-            cancelMineGoal();
-            return false;
-        }
-        mineGoalTarget = pos.immutable();
-        mineGoalBlockId = blockId;
-        mineGoalStarted = now;
-        mineGoalBrokenAt = 0;
-        lastMineGoalScan = now;
-        currentlyMining = blockId;
-        mineCommandSent = true;
-        return true;
-    }
-
-    private void cancelMineGoal() {
-        try {
-            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone()
-                .getPathingBehavior().cancelEverything();
-        } catch (Throwable ignored) {}
-        mineGoalTarget = null;
-        mineGoalBlockId = null;
-        mineGoalStarted = 0;
-        mineGoalBrokenAt = 0;
-        currentlyMining = null;
-        mineCommandSent = false;
-    }
-
     /** A sweep may only take over when no break and no Baritone path are active. */
     private boolean canStartDropSweep() {
         if (mc.player == null || mc.level == null) return false;
@@ -4315,10 +4172,6 @@ public class BotBrain extends Module {
     }
 
     private void onSweepFinished() {
-        mineGoalTarget = null;
-        mineGoalBlockId = null;
-        mineGoalStarted = 0;
-        mineGoalBrokenAt = 0;
         currentlyMining = null;
         mineCommandSent = false;
     }
@@ -4864,7 +4717,6 @@ public class BotBrain extends Module {
         } catch (Throwable ignored) {}
         releaseMovementKeys();
         dropCollector.cancel();
-        cancelMineGoal();
         stopHuntMovement();
         moduleGuard.setKillAuraSuppressed(false);
         try { SmithingManager.close(); } catch (Exception ignored) {}
