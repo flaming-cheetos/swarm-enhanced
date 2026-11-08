@@ -142,3 +142,63 @@ None added in G2. Food hunts can be requested with a `HUNT_FOOD` task through th
 - Hunting only covers five overworld animals; no nether or fish hunting.
 - A direct cooking task still requires the normal furnace scan/placement path and will end in STUCK if no furnace or cobblestone is available.
 - Raw chicken and potato remain blacklisted because of their hunger/poison effects.
+## H — Mob grinder
+
+### Summary
+
+- Added `BotTask.Type.GRIND` and `BrainState.GRINDING`.
+- BotBrain grinder settings:
+  - `auto-grind` (false): start a session from IDLE when coordinates are configured and food is at least 2.
+  - `grind-x` / `grind-y` / `grind-z` (0): standing position; `0 0 0` means unset.
+  - `grind-range` (16): hostile search radius, 8–48.
+  - `grind-duration` (300 s): session length, 30–3600.
+  - `grind-collect` (true): walk to nearby drops.
+- Grinder loop:
+  - Resolves the position from task data `x`/`y`/`z` when present, otherwise from the settings.
+  - Walks to the spot with `#goto` when farther than 5 blocks.
+  - Collects item entities within 12 blocks using rate-limited `#goto`.
+  - Attacks the nearest `MobCategory.MONSTER` within `grind-range` with `Rotations`, `GameMode.attack`, and the verified 26.3 `swing(InteractionHand, SwingAnimation.DEFAULT, true)` call.
+  - Skips tamed and named mobs; walks toward targets between 3 and `grind-range` blocks.
+  - Reports progress every 10 seconds; completes at `grind-duration` or when `shouldDeposit()` reports a full inventory.
+  - Missing coordinates fail once with `no grinder position configured` and return to IDLE.
+- A GRIND task can be queued through the existing task protocol (`Type.valueOf`), and the web task dropdown now offers `GRIND`.
+- Task quantity is the session duration in seconds; collected progress is elapsed seconds, so the host progress bar advances and a completed session sends `TASK_COMPLETE`.
+
+### Public signatures
+
+```text
+com.rdh.swarm.task.BotTask.Type
+  GRIND
+
+com.rdh.swarm.modules.BotBrain.BrainState
+  GRINDING
+```
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `auto-grind` | Bool | `false` |
+| BotBrain | `grind-x` | Int | `0` |
+| BotBrain | `grind-y` | Int | `0` |
+| BotBrain | `grind-z` | Int | `0` |
+| BotBrain | `grind-range` | Int | `16` |
+| BotBrain | `grind-duration` | Int | `300` |
+| BotBrain | `grind-collect` | Bool | `true` |
+
+### Commands / endpoints
+
+- No new command. Queue a `GRIND` task or set `auto-grind` plus coordinates.
+- Web task type dropdown includes `GRIND`.
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+- Verified against the 26.3 merged jar: `EntityType.getCategory()`, `MobCategory.MONSTER`, and `net.minecraft.world.entity.monster.Monster`.
+
+### Known issues / not verified
+
+- No in-game grinder test was possible; kill credit is approximated by attack count in logs.
+- The grinder does not build or repair a farm; it expects an existing kill chamber or spawn area at the configured position.
+- Creeper explosions and other environmental damage are not avoided beyond Baritone pathing.
+- Inventory-full completion returns to IDLE; the existing deposit logic decides whether to deposit afterward.

@@ -283,6 +283,7 @@ button.warn:hover { background: #5a3a1a; }
         <option value="AUTO">Auto</option>
         <option value="CRAFT">Craft</option>
         <option value="GATHER">Gather</option>
+        <option value="GRIND">Grind</option>
       </select>
       <select id="taskBot">
         <option value="any">Any bot</option>

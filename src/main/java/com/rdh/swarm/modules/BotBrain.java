@@ -125,11 +125,66 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoGrind = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-grind")
+        .description("Start a grinder session when idle and grind coordinates are set.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> grindX = sgGeneral.add(new IntSetting.Builder()
+        .name("grind-x")
+        .description("Grinder standing position X.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .build()
+    );
+
+    private final Setting<Integer> grindY = sgGeneral.add(new IntSetting.Builder()
+        .name("grind-y")
+        .description("Grinder standing position Y.")
+        .defaultValue(0)
+        .range(-256, 512)
+        .build()
+    );
+
+    private final Setting<Integer> grindZ = sgGeneral.add(new IntSetting.Builder()
+        .name("grind-z")
+        .description("Grinder standing position Z.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .build()
+    );
+
+    private final Setting<Integer> grindRange = sgGeneral.add(new IntSetting.Builder()
+        .name("grind-range")
+        .description("Hostile mob search radius around the player.")
+        .defaultValue(16)
+        .range(8, 48)
+        .build()
+    );
+
+    private final Setting<Integer> grindDuration = sgGeneral.add(new IntSetting.Builder()
+        .name("grind-duration")
+        .description("Grinder session length in seconds.")
+        .defaultValue(300)
+        .range(30, 3600)
+        .build()
+    );
+
+    private final Setting<Boolean> grindCollect = sgGeneral.add(new BoolSetting.Builder()
+        .name("grind-collect")
+        .description("Walk to and collect nearby grinder drops.")
+        .defaultValue(true)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
         GATHERING,
         HUNTING,
+        GRINDING,
         WITHDRAWING,
         RETURNING_TO_BASE,
         CRAFTING_PREP,
@@ -274,6 +329,14 @@ public class BotBrain extends Module {
     private static final long COOK_COOLDOWN = 300_000L;
     private boolean directSmelt = false;
 
+    // Grinder state
+    private BlockPos grindPos = null;
+    private long grindStartTime = 0;
+    private long lastGrindProgress = 0;
+    private long lastGrindGoto = 0;
+    private long lastAutoGrind = 0;
+    private int grindAttacks = 0;
+
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
     private static final long BARITONE_COMMAND_COOLDOWN = 3000;
@@ -410,6 +473,8 @@ public class BotBrain extends Module {
         pendingTask = null;
         executionPlan = null;
         directSmelt = false;
+        grindPos = null;
+        grindStartTime = 0;
         stopHuntMovement();
         if (manageModules.get()) moduleGuard.deactivate();
         stopBaritoneOnDeactivate();
@@ -512,6 +577,7 @@ public class BotBrain extends Module {
             case CHECKING_EQUIPMENT -> handleEquipmentCheck();
             case GATHERING -> handleGathering();
             case HUNTING -> handleHunting();
+            case GRINDING -> handleGrinding();
             case WITHDRAWING -> handleWithdrawing();
             case RETURNING_TO_BASE -> handleReturningToBase();
             case CRAFTING_PREP -> handleCraftingPrep();
@@ -532,6 +598,7 @@ public class BotBrain extends Module {
     private void handleIdle() {
         if (currentTask == null) {
             if (tryAutoHunt()) return;
+            if (tryAutoGrind()) return;
             currentTaskDescription = "Idle — no task";
             return;
         }
@@ -2741,6 +2808,199 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    private void beginGrind() {
+        grindPos = resolveGrindPos();
+        if (grindPos == null) {
+            failGrind("no grinder position configured");
+            return;
+        }
+        grindStartTime = System.currentTimeMillis();
+        lastGrindProgress = 0;
+        lastGrindGoto = 0;
+        grindAttacks = 0;
+        setState(BrainState.GRINDING);
+        currentTaskDescription = String.format("Grinding at %d %d %d", grindPos.getX(), grindPos.getY(), grindPos.getZ());
+        ChatUtils.infoPrefix("BotBrain", "Grinder started at %d %d %d (range=%d, %ds)",
+            grindPos.getX(), grindPos.getY(), grindPos.getZ(), grindRange.get(), grindDuration.get());
+    }
+
+    private BlockPos resolveGrindPos() {
+        if (currentTask != null) {
+            Object x = currentTask.getData().get("x");
+            Object y = currentTask.getData().get("y");
+            Object z = currentTask.getData().get("z");
+            if (x instanceof Number nx && y instanceof Number ny && z instanceof Number nz) {
+                return new BlockPos(nx.intValue(), ny.intValue(), nz.intValue());
+            }
+        }
+        if (grindX.get() == 0 && grindY.get() == 0 && grindZ.get() == 0) return null;
+        return new BlockPos(grindX.get(), grindY.get(), grindZ.get());
+    }
+
+    private void handleGrinding() {
+        if (currentTask == null) {
+            setState(BrainState.IDLE);
+            return;
+        }
+        if (grindStartTime == 0 || grindPos == null) {
+            beginGrind();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - grindStartTime >= grindDuration.get() * 1000L) {
+            completeGrind("duration reached");
+            return;
+        }
+        if (shouldDeposit()) {
+            completeGrind("inventory full");
+            return;
+        }
+        if (mc.player == null || mc.level == null) {
+            setState(BrainState.STUCK);
+            return;
+        }
+
+        if (mc.player.blockPosition().distSqr(grindPos) > 25.0) {
+            currentTaskDescription = String.format("Walking to grinder %d %d %d", grindPos.getX(), grindPos.getY(), grindPos.getZ());
+            if (now - lastGrindGoto >= 3000L) {
+                lastGrindGoto = now;
+                if (canSendBaritone()) sendBaritoneChat(String.format("#goto %d %d %d", grindPos.getX(), grindPos.getY(), grindPos.getZ()));
+            }
+            return;
+        }
+
+        if (grindCollect.get()) {
+            ItemEntity drop = findGrindDrop();
+            if (drop != null) {
+                currentTaskDescription = "Collecting grinder drops";
+                if (now - lastGrindGoto >= 3000L) {
+                    lastGrindGoto = now;
+                    if (canSendBaritone()) sendBaritoneChat(String.format("#goto %d %d %d",
+                        drop.blockPosition().getX(), drop.blockPosition().getY(), drop.blockPosition().getZ()));
+                }
+                recordGrindProgress(now);
+                return;
+            }
+        }
+
+        Entity target = findGrindTarget();
+        if (target == null) {
+            currentTaskDescription = "Grinding — no mobs in range";
+            recordGrindProgress(now);
+            return;
+        }
+
+        currentTaskDescription = "Grinding " + target.getType().getDescription().getString();
+        Rotations.rotate(Rotations.getYaw(target), Rotations.getPitch(target));
+        double distance = mc.player.distanceToSqr(target);
+        if (distance <= 9.0 && mc.gameMode != null && mc.player.getAttackStrengthScale(0.5f) >= 1.0f) {
+            mc.gameMode.attack(mc.player, target);
+            mc.player.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
+            grindAttacks++;
+        } else if (distance > 9.0 && now - lastGrindGoto >= 3000L) {
+            lastGrindGoto = now;
+            if (canSendBaritone()) sendBaritoneChat(String.format("#goto %d %d %d",
+                target.blockPosition().getX(), target.blockPosition().getY(), target.blockPosition().getZ()));
+        }
+        recordGrindProgress(now);
+    }
+
+    private void recordGrindProgress(long now) {
+        if (currentTask == null) return;
+        long seconds = Math.max(0, (now - grindStartTime) / 1000L);
+        int reported = (int) Math.min(Integer.MAX_VALUE, seconds);
+        int delta = reported - currentTask.getCollectedQuantity();
+        if (delta > 0) currentTask.addCollected(delta);
+        if (now - lastGrindProgress >= 10_000L) {
+            lastGrindProgress = now;
+            try { sendTaskProgress(currentTask); } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "Grinder: %ds, %d attacks", seconds, grindAttacks);
+        }
+    }
+
+    private Entity findGrindTarget() {
+        if (mc.player == null || mc.level == null) return null;
+        AABB box = new AABB(mc.player.blockPosition()).inflate(grindRange.get());
+        Entity best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Entity entity : mc.level.getEntities(mc.player, box, this::isGrindTarget)) {
+            double distance = entity.distanceToSqr(mc.player);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = entity;
+            }
+        }
+        return best;
+    }
+
+    private boolean isGrindTarget(Entity entity) {
+        if (!(entity instanceof Mob mob) || !mob.isAlive()) return false;
+        if (mob.getType().getCategory() != MobCategory.MONSTER) return false;
+        if (mob instanceof TamableAnimal tamable && tamable.isTame()) return false;
+        return !mob.hasCustomName();
+    }
+
+    private ItemEntity findGrindDrop() {
+        if (mc.player == null || mc.level == null) return null;
+        AABB box = new AABB(mc.player.blockPosition()).inflate(12.0);
+        ItemEntity best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Entity entity : mc.level.getEntities(mc.player, box, e -> e instanceof ItemEntity)) {
+            if (!(entity instanceof ItemEntity drop) || drop.getItem().isEmpty()) continue;
+            double distance = drop.distanceToSqr(mc.player);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = drop;
+            }
+        }
+        return best;
+    }
+
+    private void completeGrind(String reason) {
+        BotTask task = currentTask;
+        int seconds = grindStartTime == 0 ? 0 : (int) ((System.currentTimeMillis() - grindStartTime) / 1000L);
+        currentTask = null;
+        executionPlan = null;
+        grindPos = null;
+        grindStartTime = 0;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            task.addCollected(task.getRemaining());
+            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(task); } catch (Exception ignored) {}
+        }
+        ChatUtils.infoPrefix("BotBrain", "Grinder complete: %s (%ds, %d attacks)", reason, seconds, grindAttacks);
+    }
+
+    private void failGrind(String reason) {
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        grindPos = null;
+        grindStartTime = 0;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        ChatUtils.warningPrefix("BotBrain", "Grinder failed: %s", reason);
+    }
+
+    private boolean tryAutoGrind() {
+        if (!autoGrind.get()) return false;
+        if (currentTask != null) return false;
+        if (FoodManager.countFood() < 2) return false;
+        if (grindX.get() == 0 && grindY.get() == 0 && grindZ.get() == 0) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoGrind < 60_000L) return false;
+        lastAutoGrind = now;
+        ChatUtils.infoPrefix("BotBrain", "Starting automatic grinder session");
+        setTask(new BotTask(BotTask.Type.GRIND, null, grindDuration.get()));
+        return true;
+    }
+
     private void handleStuck() {
         currentTaskDescription = "Stuck — waiting";
         stuckCounter++;
@@ -2786,6 +3046,14 @@ public class BotBrain extends Module {
             this.resolverGatherList = null;
             this.resolverCraftPlan = null;
             beginHunt();
+            return;
+        }
+
+        if (task.getType() == BotTask.Type.GRIND) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            beginGrind();
             return;
         }
 
