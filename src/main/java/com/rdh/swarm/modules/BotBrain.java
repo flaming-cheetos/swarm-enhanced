@@ -489,6 +489,7 @@ public class BotBrain extends Module {
     private int shulkerTicks = 0;
     private BlockPos shulkerPos = null;
     private Item shulkerItem = null;
+    private boolean shulkerBreakCommandSent = false;
     private long lastAutoShulker = 0;
 
     // Builder state
@@ -3397,6 +3398,7 @@ public class BotBrain extends Module {
         shulkerPos = null;
         shulkerPhase = SHULKER_PLACE;
         shulkerTicks = 0;
+        shulkerBreakCommandSent = false;
         setState(BrainState.SHULKER);
         currentTaskDescription = "Emptying " + itemPath(shulkerItem);
         ChatUtils.infoPrefix("BotBrain", "Shulker emptying started: %s", itemPath(shulkerItem));
@@ -3448,6 +3450,7 @@ public class BotBrain extends Module {
                 if (!moved) {
                     mc.setScreenAndShow(null);
                     shulkerPhase = SHULKER_BREAK; shulkerTicks = 0;
+                    shulkerBreakCommandSent = false;
                 } else if (shulkerTicks > 400) failShulker("shulker empty timed out");
             }
             case SHULKER_BREAK -> {
@@ -3455,7 +3458,12 @@ public class BotBrain extends Module {
                 if (mc.level.getBlockState(shulkerPos).getBlock() == Blocks.AIR) {
                     shulkerPhase = SHULKER_COLLECT; shulkerTicks = 0; return;
                 }
-                if (mc.gameMode != null) mc.gameMode.destroyBlock(shulkerPos);
+                if (!shulkerBreakCommandSent && canSendBaritone()) {
+                    String blockId = BuiltInRegistries.ITEM.getKey(shulkerItem).getPath();
+                    sendBaritoneChat("#mine minecraft:" + blockId);
+                    shulkerBreakCommandSent = true;
+                    ChatUtils.infoPrefix("BotBrain", "SHULKER: #mine minecraft:%s", blockId);
+                }
                 if (shulkerTicks > 200) failShulker("could not break shulker box");
             }
             case SHULKER_COLLECT -> {
