@@ -179,12 +179,28 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoNetherite = sgGeneral.add(new BoolSetting.Builder()
+        .name("auto-netherite")
+        .description("Smith diamond gear into netherite when a template, ingot, and table are available.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> smithingRange = sgGeneral.add(new IntSetting.Builder()
+        .name("smithing-range")
+        .description("Range to search for a smithing table.")
+        .defaultValue(32)
+        .range(8, 64)
+        .build()
+    );
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
         GATHERING,
         HUNTING,
         GRINDING,
+        SMITHING,
         WITHDRAWING,
         RETURNING_TO_BASE,
         CRAFTING_PREP,
@@ -337,6 +353,19 @@ public class BotBrain extends Module {
     private long lastAutoGrind = 0;
     private int grindAttacks = 0;
 
+    // Smithing state
+    private static final int SMITH_SCAN = 0;
+    private static final int SMITH_GOTO = 1;
+    private static final int SMITH_OPEN = 2;
+    private static final int SMITH_INSERT = 3;
+    private static final int SMITH_TAKE = 4;
+    private static final int SMITH_VERIFY = 5;
+    private int smithPhase = SMITH_SCAN;
+    private BlockPos smithPos = null;
+    private int smithTicks = 0;
+    private long lastSmithGoto = 0;
+    private long lastAutoSmith = 0;
+
     // Rate limiting (dont spam commands)
     private long lastBaritoneCommand = 0;
     private static final long BARITONE_COMMAND_COOLDOWN = 3000;
@@ -475,6 +504,8 @@ public class BotBrain extends Module {
         directSmelt = false;
         grindPos = null;
         grindStartTime = 0;
+        smithPos = null;
+        SmithingManager.close();
         stopHuntMovement();
         if (manageModules.get()) moduleGuard.deactivate();
         stopBaritoneOnDeactivate();
@@ -578,6 +609,7 @@ public class BotBrain extends Module {
             case GATHERING -> handleGathering();
             case HUNTING -> handleHunting();
             case GRINDING -> handleGrinding();
+            case SMITHING -> handleSmithing();
             case WITHDRAWING -> handleWithdrawing();
             case RETURNING_TO_BASE -> handleReturningToBase();
             case CRAFTING_PREP -> handleCraftingPrep();
@@ -597,8 +629,9 @@ public class BotBrain extends Module {
 
     private void handleIdle() {
         if (currentTask == null) {
-            if (tryAutoHunt()) return;
+        if (tryAutoHunt()) return;
             if (tryAutoGrind()) return;
+            if (tryAutoSmithing()) return;
             currentTaskDescription = "Idle — no task";
             return;
         }
@@ -620,6 +653,10 @@ public class BotBrain extends Module {
         }
         if (taskType == BotTask.Type.HUNT_FOOD) {
             if (state != BrainState.HUNTING) beginHunt();
+            return;
+        }
+        if (taskType == BotTask.Type.SMITH) {
+            if (state != BrainState.SMITHING) beginSmithing();
             return;
         }
         if (taskType != BotTask.Type.GATHER && taskType != BotTask.Type.CRAFT && taskType != BotTask.Type.SMELT) {
@@ -2808,6 +2845,177 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    private void beginSmithing() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        Item base = currentTask.getTargetItem();
+        Item result = SmithingManager.upgradeResult(base);
+        if (result == null) {
+            failSmithing("not an upgradeable diamond item");
+            return;
+        }
+        if (!hasSmithingMaterials(base)) {
+            failSmithing("missing smithing template, netherite ingot, or base item");
+            return;
+        }
+        smithPos = null;
+        smithPhase = SMITH_SCAN;
+        smithTicks = 0;
+        lastSmithGoto = 0;
+        setState(BrainState.SMITHING);
+        currentTaskDescription = "Preparing to smith " + itemPath(result);
+        ChatUtils.infoPrefix("BotBrain", "Smithing started: %s -> %s", itemPath(base), itemPath(result));
+    }
+
+    private void handleSmithing() {
+        if (currentTask == null) { setState(BrainState.IDLE); return; }
+        Item base = currentTask.getTargetItem();
+        Item result = SmithingManager.upgradeResult(base);
+        if (result == null) { failSmithing("not an upgradeable diamond item"); return; }
+        smithTicks++;
+
+        switch (smithPhase) {
+            case SMITH_SCAN -> {
+                if (mc.player == null || mc.level == null) { setState(BrainState.STUCK); return; }
+                smithPos = findSmithingTable();
+                if (smithPos == null) {
+                    failSmithing("no smithing table within " + smithingRange.get() + " blocks");
+                    return;
+                }
+                smithPhase = SMITH_GOTO;
+                smithTicks = 0;
+            }
+            case SMITH_GOTO -> {
+                if (smithPos == null) { smithPhase = SMITH_SCAN; smithTicks = 0; return; }
+                double distSq = mc.player.blockPosition().distSqr(smithPos);
+                if (distSq <= 20.0) {
+                    if (canSendBaritone()) sendBaritoneChat("#stop");
+                    smithPhase = SMITH_OPEN;
+                    smithTicks = 0;
+                    return;
+                }
+                currentTaskDescription = String.format("Walking to smithing table %d %d %d", smithPos.getX(), smithPos.getY(), smithPos.getZ());
+                long now = System.currentTimeMillis();
+                if (now - lastSmithGoto >= 3000L) {
+                    lastSmithGoto = now;
+                    if (canSendBaritone()) sendBaritoneChat(String.format("#goto %d %d %d", smithPos.getX(), smithPos.getY(), smithPos.getZ()));
+                }
+                if (smithTicks > 600) failSmithing("timed out walking to smithing table");
+            }
+            case SMITH_OPEN -> {
+                if (SmithingManager.isSmithingOpen()) { smithPhase = SMITH_INSERT; smithTicks = 0; return; }
+                if (smithPos == null) { smithPhase = SMITH_SCAN; smithTicks = 0; return; }
+                SmithingManager.openSmithingTable(smithPos);
+                if (smithTicks > 60) failSmithing("could not open smithing table");
+            }
+            case SMITH_INSERT -> {
+                if (!SmithingManager.isSmithingOpen()) { smithPhase = SMITH_OPEN; smithTicks = 0; return; }
+                boolean ok = SmithingManager.ensureTemplate()
+                    && SmithingManager.ensureBase(base)
+                    && SmithingManager.ensureIngot();
+                if (ok) { smithPhase = SMITH_TAKE; smithTicks = 0; return; }
+                if (smithTicks > 100) failSmithing("could not fill smithing slots");
+            }
+            case SMITH_TAKE -> {
+                if (!SmithingManager.isSmithingOpen()) { smithPhase = SMITH_OPEN; smithTicks = 0; return; }
+                if (SmithingManager.resultReady() && SmithingManager.takeResult()) {
+                    smithPhase = SMITH_VERIFY;
+                    smithTicks = 0;
+                    return;
+                }
+                if (smithTicks > 100) failSmithing("smithing result never appeared");
+            }
+            case SMITH_VERIFY -> {
+                if (CraftingManager.countInInventory(result) > 0) {
+                    completeSmithing(result);
+                    return;
+                }
+                if (smithTicks > 100) failSmithing("netherite result missing after take");
+            }
+            default -> failSmithing("unknown smithing phase");
+        }
+    }
+
+    private BlockPos findSmithingTable() {
+        if (mc.player == null || mc.level == null) return null;
+        BlockPos origin = mc.player.blockPosition();
+        int range = smithingRange.get();
+        for (int x = -range; x <= range; x++) {
+            for (int y = -10; y <= 10; y++) {
+                for (int z = -range; z <= range; z++) {
+                    BlockPos pos = origin.offset(x, y, z);
+                    if (mc.level.getBlockState(pos).getBlock() == Blocks.SMITHING_TABLE) return pos;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean hasSmithingMaterials(Item base) {
+        return CraftingManager.countInInventory(Items.NETHERITE_UPGRADE_SMITHING_TEMPLATE) > 0
+            && CraftingManager.countInInventory(Items.NETHERITE_INGOT) > 0
+            && CraftingManager.countInInventory(base) > 0;
+    }
+
+    private Item findUpgradeBase() {
+        for (Item base : SmithingManager.UPGRADES.keySet()) {
+            if (CraftingManager.countInInventory(base) > 0) return base;
+        }
+        return null;
+    }
+
+    private boolean tryAutoSmithing() {
+        if (!autoNetherite.get() || currentTask != null) return false;
+        if (CraftingManager.countInInventory(Items.NETHERITE_UPGRADE_SMITHING_TEMPLATE) <= 0) return false;
+        if (CraftingManager.countInInventory(Items.NETHERITE_INGOT) <= 0) return false;
+        Item base = findUpgradeBase();
+        if (base == null) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastAutoSmith < 30_000L) return false;
+        lastAutoSmith = now;
+        ChatUtils.infoPrefix("BotBrain", "Auto-smithing %s", itemPath(base));
+        setTask(new BotTask(BotTask.Type.SMITH, base, 1));
+        return true;
+    }
+
+    private void completeSmithing(Item result) {
+        SmithingManager.close();
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        smithPos = null;
+        smithPhase = SMITH_SCAN;
+        smithTicks = 0;
+        currentTaskDescription = "Idle — smithed " + itemPath(result);
+        setState(BrainState.IDLE);
+        if (task != null) {
+            task.addCollected(task.getRemaining());
+            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
+            try { sendTaskComplete(task); } catch (Exception ignored) {}
+        }
+        ChatUtils.infoPrefix("BotBrain", "Smithing complete: %s", itemPath(result));
+    }
+
+    private void failSmithing(String reason) {
+        SmithingManager.close();
+        BotTask task = currentTask;
+        currentTask = null;
+        executionPlan = null;
+        smithPos = null;
+        smithPhase = SMITH_SCAN;
+        smithTicks = 0;
+        currentTaskDescription = "Idle — " + reason;
+        setState(BrainState.IDLE);
+        if (task != null) {
+            try { task.setStatus(BotTask.Status.FAILED); } catch (Exception ignored) {}
+            try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        }
+        ChatUtils.warningPrefix("BotBrain", "Smithing failed: %s", reason);
+    }
+
+    private String itemPath(Item item) {
+        try { return BuiltInRegistries.ITEM.getKey(item).getPath(); } catch (Exception e) { return String.valueOf(item); }
+    }
+
     private void beginGrind() {
         grindPos = resolveGrindPos();
         if (grindPos == null) {
@@ -3046,6 +3254,14 @@ public class BotBrain extends Module {
             this.resolverGatherList = null;
             this.resolverCraftPlan = null;
             beginHunt();
+            return;
+        }
+
+        if (task.getType() == BotTask.Type.SMITH) {
+            this.executionPlan = new ArrayList<>();
+            this.resolverGatherList = null;
+            this.resolverCraftPlan = null;
+            setState(BrainState.IDLE);
             return;
         }
 

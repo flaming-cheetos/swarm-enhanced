@@ -246,3 +246,55 @@ None added in W.
 - No browser or live WebSocket test was possible.
 - `SMELT` is still not offered in the dropdown because it needs a raw/result item pair.
 - The dashboard cannot set grinder coordinates; use BotBrain settings for `auto-grind` or a task-data extension.
+## I — Netherite smithing
+
+### Summary
+
+- Added `com.rdh.swarm.task.SmithingManager`:
+  - `UPGRADES` maps all nine diamond gear pieces to their netherite results, armor first.
+  - Slot helpers use the verified 26.3 constants `SmithingMenu.TEMPLATE_SLOT` (0), `BASE_SLOT` (1), `ADDITIONAL_SLOT` (2), and `RESULT_SLOT` (3).
+  - `ensureTemplate`, `ensureBase`, and `ensureIngot` move items from player inventory slots (4+) into the correct smithing slots with `InvUtils.move()`.
+  - `resultReady()` and `takeResult()` use `InvUtils.shiftClick()` on slot 3; `close()` restores the game screen.
+- Added `BotTask.Type.SMITH` and `BrainState.SMITHING`.
+- BotBrain smithing settings:
+  - `auto-netherite` (true): start one smithing task when a template, ingot, and upgradeable diamond piece are all in inventory.
+  - `smithing-range` (32): smithing-table search radius.
+- SMITH flow: scan for a smithing table, walk within interaction range, open it, fill template/base/ingot, take the result, verify the netherite item, then complete the task. Each phase has tick timeouts and fails with one WARN.
+- The smithing task bypasses `DependencyResolver`; the targeted item is the diamond base and completion marks the task fully collected.
+- The web task dropdown offers `SMITH`.
+
+### Public signatures
+
+```text
+com.rdh.swarm.task.SmithingManager
+  static final Map<Item, Item> UPGRADES
+  static boolean isUpgradeable(Item)
+  static Item upgradeResult(Item)
+  static boolean isSmithingOpen()
+  static boolean openSmithingTable(BlockPos)
+  static boolean ensureTemplate()
+  static boolean ensureBase(Item)
+  static boolean ensureIngot()
+  static boolean resultReady()
+  static boolean takeResult()
+  static void close()
+```
+
+### Settings
+
+| Owner | Name | Type | Default |
+|---|---|---|---|
+| BotBrain | `auto-netherite` | Bool | `true` |
+| BotBrain | `smithing-range` | Int | `32` |
+
+### Verification
+
+- `./gradlew.bat build` with JDK 25.0.2: **BUILD SUCCESSFUL**.
+- Verified against the 26.3 merged jar: `SmithingMenu` slot constants, `Blocks.SMITHING_TABLE`, all diamond gear items, `Items.NETHERITE_UPGRADE_SMITHING_TEMPLATE`, `Items.NETHERITE_INGOT`, and Meteor `InvUtils.move()/shiftClick()`.
+
+### Known issues / not verified
+
+- **PARTIAL:** acquisition is not implemented. The bot does not mine ancient debris, craft netherite ingots, craft a smithing table, or loot a bastion for the upgrade template.
+- No in-game smithing-table test was possible; slot indices and result timing are verified only by API signatures.
+- Only inventory gear is upgraded. Worn armor is not unequipped first, although `AutoArmor` will equip the result afterward.
+- Automatic smithing runs once per 30 seconds and requires all materials to already be present.
