@@ -80,6 +80,15 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Integer> gatherStagingBand = sgGeneral.add(new IntSetting.Builder()
+        .name("gather-staging-band")
+        .description("Vertical blocks searched around the staging origin")
+        .defaultValue(16)
+        .range(0, 64)
+        .sliderRange(0, 64)
+        .build()
+    );
+
     private final Setting<Boolean> collectDrops = sgGeneral.add(new BoolSetting.Builder()
         .name("collect-drops")
         .description("Walk to nearby mining and combat drops in bounded clusters.")
@@ -375,6 +384,10 @@ public class BotBrain extends Module {
     private boolean surfaceCommandSent = false;
     private boolean stagingComplete = false;
     private int stagingAttempts = 0;
+    private long stagingGotoStartedAt = 0L;
+    private long stagingGotoFirstStartedAt = 0L;
+    private int stagingGotoAttempts = 0;
+    private static final long STAGING_GOTO_TIMEOUT_MS = 60_000L;
     private boolean pendingDepositAfterReturn = false;
     // Waypoint manager for worker-side waypoint lookups
     private WaypointManager waypointManager = null;
@@ -769,11 +782,13 @@ public class BotBrain extends Module {
                 currentTask == null ? "none" : currentTask.getId());
         }
         if (haltState == HaltState.CANCELLED) {
-            releaseMovementKeys();
-            if (now - lastHaltLog >= 10000L) {
-                lastHaltLog = now;
-                ChatUtils.infoPrefix("BotBrain", "HALT: cancelled, planner suppressed");
-            }
+            // Cancellation is terminal for the task, not for the worker. Give
+            // the host one status tick to observe it, then accept new work.
+            haltState = HaltState.RUNNING;
+            halted = false;
+            paused = false;
+            lastHaltLog = now;
+            ChatUtils.infoPrefix("BotBrain", "HALT: cancelled state cleared; ready for a new task");
             return;
         }
         tickFoodToggles();
@@ -4181,6 +4196,9 @@ public class BotBrain extends Module {
             this.stagingTarget = null;
             this.stagingComplete = false;
             this.stagingAttempts = 0;
+            this.stagingGotoStartedAt = 0L;
+            this.stagingGotoFirstStartedAt = 0L;
+            this.stagingGotoAttempts = 0;
         }
         // Reset tick-driven crafting state
         this.craftingStep = 0;
@@ -4797,34 +4815,28 @@ public class BotBrain extends Module {
                 return true;
             }
             stagingAttempts++;
-            BlockPos safe = null;
-            for (int attempt = 0; attempt < 5; attempt++) {
-                double angle = Math.random() * 2 * Math.PI;
-                int distance = 100 + (int)(Math.random() * 200);
-                int targetX = stagingOrigin.getX() + (int)(Math.cos(angle) * distance);
-                int targetZ = stagingOrigin.getZ() + (int)(Math.sin(angle) * distance);
-                int targetY = stagingOrigin.getY();
-                BlockPos candidate = new BlockPos(targetX, targetY, targetZ);
-                boolean floor = false;
-                boolean reachable = false;
-                try {
-                    floor = mc.level != null && !mc.level.getBlockState(candidate.below()).isAir()
-                        && mc.level.getBlockState(candidate.below()).getFluidState().isEmpty();
-                    reachable = mc.level != null && mc.level.getBlockState(candidate).isAir()
-                        && mc.level.getBlockState(candidate).getFluidState().isEmpty()
-                        && mc.level.getBlockState(candidate.above()).isAir();
-                } catch (Exception ignored) {}
-                debug("STAGING_POINT", "waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
-                    currentGatherResource != null ? currentGatherResource : "unknown", targetX, targetY, targetZ, floor, reachable);
-                if (floor && reachable) { safe = candidate; break; }
-                debug("STAGING_REJECT", "rejected point %d,%d,%d (floor=%b reachable=%b)", targetX, targetY, targetZ, floor, reachable);
-            }
+            int band = Math.max(0, gatherStagingBand.get());
+            long attemptStarted = System.currentTimeMillis();
+            ChatUtils.infoPrefix("BotBrain", "STAGE: origin %d %d %d band=%d",
+                stagingOrigin.getX(), stagingOrigin.getY(), stagingOrigin.getZ(), band);
+            BlockPos safe = selectStagingCandidate(stagingOrigin, band);
             if (safe == null) {
-                ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts; mining locally");
-                stagingComplete = true;
-                return true;
+                if (stagingAttempts >= 2) {
+                    ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=no-candidate after=%d",
+                        System.currentTimeMillis() - attemptStarted);
+                    stagingComplete = true;
+                    return true;
+                }
+                return false;
             }
             stagingTarget = safe;
+            String floorName = "unknown";
+            try {
+                floorName = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(mc.level.getBlockState(safe.below()).getBlock()).getPath();
+            } catch (Exception ignored) {}
+            ChatUtils.infoPrefix("BotBrain", "STAGE: selected %d %d %d floor=%s",
+                safe.getX(), safe.getY(), safe.getZ(), floorName);
             ChatUtils.infoPrefix("BotBrain", "No waypoint for '%s', random staging from %s: goto %d %d %d",
                 currentGatherResource != null ? currentGatherResource : "unknown",
                 isInNether() ? "nether portal" : "base", safe.getX(), safe.getY(), safe.getZ());
@@ -4833,24 +4845,98 @@ public class BotBrain extends Module {
         return continueToStagingTarget(base);
     }
 
+    /** Pick the best reachable candidate in the configured vertical band. */
+    private BlockPos selectStagingCandidate(BlockPos origin, int band) {
+        if (mc.level == null) return null;
+        BlockPos best = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (int attempt = 0; attempt < 64; attempt++) {
+            double angle = Math.random() * 2 * Math.PI;
+            int distance = 100 + (int) (Math.random() * 200);
+            int targetX = origin.getX() + (int) (Math.cos(angle) * distance);
+            int targetZ = origin.getZ() + (int) (Math.sin(angle) * distance);
+            int targetY = origin.getY() + (int) (Math.random() * (band * 2 + 1)) - band;
+            BlockPos candidate = new BlockPos(targetX, targetY, targetZ);
+            var below = mc.level.getBlockState(candidate.below());
+            var feet = mc.level.getBlockState(candidate);
+            var head = mc.level.getBlockState(candidate.above());
+            boolean floor = !below.isAir() && below.getFluidState().isEmpty();
+            int headroom = feet.isAir() && head.isAir()
+                && feet.getFluidState().isEmpty() && head.getFluidState().isEmpty() ? 2 : 0;
+            if (!floor) {
+                debug("STAGE", "rejected reason=no-floor %d %d %d", targetX, targetY, targetZ);
+                continue;
+            }
+            if (headroom < 2) {
+                debug("STAGE", "rejected reason=no-headroom %d %d %d", targetX, targetY, targetZ);
+                continue;
+            }
+            int score = 100
+                - (Math.abs(targetX - origin.getX()) + Math.abs(targetZ - origin.getZ())) / 4
+                - Math.abs(targetY - origin.getY()) * 2;
+            if (score < 16) {
+                debug("STAGE", "rejected reason=unreachable %d %d %d score=%d", targetX, targetY, targetZ, score);
+                continue;
+            }
+            String floorName = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(below.getBlock()).getPath();
+            debug("STAGE", "candidate %d %d %d score=%d floor=%s headroom=%d",
+                targetX, targetY, targetZ, score, floorName, headroom);
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
     private boolean continueToStagingTarget(BlockPos base) {
         if (stagingTarget == null) {
+            ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=no-target");
             stagingComplete = true;
             return true;
         }
 
+        long now = System.currentTimeMillis();
+        if (stagingGotoStartedAt == 0L) stagingGotoStartedAt = now;
+        if (stagingGotoFirstStartedAt == 0L) stagingGotoFirstStartedAt = now;
+
         if (!gatherStagingCommandSent && canSendBaritone()) {
             sendBaritoneChat(String.format("#goto %d %d %d", stagingTarget.getX(), stagingTarget.getY(), stagingTarget.getZ()));
             gatherStagingCommandSent = true;
+            stagingGotoStartedAt = now;
+            stagingGotoAttempts++;
         }
 
         double dx = mc.player.getX() - stagingTarget.getX();
         double dy = mc.player.getY() - stagingTarget.getY();
         double dz = mc.player.getZ() - stagingTarget.getZ();
         double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        
+
         if (dist < 20) {
             ChatUtils.infoPrefix("BotBrain", "Staging complete, beginning gather");
+            stagingComplete = true;
+            return true;
+        }
+
+        if (now - stagingGotoStartedAt >= STAGING_GOTO_TIMEOUT_MS) {
+            long elapsed = now - stagingGotoStartedAt;
+            if (!gatherStagingCommandSent) {
+                ChatUtils.warningPrefix("BotBrain", "STAGE: goto timeout after=%d attempt=%d", elapsed, stagingGotoAttempts);
+                ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=unreachable after=%d",
+                    now - stagingGotoFirstStartedAt);
+                stagingComplete = true;
+                return true;
+            }
+            ChatUtils.warningPrefix("BotBrain", "STAGE: goto timeout after=%d attempt=%d", elapsed, stagingGotoAttempts);
+            if (stagingGotoAttempts < 3) {
+                sendBaritoneChat(String.format("#goto %d %d %d", stagingTarget.getX(), stagingTarget.getY(), stagingTarget.getZ()));
+                stagingGotoAttempts++;
+                stagingGotoStartedAt = now;
+                return false;
+            }
+            ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=unreachable after=%d",
+                now - stagingGotoFirstStartedAt);
             stagingComplete = true;
             return true;
         }
