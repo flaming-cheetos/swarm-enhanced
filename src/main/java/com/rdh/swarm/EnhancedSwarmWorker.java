@@ -141,6 +141,12 @@ public class EnhancedSwarmWorker extends Thread {
         return startDeposit(reason, null);
     }
 
+    public void cancelDeposit() {
+        depositDriver.cancel();
+        isDepositing = false;
+        lastDepositFailure = depositDriver.failure();
+    }
+
     public boolean startDeposit(String reason, String category) {
         if (isDepositing || depositDriver.isBusy()) return false;
         if (depositChests.isEmpty() && depositX == null) {
@@ -210,10 +216,15 @@ public class EnhancedSwarmWorker extends Thread {
                 socket = new Socket(host, port);
                 out = new DataOutputStream(socket.getOutputStream());
                 in = new DataInputStream(socket.getInputStream());
+                try {
+                    var brain = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                        .get(com.rdh.swarm.modules.BotBrain.class);
+                    if (brain != null) brain.setOutputStream(out);
+                } catch (Exception ignored) {}
 
-                try { out.writeUTF("worker:" + name + ":" + token); out.flush(); } catch (IOException ignored) {}
+                writeLine("worker:" + name + ":" + token);
                 // Ask the host to push deposit/config data immediately after connect
-                try { out.writeUTF("REQUEST_CONFIG:" + name); out.flush(); } catch (IOException ignored) {}
+                writeLine("REQUEST_CONFIG:" + name);
 
                 long lastStatus = 0;
 
@@ -244,6 +255,11 @@ public class EnhancedSwarmWorker extends Thread {
                 try { if (out != null) out.close(); } catch (IOException ignored) {}
                 try { if (socket != null) socket.close(); } catch (IOException ignored) {}
                 in = null; out = null; socket = null;
+                try {
+                    var brain = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                        .get(com.rdh.swarm.modules.BotBrain.class);
+                    if (brain != null) brain.setOutputStream(null);
+                } catch (Exception ignored) {}
                 PathManagers.get().stop();
                 if (shouldReconnect) {
                     ChatUtils.infoPrefix("Swarm", "Worker will attempt reconnect in 5s.");
@@ -452,7 +468,7 @@ public class EnhancedSwarmWorker extends Thread {
                                     try {
                                         if (out != null) {
                                             String msg = String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), 0, task.getTargetQuantity(), task.getStatus().name(), "");
-                                            out.writeUTF(msg);
+                                            writeLine(msg);
                                             out.flush();
                                         }
                                     } catch (IOException ignored) {}
@@ -1052,7 +1068,7 @@ public class EnhancedSwarmWorker extends Thread {
             }
 
             // send scan complete
-            try { if (out != null) { out.writeUTF("SCAN_COMPLETE:" + (category == null ? "all" : category)); out.flush(); } } catch (IOException ignored) {}
+            writeLine("SCAN_COMPLETE:" + (category == null ? "all" : category));
 
         } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Scan failed: %s", e.getMessage()); }
     }
@@ -1182,7 +1198,7 @@ public class EnhancedSwarmWorker extends Thread {
 
             ChatUtils.infoPrefix("Swarm", "Withdraw: took %d/%d %s from %d,%d,%d", Math.min(transferred, needed), needed, itemId, x, y, z);
             // notify host of result
-            try { if (out != null) { out.writeUTF(String.format("WITHDRAW_RESULT:%s:%d:%d:%d:%d", itemId, x, y, z, transferred)); out.flush(); } } catch (IOException ignored) {}
+            writeLine(String.format("WITHDRAW_RESULT:%s:%d:%d:%d:%d", itemId, x, y, z, transferred));
 
         } catch (Exception e) {
             ChatUtils.errorPrefix("Swarm", "Withdraw exception: %s", e.getMessage());
@@ -1190,9 +1206,15 @@ public class EnhancedSwarmWorker extends Thread {
     }
 
     private void sendScanResult(String category, int x, int y, int z, JsonObject result) {
+        String header = String.format("SCAN_CHEST_RESULT:%s:%d:%d:%d|", category == null ? "all" : category, x, y, z);
+        writeLine(header + result.toString());
+    }
+
+    private void writeLine(String line) {
+        DataOutputStream stream = out;
+        if (stream == null) return;
         try {
-            String header = String.format("SCAN_CHEST_RESULT:%s:%d:%d:%d|", category == null ? "all" : category, x, y, z);
-            if (out != null) { out.writeUTF(header + result.toString()); out.flush(); }
+            synchronized (stream) { stream.writeUTF(line); stream.flush(); }
         } catch (IOException ignored) {}
     }
 
@@ -1205,7 +1227,7 @@ public class EnhancedSwarmWorker extends Thread {
             Player p = mc.player;
             if (p == null) return;
             WorkerStatus ws = new WorkerStatus(name, p.getX(), p.getY(), p.getZ(), p.getHealth(), p.getFoodData().getFoodLevel(), currentTask == null ? "" : currentTask);
-            try { out.writeUTF(ws.serialize()); out.flush(); } catch (IOException ignored) {}
+            writeLine(ws.serialize());
             // Also send BOT_STATUS message for host parsing
                 try {
                     // Build a BotStatus object and serialize it to ensure format consistency
@@ -1223,7 +1245,7 @@ public class EnhancedSwarmWorker extends Thread {
                         if (brain != null) {
                             try { brainState = brain.getState() != null ? brain.getState().name() : "WORKER"; } catch (Exception ignored) { brainState = "WORKER"; }
                             try { taskDesc = brain.getTaskDescription(); } catch (Exception ignored) { taskDesc = null; }
-                            try { bs.halted = brain.isHalted(); } catch (Exception ignored) {}
+                            try { bs.halted = brain.isHalted(); if (bs.halted) brainState = "PAUSED"; } catch (Exception ignored) {}
                             // BotBrain specific collection/eta getters may not exist; leave defaults
                         }
                     } catch (Throwable ignored) {}
@@ -1242,7 +1264,7 @@ public class EnhancedSwarmWorker extends Thread {
 
                     try { bs.tier = com.rdh.swarm.task.DependencyResolver.getCurrentTier().name(); } catch (Exception ignored) { bs.tier = "Unknown"; }
 
-                    try { out.writeUTF(bs.serialize()); out.flush(); } catch (IOException ignored) {}
+                    writeLine(bs.serialize());
                 } catch (Exception ignored) {}
         } catch (Exception ignored) {}
     }

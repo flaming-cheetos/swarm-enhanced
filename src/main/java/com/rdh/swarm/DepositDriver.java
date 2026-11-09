@@ -176,6 +176,23 @@ public final class DepositDriver {
         return failure == null ? "" : failure;
     }
 
+    /** Cancel only a menu this driver opened, then leave the state machine idle. */
+    public synchronized void cancel() {
+        if (!isBusy()) return;
+        Minecraft mc = mcSupplier.get();
+        if (ownedMenu && mc != null && mc.player != null && menu != null
+            && mc.player.containerMenu == menu) {
+            try { mc.setScreenAndShow(null); } catch (Exception ignored) {}
+        }
+        ownedMenu = false;
+        menu = null;
+        active = false;
+        requested = false;
+        phase = Phase.FAILED;
+        failure = "cancelled";
+        if (onFinished != null) onFinished.run();
+    }
+
     /** One tick, one container action. */
     public void tick() {
         if (!requested && !active) return;

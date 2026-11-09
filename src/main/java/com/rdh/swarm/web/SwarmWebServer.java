@@ -444,7 +444,6 @@ public class SwarmWebServer {
                 case "/api/action/resume" -> {
                     host.clearHaltedFlags();
                     host.sendAll("swarm:all resume");
-                    host.dispatchPendingForAll();
                     logInfo("resume received — sent to all bots");
                 }
                 case "/api/action/deposit" -> {

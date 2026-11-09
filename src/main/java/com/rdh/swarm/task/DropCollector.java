@@ -64,8 +64,11 @@ public final class DropCollector {
     private final Set<String> clusterIds = new LinkedHashSet<>();
     private final Map<UUID, Long> blacklist = new HashMap<>();
     private List<ItemEntity> cluster = new ArrayList<>();
+    public enum FinalSweepVerdict { RUNNING, EVIDENCED, NOTHING_TO_COLLECT, UNPROVEN }
+
     private UUID finalSweepTask;
     private UUID finalSweptTask;
+    private boolean finalSweepEvidence;
     private long lastSweepStart;
     private long lastSkipLog;
 
@@ -109,29 +112,32 @@ public final class DropCollector {
     }
 
     /**
-     * Called immediately before a task is marked complete. The task remains
-     * active until this returns false on a later tick, so the queue cannot
-     * report work complete with the last drop still on the ground.
+     * Called immediately before a task is marked complete. RUNNING means wait;
+     * EVIDENCED/NOTHING_TO_COLLECT are the only completion verdicts.
      */
-    public boolean startFinalSweep(UUID taskId) {
-        if (!Boolean.TRUE.equals(enabled.get())) return false;
-        if (taskId == null || taskId.equals(finalSweptTask)) return false;
+    public FinalSweepVerdict startFinalSweep(UUID taskId) {
+        if (!Boolean.TRUE.equals(enabled.get())) return FinalSweepVerdict.UNPROVEN;
+        if (taskId == null) return FinalSweepVerdict.UNPROVEN;
+        if (taskId.equals(finalSweptTask)) {
+            return finalSweepEvidence ? FinalSweepVerdict.EVIDENCED : FinalSweepVerdict.NOTHING_TO_COLLECT;
+        }
         if (active) {
             if (finalSweepTask == null) finalSweepTask = taskId;
-            return true;
+            return FinalSweepVerdict.RUNNING;
         }
         finalSweepTask = taskId;
+        finalSweepEvidence = false;
         if (!startWorkUnit()) {
-            finalSweptTask = taskId;
             finalSweepTask = null;
-            return false;
+            return FinalSweepVerdict.UNPROVEN;
         }
-        return true;
+        return FinalSweepVerdict.RUNNING;
     }
 
     public void resetTaskTracking() {
         finalSweepTask = null;
         finalSweptTask = null;
+        finalSweepEvidence = false;
     }
 
     /** Abort a sweep without logging a normal completion. */
@@ -325,6 +331,7 @@ public final class DropCollector {
         clusterIds.clear();
         if (finalSweepTask != null) {
             finalSweptTask = finalSweepTask;
+            finalSweepEvidence = !collected.isEmpty();
             finalSweepTask = null;
         }
         if (!skippedLogged) {

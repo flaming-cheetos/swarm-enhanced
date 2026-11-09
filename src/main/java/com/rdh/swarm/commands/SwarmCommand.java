@@ -688,7 +688,6 @@ public class SwarmCommand extends Command {
         if (mod != null && mod.isHost() && mod.host != null) {
             mod.host.clearHaltedFlags();
             mod.host.sendAll("swarm:all resume");
-            mod.host.dispatchPendingForAll();
             info("swarm: resumed");
             return SINGLE_SUCCESS;
         }

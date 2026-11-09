@@ -352,6 +352,8 @@ public class BotBrain extends Module {
     private String currentEta = "";
     private long lastProgressTime = 0;
     private int lastProgressCount = 0;
+    private UUID completionTaskId = null;
+    private int completionAttempts = 0;
     private long craftingWaitStart = 0;
     private int craftFailCount = 0;
 
@@ -499,6 +501,7 @@ public class BotBrain extends Module {
     private BlockPos shulkerPos = null;
     private Item shulkerItem = null;
     private boolean shulkerBreakCommandSent = false;
+    private boolean shulkerMovedAny = false;
     private long lastAutoShulker = 0;
 
     // Builder state
@@ -512,6 +515,9 @@ public class BotBrain extends Module {
     // Crafting state
     private long craftingTableOpenTime = 0;
     private boolean waitingForCraftingOpen = false;
+    public enum HaltState { RUNNING, PAUSED, CANCELLED }
+    private volatile HaltState haltState = HaltState.RUNNING;
+    private volatile boolean resumeRequested = false;
     private volatile boolean paused = false;
     private volatile boolean halted = false;
     private long lastHaltLog = 0L;
@@ -544,8 +550,7 @@ public class BotBrain extends Module {
     private int pendingPlacementRetries = 0;
     private static final int MAX_PENDING_PLACEMENT_RETRIES = 3;
 
-    // Output stream to host (set by EnhancedSwarmWorker)
-    private DataOutputStream out = null;
+    // Output stream to host (set by EnhancedSwarmWorker; one writer, synchronized)
 
     // Storage query response cache (non-blocking)
     private volatile Map<String, Long> lastStorageCache = Collections.emptyMap();
@@ -567,8 +572,14 @@ public class BotBrain extends Module {
     private volatile long withdrawStartTime = 0L;
     private static final long WITHDRAW_TIMEOUT_MS = 120_000L;
 
+    private volatile DataOutputStream out = null;
+
     public void setOutputStream(DataOutputStream out) {
         this.out = out;
+    }
+
+    public void clearOutputStream() {
+        this.out = null;
     }
 
     // Called by EnhancedSwarmWorker when a STORAGE_QUERY_RESPONSE arrives
@@ -741,15 +752,27 @@ public class BotBrain extends Module {
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
+        if (state == BrainState.IDLE && currentTask != null) {
+            ChatUtils.warningPrefix("BotBrain", "TASK: orphaned task in IDLE, failing %s", currentTask.getId());
+            failTaskWithReason(currentTask, "orphaned-task");
+        }
         if (manageModules.get()) {
             moduleGuard.tick(tickCounter);
             moduleGuard.setRawFoodFallback(eatRawFallback.get());
         }
-        if (halted) {
+        if (resumeRequested && haltState == HaltState.PAUSED) {
+            haltState = HaltState.RUNNING;
+            resumeRequested = false;
+            paused = false;
+            halted = false;
+            ChatUtils.infoPrefix("BotBrain", "HALT: resumed %s",
+                currentTask == null ? "none" : currentTask.getId());
+        }
+        if (haltState == HaltState.CANCELLED) {
             releaseMovementKeys();
             if (now - lastHaltLog >= 10000L) {
                 lastHaltLog = now;
-                ChatUtils.infoPrefix("BotBrain", "HALT: still halted, planner suppressed");
+                ChatUtils.infoPrefix("BotBrain", "HALT: cancelled, planner suppressed");
             }
             return;
         }
@@ -759,7 +782,7 @@ public class BotBrain extends Module {
             ChatUtils.infoPrefix("BotBrain", "tick state=%s planStep=%d planSize=%d task=%s", state, planStep, executionPlan == null ? 0 : executionPlan.size(), currentTask == null ? "" : currentTask.getItemName());
         }
 
-        if (paused) return;
+        if (haltState == HaltState.PAUSED) return;
         if (dropCollector.tick()) return;
 
         if (manageModules.get() && moduleGuard.shouldFreezeTimers()) {
@@ -818,6 +841,51 @@ public class BotBrain extends Module {
 
     // === STATE HANDLERS ===
 
+    /** The only path that may mark a task COMPLETE. */
+    private boolean finishTaskWithEvidence(BotTask task, String evidence) {
+        if (task == null) return true;
+        if (completionTaskId == null || !completionTaskId.equals(task.getId())) {
+            completionTaskId = task.getId();
+            completionAttempts = 0;
+        }
+        var verdict = dropCollector.startFinalSweep(task.getId());
+        if (verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.RUNNING) return false;
+        if (verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.UNPROVEN) {
+            completionAttempts++;
+            if (completionAttempts <= 1) {
+                ChatUtils.warningPrefix("BotBrain", "TASK: retry %s attempt=%d/2 reason=unproven-completion",
+                    task.getId(), completionAttempts);
+                return false;
+            }
+            failTaskWithReason(task, "unproven-completion");
+            return true;
+        }
+        task.setStatus(BotTask.Status.COMPLETE);
+        String evidenceValue = verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.NOTHING_TO_COLLECT
+            ? "verified-empty" : (evidence == null || evidence.isEmpty() ? "inv" : evidence);
+        ChatUtils.infoPrefix("BotBrain", "TASK: complete %s evidence=%s", task.getId(), evidenceValue);
+        try { sendTaskComplete(task); } catch (Exception ignored) {}
+        if (currentTask == task) currentTask = null;
+        executionPlan = null;
+        planStep = 0;
+        completionTaskId = null;
+        completionAttempts = 0;
+        return true;
+    }
+
+    private void failTaskWithReason(BotTask task, String reason) {
+        if (task == null) return;
+        task.setStatus(BotTask.Status.FAILED);
+        task.setFailureReason(reason);
+        ChatUtils.warningPrefix("BotBrain", "TASK: failed %s reason=%s", task.getId(), reason);
+        try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        if (currentTask == task) currentTask = null;
+        executionPlan = null;
+        planStep = 0;
+        completionTaskId = null;
+        completionAttempts = 0;
+    }
+
     private void handleIdle() {
         if (currentTask == null) {
         if (tryAutoHunt()) return;
@@ -830,12 +898,7 @@ public class BotBrain extends Module {
         }
 
         if (currentTask.isComplete()) {
-            if (dropCollector.startFinalSweep(currentTask.getId())) return;
-            ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s",
-                currentTask.getItemName(), currentTask.getProgressString());
-            // Notify host
-            try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
-            currentTask = null;
+            if (!finishTaskWithEvidence(currentTask, "inv")) return;
             currentTaskDescription = "Idle — task complete";
             return;
         }
@@ -988,13 +1051,9 @@ public class BotBrain extends Module {
                 int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d", cleanTarget, need, have, inStorage, effectiveHave);
                 if (have >= need) {
-                    if (dropCollector.startFinalSweep(currentTask.getId())) return;
                     if (canSendBaritone()) sendBaritoneChat("#stop");
                     ChatUtils.infoPrefix("BotBrain", "Gathered enough %s (%d/%d)", cleanTarget, have, need);
-                    // mark task complete
-                    try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
-                    currentTask.setStatus(com.rdh.swarm.task.BotTask.Status.COMPLETE);
-                    try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                    if (!finishTaskWithEvidence(currentTask, "inv")) return;
                     try {
                         var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
                         // prefer returning to base before depositing when base known
@@ -1336,14 +1395,7 @@ public class BotBrain extends Module {
             if (currentTask != null) {
                 int totalHave = countForTask(currentTask.getTargetItem());
                 if (totalHave >= currentTask.getTargetQuantity()) {
-                    if (dropCollector.startFinalSweep(currentTask.getId())) return;
-                    // update collected count to reflect actual inventory before marking complete
-                    try {
-                        currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity());
-                    } catch (Exception ignored) {}
-                    currentTask.setStatus(BotTask.Status.COMPLETE);
-                    ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
-                    try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                    if (!finishTaskWithEvidence(currentTask, "inv")) return;
 
                     // Trigger deposit after task complete
                     try {
@@ -2229,11 +2281,8 @@ public class BotBrain extends Module {
                     int haveNow = CraftingManager.countInInventory(currentTask.getTargetItem());
                     if (haveNow >= currentTask.getTargetQuantity()) {
                         ChatUtils.infoPrefix("BotBrain", "Target item acquired early after craft step; have %d/%d %s", haveNow, currentTask.getTargetQuantity(), currentTask.getItemName());
-                        // Mark task complete and notify host
-                        try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
-                        currentTask.setStatus(BotTask.Status.COMPLETE);
-                        ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
-                        try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                        // Mark task complete and notify host through the evidence gate.
+                        if (!finishTaskWithEvidence(currentTask, "inv")) return;
                         // Trigger deposit (prefer returning to base first)
                         try {
                             var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
@@ -2266,10 +2315,7 @@ public class BotBrain extends Module {
                         int have = CraftingManager.countInInventory(currentTask.getTargetItem());
                         if (have >= currentTask.getTargetQuantity()) {
                             ChatUtils.infoPrefix("BotBrain", "All craft steps done, have %d/%d %s", have, currentTask.getTargetQuantity(), currentTask.getItemName());
-                            try { currentTask.addCollected(currentTask.getTargetQuantity() - currentTask.getCollectedQuantity()); } catch (Exception ignored) {}
-                            currentTask.setStatus(BotTask.Status.COMPLETE);
-                            ChatUtils.infoPrefix("BotBrain", "Task complete: %s %s", currentTask.getItemName(), currentTask.getProgressString());
-                            try { sendTaskComplete(currentTask); } catch (Exception ignored) {}
+                            if (!finishTaskWithEvidence(currentTask, "inv")) return;
                             try {
                                 var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
                                 if (swarmMod != null && swarmMod.worker != null) {
@@ -2818,8 +2864,12 @@ public class BotBrain extends Module {
         } catch (Exception ignored) {}
         
         if (System.currentTimeMillis() - stateEnterTime > 60000) {
-            ChatUtils.infoPrefix("BotBrain",
-                "Deposit timeout, going idle");
+            ChatUtils.warningPrefix("BotBrain", "Deposit timeout, clearing owned task");
+            try {
+                var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+                if (swarmMod != null && swarmMod.worker != null) swarmMod.worker.cancelDeposit();
+            } catch (Exception ignored) {}
+            if (currentTask != null) failTaskWithReason(currentTask, "deposit-timeout");
             setState(BrainState.IDLE);
         }
     }
@@ -2909,18 +2959,37 @@ public class BotBrain extends Module {
         if (lastHuntTargetEntity != null && !lastHuntTargetEntity.isAlive()) {
             lastHuntTargetEntity = null;
             lastHuntTargetId = null;
+            ChatUtils.infoPrefix("BotBrain", "HUNT: retarget reason=dead");
             stopHuntMovement();
             if (dropCollector.startWorkUnit()) return;
         }
+        if (lastHuntTargetEntity != null && !isHuntTarget(lastHuntTargetEntity)) {
+            lastHuntTargetEntity = null;
+            lastHuntTargetId = null;
+            ChatUtils.infoPrefix("BotBrain", "HUNT: retarget reason=gone");
+            stopHuntMovement();
+        } else if (lastHuntTargetEntity != null
+                && mc.player.distanceToSqr(lastHuntTargetEntity) > 48.0 * 48.0) {
+            lastHuntTargetEntity = null;
+            lastHuntTargetId = null;
+            ChatUtils.infoPrefix("BotBrain", "HUNT: retarget reason=out-of-range");
+            stopHuntMovement();
+        }
 
-        Entity target = findHuntTarget();
+        Entity target = lastHuntTargetEntity;
+        if (target == null) {
+            target = findHuntTarget();
+            if (target != null) {
+                ChatUtils.infoPrefix("BotBrain", "HUNT: target=%s acquired", target.getUUID());
+            }
+        }
         if (target != null) {
             lastHuntTargetId = target.getUUID();
             lastHuntTargetEntity = target;
             huntExploreRounds = 0;
             if (!huntFollowing) {
                 try {
-                    baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getFollowProcess().follow(this::isHuntTarget);
+                    baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getFollowProcess().follow(this::isCurrentHuntTarget);
                     huntFollowing = true;
                 } catch (Exception | NoClassDefFoundError e) {
                     ChatUtils.warningPrefix("BotBrain", "Food hunt follow unavailable");
@@ -2986,6 +3055,11 @@ public class BotBrain extends Module {
         return best;
     }
 
+    private boolean isCurrentHuntTarget(Entity entity) {
+        return entity != null && lastHuntTargetId != null
+            && lastHuntTargetId.equals(entity.getUUID()) && isHuntTarget(entity);
+    }
+
     private boolean isHuntTarget(Entity entity) {
         if (!(entity instanceof Mob mob) || !mob.isAlive() || !HUNT_TYPES.contains(mob.getType())) return false;
         if (mob instanceof AgeableMob ageable && ageable.isBaby()) return false;
@@ -3021,20 +3095,12 @@ public class BotBrain extends Module {
     }
 
     private void completeHunt(String reason) {
-        if (currentTask != null && dropCollector.startFinalSweep(currentTask.getId())) {
-            stopHuntMovement();
-            return;
-        }
         stopHuntMovement();
-        BotTask task = currentTask;
+        if (currentTask != null && !finishTaskWithEvidence(currentTask, "inv")) return;
         currentTask = null;
         executionPlan = null;
         currentTaskDescription = "Idle — " + reason;
         setState(BrainState.IDLE);
-        if (task != null) {
-            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(task); } catch (Exception ignored) {}
-        }
         ChatUtils.infoPrefix("BotBrain", "Food hunt complete: %s", reason);
         resumeAfterHunt(true);
     }
@@ -3239,15 +3305,13 @@ public class BotBrain extends Module {
         if (currentTask != null) {
             if (currentTask.getType() != BotTask.Type.HUNT_FOOD || pendingTask != null) return;
             BotTask hunt = currentTask;
-            currentTask = null;
-            executionPlan = null;
             stopHuntMovement();
             if (canSendBaritone()) sendBaritoneChat("#stop");
             try {
                 baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
             } catch (Exception | NoClassDefFoundError ignored) {}
-            try { hunt.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(hunt); } catch (Exception ignored) {}
+            if (!finishTaskWithEvidence(hunt, "inv")) return;
+            executionPlan = null;
             ChatUtils.infoPrefix("BotBrain", "Food hunt complete: raw food ready to cook");
             setState(BrainState.IDLE);
         }
@@ -3410,17 +3474,12 @@ public class BotBrain extends Module {
 
     private void completeBuild() {
         BotTask task = currentTask;
-        currentTask = null;
-        executionPlan = null;
         buildStartTime = 0;
-        currentTaskDescription = "Idle — build complete";
+        executionPlan = null;
+        currentTaskDescription = "Idle — build unproven";
         setState(BrainState.IDLE);
-        if (task != null) {
-            task.addCollected(task.getRemaining());
-            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(task); } catch (Exception ignored) {}
-        }
-        ChatUtils.infoPrefix("BotBrain", "Builder complete");
+        failTaskWithReason(task, "unproven-completion");
+        ChatUtils.warningPrefix("BotBrain", "Builder ended without placement evidence");
     }
 
     private void failBuild(String reason) {
@@ -3439,6 +3498,7 @@ public class BotBrain extends Module {
 
     private void beginShulker() {
         if (currentTask == null) { setState(BrainState.IDLE); return; }
+        shulkerMovedAny = false;
         shulkerItem = findFilledShulker();
         if (shulkerItem == null) { failShulker("no filled shulker box in inventory"); return; }
         shulkerPos = null;
@@ -3489,6 +3549,7 @@ public class BotBrain extends Module {
                 for (int i = 0; i < 27 && i < menu.slots.size(); i++) {
                     if (!menu.slots.get(i).getItem().isEmpty()) {
                         InvUtils.shiftClick().slotId(i);
+                        shulkerMovedAny = true;
                         moved = true;
                         break;
                     }
@@ -3548,15 +3609,21 @@ public class BotBrain extends Module {
 
     private void completeShulker() {
         BotTask task = currentTask;
-        currentTask = null; executionPlan = null;
+        if (task != null && !shulkerMovedAny) {
+            failTaskWithReason(task, "unproven-completion");
+            currentTaskDescription = "Idle — shulker unproven";
+            shulkerPos = null; shulkerPhase = SHULKER_PLACE; shulkerTicks = 0;
+            setState(BrainState.IDLE);
+            return;
+        }
+        if (task != null && !finishTaskWithEvidence(task, "inv")) {
+            currentTaskDescription = "Collecting final shulker drops";
+            return;
+        }
+        executionPlan = null;
         shulkerPos = null; shulkerPhase = SHULKER_PLACE; shulkerTicks = 0;
         currentTaskDescription = "Idle — shulker emptied";
         setState(BrainState.IDLE);
-        if (task != null) {
-            task.addCollected(task.getRemaining());
-            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(task); } catch (Exception ignored) {}
-        }
         ChatUtils.infoPrefix("BotBrain", "Shulker emptied and collected");
     }
 
@@ -3710,18 +3777,13 @@ public class BotBrain extends Module {
     private void completeSmithing(Item result) {
         SmithingManager.close();
         BotTask task = currentTask;
-        currentTask = null;
+        if (task != null && !finishTaskWithEvidence(task, "inv")) return;
         executionPlan = null;
         smithPos = null;
         smithPhase = SMITH_SCAN;
         smithTicks = 0;
         currentTaskDescription = "Idle — smithed " + itemPath(result);
         setState(BrainState.IDLE);
-        if (task != null) {
-            task.addCollected(task.getRemaining());
-            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(task); } catch (Exception ignored) {}
-        }
         ChatUtils.infoPrefix("BotBrain", "Smithing complete: %s", itemPath(result));
     }
 
@@ -3896,22 +3958,16 @@ public class BotBrain extends Module {
 
     private void completeGrind(String reason) {
         BotTask task = currentTask;
-        if (task != null && dropCollector.startFinalSweep(task.getId())) {
+        if (task != null && !finishTaskWithEvidence(task, "inv")) {
             currentTaskDescription = "Collecting final grinder drops";
             return;
         }
         int seconds = grindStartTime == 0 ? 0 : (int) ((System.currentTimeMillis() - grindStartTime) / 1000L);
-        currentTask = null;
         executionPlan = null;
         grindPos = null;
         grindStartTime = 0;
         currentTaskDescription = "Idle — " + reason;
         setState(BrainState.IDLE);
-        if (task != null) {
-            task.addCollected(task.getRemaining());
-            try { task.setStatus(BotTask.Status.COMPLETE); } catch (Exception ignored) {}
-            try { sendTaskComplete(task); } catch (Exception ignored) {}
-        }
         ChatUtils.infoPrefix("BotBrain", "Grinder complete: %s (%ds, %d attacks)", reason, seconds, grindAttacks);
     }
 
@@ -3949,8 +4005,9 @@ public class BotBrain extends Module {
         stuckCounter++;
 
         if (stuckCounter > 20) {
-            ChatUtils.warningPrefix("BotBrain", "Been stuck too long. Resetting.");
+            ChatUtils.warningPrefix("BotBrain", "Been stuck too long. Failing the owned task.");
             stuckCounter = 0;
+            if (currentTask != null) failTaskWithReason(currentTask, "stuck");
             executionPlan = null;
             setState(BrainState.IDLE);
         }
@@ -3959,7 +4016,7 @@ public class BotBrain extends Module {
     // === TASK MANAGEMENT ===
 
     public void setTask(BotTask task) {
-        if (halted) {
+        if (haltState == HaltState.CANCELLED) {
             ChatUtils.warningPrefix("BotBrain", "HALT: task assignment ignored while halted");
             return;
         }
@@ -4886,19 +4943,21 @@ public class BotBrain extends Module {
     // === PAUSE/CANCEL/RESUME ===
 
     public void cancel() {
-        // Set the latch first: the next tick must not re-plan between the
-        // Baritone cancel and the task cleanup.
+        // Cancellation is the only path that drops the task.
+        haltState = HaltState.CANCELLED;
+        resumeRequested = false;
         halted = true;
         paused = false;
         long now = System.currentTimeMillis();
         lastHaltLog = now;
-        ChatUtils.infoPrefix("BotBrain", "HALT: requested by command");
 
         BotTask abandoned = this.currentTask;
         if (abandoned != null) {
             try { abandoned.setStatus(BotTask.Status.CANCELLED); } catch (Exception ignored) {}
             try { sendTaskCancelled(abandoned, "cancelled by user"); } catch (Exception ignored) {}
-            ChatUtils.infoPrefix("BotBrain", "HALT: bot idle, task '%s' abandoned", abandoned.getId());
+            ChatUtils.infoPrefix("BotBrain", "HALT: cancelled %s", abandoned.getId());
+        } else {
+            ChatUtils.infoPrefix("BotBrain", "HALT: cancelled none");
         }
         this.currentTask = null;
         this.executionPlan = null;
@@ -4920,9 +4979,8 @@ public class BotBrain extends Module {
         moduleGuard.setKillAuraSuppressed(false);
         try { SmithingManager.close(); } catch (Exception ignored) {}
         try {
-            if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
-                mc.execute(() -> { try { mc.setScreenAndShow(null); } catch (Exception ignored) {} });
-            }
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod != null && swarmMod.worker != null) swarmMod.worker.cancelDeposit();
         } catch (Exception ignored) {}
         setState(BrainState.IDLE);
     }
@@ -4941,19 +4999,34 @@ public class BotBrain extends Module {
         } catch (Exception ignored) {}
     }
 
-    public boolean isHalted() { return halted; }
+    public boolean isHalted() { return haltState != HaltState.RUNNING; }
 
     public void pause() {
+        if (haltState == HaltState.CANCELLED) {
+            ChatUtils.warningPrefix("BotBrain", "HALT: cannot pause a cancelled planner");
+            return;
+        }
+        haltState = HaltState.PAUSED;
         paused = true;
+        halted = false;
+        resumeRequested = false;
         sendBaritoneChat("#stop");
+        try { dropCollector.cancel(); } catch (Exception ignored) {}
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod != null && swarmMod.worker != null) swarmMod.worker.cancelDeposit();
+        } catch (Exception ignored) {}
+        ChatUtils.infoPrefix("BotBrain", "HALT: paused %s",
+            currentTask == null ? "none" : currentTask.getId());
     }
 
     public void resume() {
-        halted = false;
-        paused = false;
+        if (haltState != HaltState.PAUSED) {
+            ChatUtils.warningPrefix("BotBrain", "HALT: resume ignored — planner is %s", haltState);
+            return;
+        }
+        resumeRequested = true;
         lastHaltLog = 0L;
-        ChatUtils.infoPrefix("BotBrain", "HALT: resumed by command");
-        setState(BrainState.IDLE);
     }
 
     @Override
