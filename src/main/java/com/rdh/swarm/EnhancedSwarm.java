@@ -143,7 +143,7 @@ public class EnhancedSwarm extends Module {
 
     private final Setting<String> sharedToken = sgGeneral.add(new StringSetting.Builder()
         .name("shared-token")
-        .description("Shared worker/web auth token. Empty means loopback-only access.")
+        .description("Shared worker/web auth token. Empty generates a per-session web token.")
         .defaultValue("")
         .build()
     );

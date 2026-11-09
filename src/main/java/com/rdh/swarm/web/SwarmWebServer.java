@@ -25,10 +25,13 @@ import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 
+import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
+
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -60,6 +63,7 @@ public class SwarmWebServer {
     private final String bindAddress;
     private final int port;
     private final String token;
+    private final boolean generatedToken;
     private NioEventLoopGroup bossGroup;
     private NioEventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -75,22 +79,71 @@ public class SwarmWebServer {
     public SwarmWebServer(String bindAddress, int port, String token) {
         this.bindAddress = bindAddress;
         this.port = port;
-        this.token = token == null ? "" : token;
+        this.generatedToken = token == null || token.isBlank();
+        this.token = generatedToken ? generateToken() : token;
     }
 
-    /** Loopback is always allowed; remote clients must present the configured token header. */
-    public boolean isAuthorized(Channel channel, String suppliedToken) {
+    private static String generateToken() {
+        byte[] bytes = new byte[24];
+        new SecureRandom().nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
+    }
+
+    /**
+     * Every request, including loopback and the WebSocket handshake, must carry
+     * the configured token in the header, query string, or session cookie.
+     */
+    public boolean isAuthorized(FullHttpRequest request) {
+        String supplied = tokenFromHeader(request);
+        if (supplied == null) supplied = tokenFromQuery(request);
+        if (supplied == null) supplied = tokenFromCookie(request);
+        if (supplied == null) return false;
+        return MessageDigest.isEqual(
+            token.getBytes(StandardCharsets.UTF_8),
+            supplied.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Reject a browser request from any origin other than this panel. */
+    public boolean isOriginAllowed(FullHttpRequest request) {
+        String origin = request.headers().get(HttpHeaderNames.ORIGIN);
+        if (origin == null) return true;
+        String host = request.headers().get(HttpHeaderNames.HOST);
+        return host != null && origin.equalsIgnoreCase("http://" + host);
+    }
+
+    private String tokenFromHeader(FullHttpRequest request) {
+        String value = request.headers().get("X-Swarm-Token");
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private String tokenFromQuery(FullHttpRequest request) {
         try {
-            if (channel.remoteAddress() instanceof InetSocketAddress address
-                && address.getAddress() != null
-                && address.getAddress().isLoopbackAddress()) return true;
-            if (token.isEmpty()) return false;
-            return suppliedToken != null && MessageDigest.isEqual(
-                token.getBytes(StandardCharsets.UTF_8),
-                suppliedToken.getBytes(StandardCharsets.UTF_8));
+            List<String> values = new QueryStringDecoder(request.uri()).parameters().get("token");
+            return values == null || values.isEmpty() || values.get(0).isBlank() ? null : values.get(0);
         } catch (Exception e) {
-            return false;
+            return null;
         }
+    }
+
+    private String tokenFromCookie(FullHttpRequest request) {
+        String header = request.headers().get(HttpHeaderNames.COOKIE);
+        if (header == null) return null;
+        try {
+            for (var cookie : ServerCookieDecoder.LAX.decode(header)) {
+                if (cookie.name().equals("swarm_token")) return cookie.value();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    public String sessionCookie() {
+        return "swarm_token=" + token + "; Path=/; HttpOnly; SameSite=Strict";
+    }
+
+    private String panelHost() {
+        if (bindAddress == null || bindAddress.isBlank()
+            || bindAddress.equals("0.0.0.0") || bindAddress.equals("::")) return "127.0.0.1";
+        return bindAddress;
     }
 
     public void start() {
@@ -113,7 +166,8 @@ public class SwarmWebServer {
                 });
 
             serverChannel = bootstrap.bind(bindAddress, port).sync().channel();
-            ChatUtils.infoPrefix("Swarm", "Web panel started on http://%s:%d", bindAddress, port);
+            ChatUtils.infoPrefix("Swarm", "Web panel: http://%s:%d/?token=%s", panelHost(), port, token);
+            if (generatedToken) ChatUtils.infoPrefix("Swarm", "Generated web token (shown once).");
 
             // Push state to WebSocket clients every 2 seconds
             scheduler.scheduleAtFixedRate(this::broadcastState, 2, 2, TimeUnit.SECONDS);

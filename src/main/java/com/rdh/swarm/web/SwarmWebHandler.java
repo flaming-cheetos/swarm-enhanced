@@ -6,6 +6,8 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.util.CharsetUtil;
 
+import java.util.Map;
+
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
@@ -28,8 +30,12 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
     }
 
     private void handleHttp(ChannelHandlerContext ctx, FullHttpRequest req) {
-        if (!server.isAuthorized(ctx.channel(), req.headers().get("X-Swarm-Token"))) {
-            sendResponse(ctx, FORBIDDEN, "text/plain", "Forbidden");
+        if (!server.isAuthorized(req)) {
+            sendResponse(ctx, UNAUTHORIZED, "text/plain", "Unauthorized");
+            return;
+        }
+        if (!server.isOriginAllowed(req)) {
+            sendResponse(ctx, FORBIDDEN, "text/plain", "Origin not allowed");
             return;
         }
 
@@ -96,7 +102,8 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
     }
 
     private void sendHtml(ChannelHandlerContext ctx, String html) {
-        sendResponse(ctx, OK, "text/html; charset=UTF-8", html);
+        sendResponse(ctx, OK, "text/html; charset=UTF-8", html,
+            Map.of(HttpHeaderNames.SET_COOKIE.toString(), server.sessionCookie()));
     }
 
     private void sendJson(ChannelHandlerContext ctx, String json) {
@@ -105,6 +112,11 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
 
     private void sendResponse(ChannelHandlerContext ctx, HttpResponseStatus status,
                                String contentType, String body) {
+        sendResponse(ctx, status, contentType, body, Map.of());
+    }
+
+    private void sendResponse(ChannelHandlerContext ctx, HttpResponseStatus status,
+                               String contentType, String body, Map<String, String> extraHeaders) {
         byte[] bytes = body.getBytes(CharsetUtil.UTF_8);
         FullHttpResponse response = new DefaultFullHttpResponse(
             HTTP_1_1, status, Unpooled.wrappedBuffer(bytes)
@@ -112,7 +124,10 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
         response.headers()
             .set(HttpHeaderNames.CONTENT_TYPE, contentType)
             .set(HttpHeaderNames.CONTENT_LENGTH, bytes.length)
-            .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+            .set("X-Content-Type-Options", "nosniff")
+            .set("Referrer-Policy", "no-referrer")
+            .set(HttpHeaderNames.CACHE_CONTROL, "no-store");
+        extraHeaders.forEach((name, value) -> response.headers().set(name, value));
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 }
