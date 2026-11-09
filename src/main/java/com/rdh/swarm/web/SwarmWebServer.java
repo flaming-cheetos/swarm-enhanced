@@ -472,9 +472,6 @@ public class SwarmWebServer {
                 case "/api/action/scan_chests" -> {
                     logWarn("Scan Chests is not implemented: container reader unavailable; no command sent");
                 }
-                case "/api/action/check_fuel" -> {
-                    logWarn("Check Fuel is not implemented: container reader unavailable; no command sent");
-                }
                 case "/api/command" -> {
                     String target = extractJson(body, "target");
                     String cmd = extractJson(body, "cmd");

@@ -18,7 +18,6 @@
       "com.rdh.swarm.EnhancedSwarmAddon"
     ]
   },
-  "mixins": ["enhanced-swarm.mixins.json"],
   "custom": {
     "meteor-client:color": "255,0,0",
     "modmenu": {

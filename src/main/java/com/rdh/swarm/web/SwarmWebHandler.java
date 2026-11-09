@@ -41,6 +41,12 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
 
         String uri = req.uri().split("\\?")[0];
 
+        if (uri.equals("/api/action/check_fuel")) {
+            sendResponse(ctx, NOT_IMPLEMENTED, "application/json",
+                "{\"ok\":false,\"error\":\"check_fuel unavailable: container reader not implemented\"}");
+            return;
+        }
+
         // WebSocket upgrade
         if (uri.equals("/ws")) {
             WebSocketServerHandshakerFactory factory = new WebSocketServerHandshakerFactory(

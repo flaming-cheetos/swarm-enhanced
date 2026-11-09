@@ -1,8 +1,0 @@
-{
-  "required": true,
-  "package": "com.rdh.swarm.mixin",
-  "compatibilityLevel": "JAVA_25",
-  "client": [
-    "ChatUtilsMixin"
-  ]
-}

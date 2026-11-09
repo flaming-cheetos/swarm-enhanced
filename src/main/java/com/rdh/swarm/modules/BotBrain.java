@@ -132,6 +132,13 @@ public class BotBrain extends Module {
         .build()
     );
 
+    private final Setting<Boolean> debugLogs = sgGeneral.add(new BoolSetting.Builder()
+        .name("debug-logs")
+        .description("Print BotBrain debug tags at most once per second per tag.")
+        .defaultValue(false)
+        .build()
+    );
+
     private final Setting<Integer> foodLow = sgGeneral.add(new IntSetting.Builder()
         .name("food-low")
         .description("Start a food hunt when total food drops below this count.")
@@ -334,6 +341,7 @@ public class BotBrain extends Module {
     private long lastBrainTick = 0;
     private static final long BRAIN_TICK_MS = 250;
     private int tickCounter = 0;
+    private final Map<String, Long> debugLast = new java.util.concurrent.ConcurrentHashMap<>();
     private int stuckCounter = 0;
     private boolean mineCommandSent = false;
     private int itemsCollectedSinceLastCheck = 0;
@@ -569,13 +577,13 @@ public class BotBrain extends Module {
             this.lastStorageCache = response != null ? new HashMap<>(response) : Collections.emptyMap();
             this.lastCacheTime = System.currentTimeMillis();
             this.storageQueryPending = false;
-            System.out.println(String.format("[QUERY_RESPONSE] thread=%s cacheSize=%d", Thread.currentThread().getName(), this.lastStorageCache.size()));
+            debug("QUERY_RESPONSE", "thread=%s cacheSize=%d", Thread.currentThread().getName(), this.lastStorageCache.size());
         } catch (Exception ignored) {}
     }
 
     // Query host storage for availability before gathering. Returns map itemId->available
     private Map<String, Long> queryStorageBeforeGathering(Map<String, Integer> needs) {
-        if (tickCounter % 100 == 0) System.out.println(String.format("[QUERY_START] thread=%s out=%s", Thread.currentThread().getName(), out == null ? "null" : out.toString()));
+        if (tickCounter % 100 == 0) debug("QUERY_START", "thread=%s out=%s", Thread.currentThread().getName(), out == null ? "null" : out.toString());
         Map<String, Long> empty = Collections.emptyMap();
         if (needs == null || needs.isEmpty()) return empty;
         if (out == null) return empty;
@@ -632,6 +640,7 @@ public class BotBrain extends Module {
         lastCookLog = "";
         noCookFurnaceWarned = false;
         noCookFuelWarned = false;
+        debugLast.clear();
         autoHuntWasEnabled = autoHunt.get();
         autoHuntSkipLogged = false;
         autoCookSkipLogged = false;
@@ -708,6 +717,15 @@ public class BotBrain extends Module {
         executionPlan = null;
         planStep = 0;
         setState(BrainState.IDLE);
+    }
+
+    private void debug(String tag, String format, Object... args) {
+        if (!debugLogs.get()) return;
+        long now = System.currentTimeMillis();
+        Long last = debugLast.get(tag);
+        if (last != null && now - last < 1000L) return;
+        debugLast.put(tag, now);
+        ChatUtils.infoPrefix("BotBrain", "[" + tag + "] " + format, args);
     }
 
     @EventHandler
@@ -945,7 +963,7 @@ public class BotBrain extends Module {
         maybeArmBreakWatch();
         // Staging debug (once every 200 ticks)
         if (tickCounter % 200 == 0) {
-            ChatUtils.infoPrefix("BotBrain", "[STAGING DEBUG] gatherStaging=%s distance=%d",
+            debug("STAGING", "gatherStaging=%s distance=%d",
                 gatherStaging.get(), gatherStagingDistance.get());
         }
         // Dedicated GATHER task type flow (no dependency resolution)
@@ -1500,7 +1518,7 @@ public class BotBrain extends Module {
 
         currentTaskDescription = String.format("Returning to base (%d, %d, %d)", basePos.getX(), basePos.getY(), basePos.getZ());
 
-        if (tickCounter % 20 == 0) ChatUtils.infoPrefix("BotBrain", "[RETURN DEBUG] sent=%s canSend=%s base=%s",
+        if (tickCounter % 20 == 0) debug("RETURN", "sent=%s canSend=%s base=%s",
             baseReturnCommandSent,
             canSendBaritone(),
             basePos == null ? "null" : (basePos.getX() + "," + basePos.getY() + "," + basePos.getZ()));
@@ -4719,10 +4737,10 @@ public class BotBrain extends Module {
                         && mc.level.getBlockState(candidate).getFluidState().isEmpty()
                         && mc.level.getBlockState(candidate.above()).isAir();
                 } catch (Exception ignored) {}
-                ChatUtils.infoPrefix("BotBrain", "STAGING: waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
+                debug("STAGING_POINT", "waypoint for '%s' -> none; random point %d,%d,%d floor=%b reachable=%b",
                     currentGatherResource != null ? currentGatherResource : "unknown", targetX, targetY, targetZ, floor, reachable);
                 if (floor && reachable) { safe = candidate; break; }
-                ChatUtils.warningPrefix("BotBrain", "STAGING: rejected point %d,%d,%d (floor=%b reachable=%b)", targetX, targetY, targetZ, floor, reachable);
+                debug("STAGING_REJECT", "rejected point %d,%d,%d (floor=%b reachable=%b)", targetX, targetY, targetZ, floor, reachable);
             }
             if (safe == null) {
                 ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts; mining locally");
