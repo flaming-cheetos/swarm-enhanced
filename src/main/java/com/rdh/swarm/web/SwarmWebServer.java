@@ -2,6 +2,7 @@ package com.rdh.swarm.web;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.rdh.swarm.BotStatus;
@@ -74,6 +75,7 @@ public class SwarmWebServer {
     private final ChannelGroup wsClients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final List<String> eventLog = new CopyOnWriteArrayList<>();
+    private volatile String itemsJson;
     private static final int MAX_LOG_ENTRIES = 500;
     private static final Gson GSON = new Gson();
 
@@ -143,6 +145,11 @@ public class SwarmWebServer {
 
     public String sessionCookie() {
         return "swarm_token=" + token + "; Path=/; HttpOnly; SameSite=Strict";
+    }
+
+    /** The token is only exposed to the panel classes that serve it. */
+    String token() {
+        return token;
     }
 
     private String panelHost() {
@@ -239,16 +246,19 @@ public class SwarmWebServer {
         if (mod == null || !mod.isHost() || mod.host == null) {
             return "{\"type\":\"state\",\"modVersion\":\"" + esc(MOD_VERSION)
                 + "\",\"buildCommit\":\"" + esc(BUILD_COMMIT)
-                + "\",\"hostName\":\"\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
+                + "\",\"hostName\":\"\",\"dimension\":\"\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
         }
 
         EnhancedSwarmHost host = mod.host;
         StringBuilder sb = new StringBuilder();
         String hostName = "";
         try { hostName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); } catch (Exception ignored) {}
+        String dimension = "";
+        try { dimension = host.getCurrentDimension(); } catch (Exception ignored) {}
         sb.append("{\"type\":\"state\",\"modVersion\":\"").append(esc(MOD_VERSION));
         sb.append("\",\"buildCommit\":\"").append(esc(BUILD_COMMIT)).append("\",");
         sb.append("\"hostName\":\"").append(esc(hostName)).append("\",");
+        sb.append("\"dimension\":\"").append(esc(dimension)).append("\",");
         sb.append("\"connected\":").append(host.getConnectionCount()).append(",");
 
         // Bots
@@ -326,6 +336,24 @@ public class SwarmWebServer {
 
     public ChannelGroup getWsClients() { return wsClients; }
 
+    /** Registry ids for the phone item autocomplete. Built once, then cached. */
+    public String buildItemsJson() {
+        String cached = itemsJson;
+        if (cached != null) return cached;
+        JsonArray items = new JsonArray();
+        try {
+            BuiltInRegistries.ITEM.stream()
+                .map(item -> BuiltInRegistries.ITEM.getKey(item).toString())
+                .sorted()
+                .forEach(id -> items.add(id));
+        } catch (Exception ignored) {}
+        JsonObject root = new JsonObject();
+        root.add("items", items);
+        cached = GSON.toJson(root);
+        itemsJson = cached;
+        return cached;
+    }
+
     public void handleApiCommand(String path, String body) {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod == null || !mod.isHost() || mod.host == null) return;
@@ -372,8 +400,7 @@ public class SwarmWebServer {
                         logWarn("TASK: " + task.getId() + " failed — no known source");
                         return;
                     }
-                    // Clear any stale completed/failed tasks before adding a new one
-                    try { if (host.getTaskQueue() != null) host.getTaskQueue().clearCompleted(); } catch (Exception ignored) {}
+                    // Adding a task must not prune finished history; /api/task/clear_done owns that.
                     host.getTaskQueue().addTask(task);
 
                     // If a specific bot was requested, try to resolve nickname
@@ -503,17 +530,15 @@ public class SwarmWebServer {
     }
 
     private String extractJson(String json, String key) {
-        String search = "\"" + key + "\":";
-        int idx = json.indexOf(search);
-        if (idx == -1) return "";
-        idx += search.length();
-        if (json.charAt(idx) == '"') {
-            int end = json.indexOf('"', idx + 1);
-            return json.substring(idx + 1, end);
-        } else {
-            int end = idx;
-            while (end < json.length() && json.charAt(end) != ',' && json.charAt(end) != '}') end++;
-            return json.substring(idx, end).trim();
+        if (json == null || json.isBlank()) return "";
+        try {
+            JsonElement root = JsonParser.parseString(json);
+            if (!root.isJsonObject()) return "";
+            JsonElement value = root.getAsJsonObject().get(key);
+            if (value == null || value.isJsonNull()) return "";
+            return value.getAsString();
+        } catch (Exception e) {
+            return "";
         }
     }
 

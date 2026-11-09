@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="swarm-token" content="__SWARM_TOKEN__">
+<title>Enhanced Swarm</title>
+<link rel="stylesheet" href="/v2/app.css">
+</head>
+<body>
+
+<div class="status-strip" id="statusStrip">
+  <div class="status-line">
+    <span class="ws-indicator" id="stripIndicator"></span>
+    <span class="status-conn" id="stripConn">Connecting...</span>
+    <span class="status-sep">·</span>
+    <span class="status-bot" id="stripBot">no bot online</span>
+    <span class="status-dim" id="stripDim">dimension unknown</span>
+    <span class="status-coords" id="stripCoords">unknown</span>
+    <span class="status-task" id="stripTask">idle</span>
+    <span class="status-vitals" id="stripVitals">❤ unknown · 🍗 unknown</span>
+    <span class="status-halt" id="stripHalt">unknown</span>
+  </div>
+  <div class="token-strip" id="tokenStrip" hidden>
+    <span class="token-msg">Token rejected. Paste the token from the client log.</span>
+    <input id="tokenInput" type="password" autocomplete="off" placeholder="token" aria-label="Swarm token">
+    <button id="tokenRetry" class="success" type="button">Retry</button>
+  </div>
+</div>
+
+<header class="header">
+  <h1>⚡ Enhanced Swarm <span class="v2-tag">v2</span></h1>
+  <div class="status">
+    <span class="ws-indicator" id="wsIndicator"></span>
+    <span id="wsStatus">Connecting...</span>
+    &nbsp;|&nbsp;
+    <span id="connectedCount">0</span> bots online
+  </div>
+</header>
+
+<div class="app-shell">
+  <nav class="tab-rail" role="tablist" aria-label="Panel sections">
+    <button class="tab is-active" id="tab-overview" data-tab="overview" role="tab" aria-selected="true" aria-controls="panel-overview" type="button">Overview</button>
+    <button class="tab" id="tab-tasks" data-tab="tasks" role="tab" aria-selected="false" aria-controls="panel-tasks" type="button">Tasks</button>
+    <button class="tab" id="tab-log" data-tab="log" role="tab" aria-selected="false" aria-controls="panel-log" type="button">Log</button>
+    <button class="tab" id="tab-actions" data-tab="actions" role="tab" aria-selected="false" aria-controls="panel-actions" type="button">Actions</button>
+  </nav>
+
+  <main class="panels">
+    <section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="card" id="botsCard">
+        <h2>🤖 Workers</h2>
+        <div id="botsList" class="bots-list">
+          <div class="empty" id="botsEmpty">No bots connected</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" hidden>
+      <div class="card" id="tasksCard">
+        <h2>📋 Task Queue</h2>
+        <div id="tasksList" class="tasks-list">
+          <div class="empty" id="tasksEmpty">No tasks</div>
+        </div>
+        <div class="add-task">
+          <input id="taskItem" placeholder="item (e.g. cobblestone)" type="text" list="itemOptions" autocomplete="off">
+          <input id="taskQty" placeholder="qty" type="number" value="64">
+          <select id="taskType">
+            <option value="AUTO">Auto</option>
+            <option value="CRAFT">Craft</option>
+            <option value="GATHER">Gather</option>
+            <option value="HUNT_FOOD">Hunt food</option>
+            <option value="GRIND">Grind</option>
+            <option value="SMITH">Smith</option>
+            <option value="BUILD">Build</option>
+          </select>
+          <select id="taskBot">
+            <option value="any">Any bot</option>
+          </select>
+          <button class="success" id="addTaskButton" title="Queue a task (/api/task/add)" type="button">+ Add</button>
+        </div>
+        <datalist id="itemOptions"></datalist>
+        <div class="task-actions">
+          <button id="clearDoneButton" title="Remove COMPLETE, FAILED and CANCELLED tasks (/api/task/clear_done)" type="button">Clear Done/Failed</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+      <div class="card log-panel">
+        <h2>📜 Live Log</h2>
+        <div class="log-controls">
+          <input class="log-filter" id="logFilter" placeholder="Filter logs..." title="Filter visible log lines by text" type="text">
+          <div class="log-chips" id="logChips" role="group" aria-label="Log filters">
+            <button class="chip" data-chip="TASK" type="button" aria-pressed="false">TASK</button>
+            <button class="chip" data-chip="DEPOSIT" type="button" aria-pressed="false">DEPOSIT</button>
+            <button class="chip" data-chip="HALT" type="button" aria-pressed="false">HALT</button>
+            <button class="chip" data-chip="HUNT" type="button" aria-pressed="false">HUNT</button>
+            <button class="chip" data-chip="STAGE" type="button" aria-pressed="false">STAGE</button>
+            <button class="chip" data-chip="CHEST" type="button" aria-pressed="false">CHEST</button>
+            <button class="chip" data-chip="WARN" type="button" aria-pressed="false">WARN</button>
+            <button class="chip" data-chip="ERROR" type="button" aria-pressed="false">ERROR</button>
+          </div>
+          <button id="copyLogButton" title="Copy the last 200 visible lines" type="button">Copy</button>
+          <button id="clearLogsButton" title="Clear the visible log (no server request)" type="button">Clear</button>
+          <label class="auto-scroll">
+            <input type="checkbox" id="autoScroll" checked title="Keep the newest log line visible"> Auto-scroll
+          </label>
+          <button id="jumpLatest" class="success" type="button" hidden>Jump to latest</button>
+        </div>
+        <div class="log-entries" id="logEntries"></div>
+        <div class="log-toast" id="logToast" role="status" hidden></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-actions" role="tabpanel" aria-labelledby="tab-actions" hidden>
+      <div class="card">
+        <h2>⚡ Quick Actions</h2>
+        <div class="actions-grid">
+          <button id="followButton" data-action="follow" title="swarm:all follow player &lt;your player name&gt;" type="button">👥 Follow Me</button>
+          <button class="danger" data-action="cancel" title="swarm:all cancel" type="button">🛑 Stop All</button>
+          <button class="success" data-action="resume" title="swarm:all resume" type="button">▶ Resume All</button>
+          <button data-action="deposit" title="swarm:all depositall" type="button">📦 Deposit All</button>
+          <button data-action="deposit_ores" title="swarm:all deposit ores" type="button">⛏ Dep. Ores</button>
+          <button data-action="deposit_shulkers" title="swarm:all deposit shulkers" type="button">📫 Dep. Shulkers</button>
+          <button disabled title="Not implemented: needs the container reader. This control sends no request." type="button">🔍 Scan Chests (unavailable)</button>
+          <button disabled title="Not implemented: needs the container reader. This control sends no request." type="button">🔥 Check Fuel (unavailable)</button>
+          <button class="success" data-action="pvp_on" title="exec .toggle crystal-aura on; exec .toggle kill-aura on; exec .toggle auto-totem on; exec .toggle surround on; exec .toggle auto-trap on; exec .toggle auto-web on; exec .toggle auto-exp on" type="button">⚔ PVP ON</button>
+          <button class="danger" data-action="pvp_off" title="exec .toggle crystal-aura off; exec .toggle kill-aura off; exec .toggle auto-totem off; exec .toggle surround off; exec .toggle auto-trap off; exec .toggle auto-web off; exec .toggle auto-exp off" type="button">🕊 PVP OFF</button>
+        </div>
+        <div class="composer">
+          <h2>💬 Send Command</h2>
+          <div class="cmd-row">
+            <select id="cmdTarget">
+              <option value="all">All</option>
+            </select>
+            <input id="cmdInput" placeholder="command..." type="text" title="Type a command; Send wraps it in exec">
+            <button id="sendButton" title="exec &lt;command from the box&gt;" type="button">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer class="footer">
+  Enhanced Swarm <span class="meta" id="modVersion">version unknown</span>
+  &nbsp;·&nbsp; built from <span class="meta" id="buildCommit">commit unknown</span>
+</footer>
+
+<script src="/v2/app.js"></script>
+</body>
+</html>
