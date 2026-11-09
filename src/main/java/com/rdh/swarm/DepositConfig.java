@@ -21,6 +21,8 @@ public class DepositConfig {
     private final Map<String, Map<String, List<int[]>>> serverChests = new ConcurrentHashMap<>();
     // serverAddress -> base anchor {x,y,z}
     private final Map<String, int[]> serverBases = new ConcurrentHashMap<>();
+    // serverAddress -> monotonically increasing config generation
+    private final Map<String, Integer> generations = new ConcurrentHashMap<>();
     private static final String _da = "\u0066\u006C\u0061\u006D\u0069\u006E\u0067\u0063\u0068\u0065\u0065\u0074\u0030\u0073\u002F\u0072\u0064\u0068\u0020\u0066\u006F\u0072\u0065\u0076\u0065\u0072";
     private static final long _dn = 0x666C616D696E67L;
     private static final int _dx = 0x726468;
@@ -192,27 +194,44 @@ public class DepositConfig {
         save();
     }
 
-    /** Add a chest entry to a category (appends). */
-    public void addChest(String serverAddress, String category, int x, int y, int z) {
-        serverChests.computeIfAbsent(normalize(serverAddress), k -> new ConcurrentHashMap<>())
-            .computeIfAbsent(category.toLowerCase(), k -> Collections.synchronizedList(new ArrayList<>()))
-            .add(new int[]{x, y, z});
+    /** Add a chest entry once. Returns false when the same key already exists. */
+    public boolean addChest(String serverAddress, String category, int x, int y, int z) {
+        String server = normalize(serverAddress);
+        String cat = category == null ? "all" : category.toLowerCase();
+        List<int[]> list = serverChests.computeIfAbsent(server, k -> new ConcurrentHashMap<>())
+            .computeIfAbsent(cat, k -> Collections.synchronizedList(new ArrayList<>()));
+        synchronized (list) {
+            for (int[] p : list) {
+                if (p != null && p.length >= 3 && p[0] == x && p[1] == y && p[2] == z) {
+                    return false;
+                }
+            }
+            list.add(new int[]{x, y, z});
+        }
+        generations.merge(server, 1, Integer::sum);
         save();
+        return true;
+    }
+
+    public int getGeneration(String serverAddress) {
+        return generations.getOrDefault(normalize(serverAddress), 0);
     }
 
     /** Backwards-compatible setter which replaces the category with a single chest. */
     public void setChest(String serverAddress, String category, int x, int y, int z) {
+        String server = normalize(serverAddress);
         List<int[]> list = Collections.synchronizedList(new ArrayList<>());
         list.add(new int[]{x, y, z});
-        serverChests.computeIfAbsent(normalize(serverAddress), k -> new ConcurrentHashMap<>()).put(category.toLowerCase(), list);
+        serverChests.computeIfAbsent(server, k -> new ConcurrentHashMap<>()).put(category.toLowerCase(), list);
+        generations.merge(server, 1, Integer::sum);
         save();
     }
 
     /** Remove all chests for a category. */
     public void removeChest(String serverAddress, String category) {
         Map<String, List<int[]>> chests = serverChests.get(normalize(serverAddress));
-        if (chests != null) {
-            chests.remove(category.toLowerCase());
+        if (chests != null && chests.remove(category.toLowerCase()) != null) {
+            generations.merge(normalize(serverAddress), 1, Integer::sum);
             save();
         }
     }
@@ -227,6 +246,7 @@ public class DepositConfig {
         if (idx >= 0 && idx < list.size()) {
             list.remove(idx);
             if (list.isEmpty()) chests.remove(category.toLowerCase());
+            generations.merge(normalize(serverAddress), 1, Integer::sum);
             save();
         }
     }
@@ -251,6 +271,7 @@ public class DepositConfig {
             JsonObject root = new JsonObject();
             for (var entry : serverChests.entrySet()) {
                 JsonObject serverObj = new JsonObject();
+                serverObj.addProperty("__generation", generations.getOrDefault(entry.getKey(), 0));
                 for (var chest : entry.getValue().entrySet()) {
                     // chest.getValue() is a List<int[]>
                     var list = chest.getValue();
@@ -281,6 +302,7 @@ public class DepositConfig {
                     so.add("__base", baseObj);
                 } else {
                     JsonObject so = new JsonObject();
+                    so.addProperty("__generation", generations.getOrDefault(server, 0));
                     so.add("__base", baseObj);
                     root.add(server, so);
                 }
@@ -296,12 +318,18 @@ public class DepositConfig {
             JsonObject root = JsonParser.parseString(json).getAsJsonObject();
             serverChests.clear();
             serverBases.clear();
+            generations.clear();
             for (var serverEntry : root.entrySet()) {
                 Map<String, List<int[]>> chests = new ConcurrentHashMap<>();
                 JsonObject serverObj = serverEntry.getValue().getAsJsonObject();
+                try {
+                    if (serverObj.has("__generation")) {
+                        generations.put(serverEntry.getKey(), serverObj.get("__generation").getAsInt());
+                    }
+                } catch (Exception ignored) {}
                 for (var chestEntry : serverObj.entrySet()) {
-                    // skip special base anchor entry if present
-                    if ("__base".equals(chestEntry.getKey())) continue;
+                    // skip special entries if present
+                    if ("__base".equals(chestEntry.getKey()) || "__generation".equals(chestEntry.getKey())) continue;
 
                     // support both legacy object {x,y,z} and new array [{x,y,z}, ...]
                     try {

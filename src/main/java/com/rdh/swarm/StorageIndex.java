@@ -45,6 +45,30 @@ public class StorageIndex {
         save();
     }
 
+    /** Merge only the observed (item, delta) pairs from one deposit. */
+    public synchronized void applyChestDelta(String server, String category, int x, int y, int z,
+                                             Map<String, Long> delta, long lastScan) {
+        if (delta == null || delta.isEmpty()) return;
+        server = normalize(server);
+        category = normalize(category);
+        Map<String, ChestRecord> chests = index
+            .computeIfAbsent(server, k -> new ConcurrentHashMap<>())
+            .computeIfAbsent(category, k -> new ConcurrentHashMap<>());
+        ChestRecord rec = chests.get(chestKey(x, y, z));
+        if (rec == null) {
+            rec = new ChestRecord();
+            rec.x = x; rec.y = y; rec.z = z; rec.category = category;
+            chests.put(chestKey(x, y, z), rec);
+        }
+        for (Map.Entry<String, Long> entry : delta.entrySet()) {
+            long value = entry.getValue() == null ? 0L : entry.getValue();
+            rec.counts.merge(entry.getKey(), value, (oldValue, add) -> Math.max(0L, oldValue + add));
+        }
+        rec.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
+        rec.status = ChestStatus.FRESH;
+        save();
+    }
+
     public synchronized Map<String, Long> categoryTotals(String server, String category) {
         Map<String, Long> totals = new LinkedHashMap<>();
         server = normalize(server);

@@ -51,8 +51,13 @@ public class EnhancedSwarmWorker extends Thread {
     private Integer baseY = null;
     private Integer baseZ = null;
 
-    // Category-based deposit system: category -> list of chest positions
-    public final Map<String, List<int[]>> depositChests = new ConcurrentHashMap<>();
+    // Category-based deposit system: category -> list of chest positions.
+    // The reference is replaced atomically when the host pushes a new generation.
+    public volatile Map<String, List<int[]>> depositChests = new ConcurrentHashMap<>();
+    private volatile Map<String, List<int[]>> pendingDepositChests = null;
+    private volatile int pendingDepositGeneration = -1;
+    private volatile int depositGeneration = -1;
+    private volatile boolean ignorePendingDeposit = false;
     private volatile boolean autoDeposit = false;
     public volatile boolean isDepositing = false;
     private int autoDepositThreshold = 2;
@@ -100,6 +105,9 @@ public class EnhancedSwarmWorker extends Thread {
     public volatile int lastDepositMoved = 0;
     public volatile String lastDepositFailure = "";
 
+    private final DepositDriver depositDriver = new DepositDriver(
+        () -> mc, this::sendProtocol, this::shouldKeep, this::applyLocalDelta, this::onDepositFinished);
+
     private String keepReason(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return "empty";
         // Shulkers are routed to shulker/empty-shulker deposit categories, never kept.
@@ -125,27 +133,58 @@ public class EnhancedSwarmWorker extends Thread {
     }
 
     public void triggerDeposit() {
-        if (isDepositing) return;
+        startDeposit("api");
+    }
+
+    /** The single entry point for full, manual, low-stock and API deposit requests. */
+    public boolean startDeposit(String reason) {
+        return startDeposit(reason, null);
+    }
+
+    public boolean startDeposit(String reason, String category) {
+        if (isDepositing || depositDriver.isBusy()) return false;
+        if (depositChests.isEmpty() && depositX == null) {
+            ChatUtils.warningPrefix("BotBrain", "No deposit chest configured for post-task deposit");
+            return false;
+        }
+        if (depositChests.isEmpty() && depositX != null) {
+            addLocalChest("all", depositX, depositY, depositZ);
+        }
         resetDepositTracking();
         isDepositing = true;
-        if (!depositChests.isEmpty()) {
-            MeteorExecutor.execute(() -> {
-                try { performCategoryDeposit(); }
-                finally { isDepositing = false; }
-            });
-            return;
-        } else if (depositX != null) {
-            MeteorExecutor.execute(() -> {
-                try {
-                    resumeTaskAfterDeposit = null;
-                    performDepositToChest(depositX, depositY, depositZ, "all", true);
-                } finally { isDepositing = false; }
-            });
-            return;
-        } else {
-            isDepositing = false;
-            ChatUtils.warningPrefix("BotBrain", "No deposit chest configured for post-task deposit");
-        }
+        resumeTaskAfterDeposit = currentTask;
+        depositDriver.request(reason, category);
+        return true;
+    }
+
+    private void sendProtocol(String message) {
+        DataOutputStream stream = out;
+        if (stream == null) return;
+        try {
+            synchronized (stream) {
+                stream.writeUTF(message);
+                stream.flush();
+            }
+        } catch (IOException ignored) {}
+    }
+
+    private void applyLocalDelta(Map<String, Long> delta) {
+        if (delta == null || delta.isEmpty()) return;
+        try {
+            var brain = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                .get(com.rdh.swarm.modules.BotBrain.class);
+            if (brain != null) brain.mergeLocalStorageCounts(delta);
+        } catch (Exception ignored) {}
+    }
+
+    private void onDepositFinished() {
+        lastDepositTransferRan = depositDriver.transferRan();
+        lastDepositSucceeded = depositDriver.succeeded();
+        lastDepositMoved = depositDriver.moved();
+        lastDepositFailure = depositDriver.failure();
+        isDepositing = false;
+        lastAutoDepositTime = System.currentTimeMillis();
+        if (lastDepositSucceeded) resumeTask();
     }
 
     public EnhancedSwarmWorker(String host, int port, boolean shouldReconnect, String token) {
@@ -457,6 +496,30 @@ public class EnhancedSwarmWorker extends Thread {
 
     private void handleDeposit(String args) {
         try {
+            if (args != null && args.startsWith("reset")) {
+                String[] parts = args.trim().split("\\s+");
+                int generation = -1;
+                if (parts.length >= 2) {
+                    try { generation = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                }
+                pendingDepositGeneration = generation;
+                pendingDepositChests = new ConcurrentHashMap<>();
+                ignorePendingDeposit = generation >= 0 && generation <= depositGeneration;
+                return;
+            }
+            if (args != null && args.equals("commit")) {
+                if (pendingDepositChests != null && !ignorePendingDeposit) {
+                    depositChests = pendingDepositChests;
+                    depositGeneration = pendingDepositGeneration;
+                    int count = 0;
+                    for (List<int[]> list : depositChests.values()) count += list.size();
+                    ChatUtils.infoPrefix("Swarm", "CHEST: list replaced n=%d gen=%d", count, depositGeneration);
+                }
+                pendingDepositChests = null;
+                pendingDepositGeneration = -1;
+                ignorePendingDeposit = false;
+                return;
+            }
             if (args != null && args.startsWith("set ")) {
                 String setArgs = args.substring(4).trim();
                 String[] parts = setArgs.split("\\s+");
@@ -467,10 +530,9 @@ public class EnhancedSwarmWorker extends Thread {
                         int x = Integer.parseInt(parts[0]);
                         int y = Integer.parseInt(parts[1]);
                         int z = Integer.parseInt(parts[2]);
-                        // legacy single chest: keep legacy fields and also append to 'all'
+                        // legacy single chest: keep legacy fields and also add to 'all'
                         depositX = x; depositY = y; depositZ = z;
-                        depositChests.computeIfAbsent("all", k -> Collections.synchronizedList(new ArrayList<>())).add(new int[]{x, y, z});
-                        ChatUtils.infoPrefix("Swarm", "Set deposit chest (all) at %d %d %d", x, y, z);
+                        addLocalChest("all", x, y, z);
                         return;
                     } catch (NumberFormatException ignored) {}
 
@@ -481,8 +543,7 @@ public class EnhancedSwarmWorker extends Thread {
                             int x = Integer.parseInt(parts[1]);
                             int y = Integer.parseInt(parts[2]);
                             int z = Integer.parseInt(parts[3]);
-                            depositChests.computeIfAbsent(category, k -> Collections.synchronizedList(new ArrayList<>())).add(new int[]{x, y, z});
-                            ChatUtils.infoPrefix("Swarm", "Added deposit chest (%s) at %d %d %d", category, x, y, z);
+                            addLocalChest(category, x, y, z);
                         } catch (NumberFormatException e) {
                             ChatUtils.errorPrefix("Swarm", "Invalid coords. Use: deposit set [category] X Y Z");
                         }
@@ -542,59 +603,24 @@ public class EnhancedSwarmWorker extends Thread {
                 String category = args.trim().toLowerCase();
                 List<int[]> list = depositChests.get(category);
                 if (list != null && !list.isEmpty()) {
-                    if (isDepositing) { ChatUtils.warningPrefix("Swarm", "Already depositing"); return; }
-                    isDepositing = true;
-                    final String fCat = category;
-                    final List<int[]> fList = new ArrayList<>(list);
-                    MeteorExecutor.execute(() -> {
-                        try {
-                            resumeTaskAfterDeposit = currentTask;
-                            // try each chest in the category
-                            boolean anyDeposited = false;
-                            boolean allFull = true;
-                            for (int[] p : fList) {
-                                int result = performDepositToChest(p[0], p[1], p[2], fCat, true);
-                                if (result == 1) anyDeposited = true;
-                                if (result != 2) allFull = false;
-                                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                            }
-
-                            if (!anyDeposited && allFull) {
-                                // notify host and fallback to 'all' category
-                                try { if (out != null) { out.writeUTF("CHEST_FULL:" + fCat); out.flush(); } } catch (IOException ignored) {}
-                                List<int[]> allList = depositChests.get("all");
-                                if (allList != null) {
-                                    for (int[] p : new ArrayList<>(allList)) {
-                                        performDepositToChest(p[0], p[1], p[2], "all", true);
-                                        try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                                    }
-                                }
-                            }
-
-                            resumeTask();
-                        } finally { isDepositing = false; }
-                    });
+                    if (!startDeposit("api", category)) {
+                        ChatUtils.warningPrefix("Swarm", "Already depositing");
+                    }
                 } else {
                     ChatUtils.warningPrefix("Swarm", "No deposit chest for category: %s", category);
                 }
             } else {
                 // deposit (no args) — full category deposit
                 if (!depositChests.isEmpty()) {
-                    if (isDepositing) { ChatUtils.warningPrefix("Swarm", "Already depositing"); return; }
-                    isDepositing = true;
-                    MeteorExecutor.execute(() -> {
-                        try { performCategoryDeposit(); } finally { isDepositing = false; }
-                    });
+                    if (!startDeposit("api")) {
+                        ChatUtils.warningPrefix("Swarm", "Already depositing");
+                    }
                 } else if (depositX != null) {
-                    if (isDepositing) { ChatUtils.warningPrefix("Swarm", "Already depositing"); return; }
-                    isDepositing = true;
-                    MeteorExecutor.execute(() -> {
-                        try {
-                            resumeTaskAfterDeposit = currentTask;
-                            performDepositToChest(depositX, depositY, depositZ, "all", true);
-                            resumeTask();
-                        } finally { isDepositing = false; }
-                    });
+                    depositChests = new ConcurrentHashMap<>();
+                    addLocalChest("all", depositX, depositY, depositZ);
+                    if (!startDeposit("api")) {
+                        ChatUtils.warningPrefix("Swarm", "Already depositing");
+                    }
                 } else {
                     ChatUtils.warningPrefix("Swarm", "No deposit chest configured");
                 }
@@ -606,25 +632,16 @@ public class EnhancedSwarmWorker extends Thread {
 
     private void handleDepositAll(String args) {
         try {
-            List<int[]> allList = depositChests.get("all");
-            int[] pos = null;
-            if (allList != null && !allList.isEmpty()) pos = allList.get(0);
-            if (pos == null && depositX != null) pos = new int[]{depositX, depositY, depositZ};
-            if (pos == null && !depositChests.isEmpty()) {
-                // pick first chest from any category
-                for (List<int[]> l : depositChests.values()) { if (l != null && !l.isEmpty()) { pos = l.get(0); break; } }
+            if (depositChests.isEmpty() && depositX == null) {
+                ChatUtils.warningPrefix("Swarm", "No deposit chest configured");
+                return;
             }
-            if (pos == null) { ChatUtils.warningPrefix("Swarm", "No deposit chest configured"); return; }
-            if (isDepositing) { ChatUtils.warningPrefix("Swarm", "Already depositing"); return; }
-            isDepositing = true;
-            final int[] fPos = pos;
-            MeteorExecutor.execute(() -> {
-                try {
-                    resumeTaskAfterDeposit = currentTask;
-                    performDepositToChest(fPos[0], fPos[1], fPos[2], "all", true);
-                    resumeTask();
-                } finally { isDepositing = false; }
-            });
+            if (depositChests.isEmpty()) {
+                addLocalChest("all", depositX, depositY, depositZ);
+            }
+            if (!startDeposit("api", "all")) {
+                ChatUtils.warningPrefix("Swarm", "Already depositing");
+            }
         } catch (Exception e) {
             ChatUtils.errorPrefix("Swarm", "DepositAll error: %s", e.getMessage());
         }
@@ -719,320 +736,30 @@ public class EnhancedSwarmWorker extends Thread {
         }
     }
 
-    private void performCategoryDeposit() {
-        if (depositChests.isEmpty()) return;
-        resetDepositTracking();
-        resumeTaskAfterDeposit = currentTask;
-
-        List<String> cats = new ArrayList<>();
-        for (var entry : depositChests.entrySet()) if (!entry.getKey().equalsIgnoreCase("all")) cats.add(entry.getKey());
-        cats.sort(String::compareTo);
-
-        for (String cat : cats) {
-            List<int[]> list = depositChests.get(cat);
-            if (list == null) continue;
-            boolean anyDeposited = false;
-            boolean allFull = true;
-            for (int[] p : new ArrayList<>(list)) {
-                int res = performDepositToChest(p[0], p[1], p[2], cat, true);
-                if (res == 1) anyDeposited = true;
-                if (res != 2) allFull = false;
-                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-            }
-
-            if (!anyDeposited && allFull) {
-                try { if (out != null) { out.writeUTF("CHEST_FULL:" + cat); out.flush(); } } catch (IOException ignored) {}
-                // fallback to all
-                List<int[]> allList = depositChests.get("all");
-                if (allList != null) {
-                    for (int[] p : new ArrayList<>(allList)) {
-                        performDepositToChest(p[0], p[1], p[2], "all", true);
-                        try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                    }
-                }
-            }
-
-            // If nothing left in inventory that can be deposited, stop early
-            try {
-                if (!hasAnyDepositableItems()) {
-                    ChatUtils.infoPrefix("Swarm", "No depositable items remaining after category: %s", cat);
-                    resumeTask();
-                    lastAutoDepositTime = System.currentTimeMillis();
+    private void addLocalChest(String category, int x, int y, int z) {
+        if (category == null || category.isBlank()) category = "all";
+        category = category.toLowerCase();
+        Map<String, List<int[]>> destination = pendingDepositChests != null ? pendingDepositChests : depositChests;
+        List<int[]> list = destination.computeIfAbsent(category, k -> Collections.synchronizedList(new ArrayList<>()));
+        synchronized (list) {
+            for (int[] existing : list) {
+                if (existing != null && existing.length >= 3
+                    && existing[0] == x && existing[1] == y && existing[2] == z) {
+                    ChatUtils.infoPrefix("Swarm", "CHEST: duplicate ignored %s %d %d %d %s",
+                        currentDimension(), x, y, z, category);
                     return;
                 }
-            } catch (Exception ignored) {}
-        }
-
-        // finally, process 'all' category chests
-        // Before processing 'all', check if any depositable items remain
-        try {
-            if (!hasAnyDepositableItems()) {
-                ChatUtils.infoPrefix("Swarm", "No depositable items remaining; skipping 'all' chests");
-                resumeTask();
-                lastAutoDepositTime = System.currentTimeMillis();
-                return;
             }
-        } catch (Exception ignored) {}
-
-        List<int[]> all = depositChests.get("all");
-        if (all != null) {
-            for (int[] p : new ArrayList<>(all)) {
-                performDepositToChest(p[0], p[1], p[2], "all", true);
-                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-            }
+            list.add(new int[]{x, y, z});
         }
-
-        resumeTask();
-        lastAutoDepositTime = System.currentTimeMillis();
+        ChatUtils.infoPrefix("Swarm", "CHEST: add %s %d %d %d %s", currentDimension(), x, y, z, category);
     }
 
-    /**
-     * Attempt to deposit to a single chest. Returns: 0 = no transfer, 1 = deposited items, 2 = chest full
-     */
-    private int performDepositToChest(int chestX, int chestY, int chestZ, String category, boolean keepFilter) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc == null) return 0;
-        int menuSlots = -1;
-        boolean screenOpen = false;
+    private String currentDimension() {
         try {
-            if (mc.player != null) {
-                screenOpen = mc.player.containerMenu != mc.player.inventoryMenu;
-                menuSlots = mc.player.containerMenu.slots.size();
-            }
+            if (mc.level != null) return mc.level.dimension().identifier().toString();
         } catch (Exception ignored) {}
-        ChatUtils.infoPrefix("Swarm", "DEPOSIT: start chest=%d,%d,%d screenOpen=%b slots=%d", chestX, chestY, chestZ, screenOpen, menuSlots);
-
-        final int maxAttempts = 3;
-        final long openTimeoutMs = 10_000;
-        final long pathTimeoutMs = 60_000;
-
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                BlockPos chestPos = new BlockPos(chestX, chestY, chestZ);
-                BlockPos standPos = findChestStandPos(chestPos);
-
-                if (standPos == null) {
-                    lastDepositFailure = "no safe stand position";
-                    ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — no safe stand position near chest at %d %d %d (attempt %d)", chestX, chestY, chestZ, attempt);
-                    continue;
-                }
-
-                int gotoX = standPos.getX();
-                int gotoY = standPos.getY();
-                int gotoZ = standPos.getZ();
-
-                if (mc.getConnection() != null)
-                    mc.getConnection().sendChat(String.format("#goto %d %d %d", gotoX, gotoY, gotoZ));
-
-                ChatUtils.infoPrefix("Swarm", "Heading to %s chest at %d %d %d (attempt %d)", category, gotoX, gotoY, gotoZ, attempt);
-
-                long pathStart = System.currentTimeMillis();
-                while (System.currentTimeMillis() - pathStart < pathTimeoutMs) {
-                    try {
-                        if (mc.player != null) {
-                            double dx = mc.player.getX() - gotoX;
-                            double dy = mc.player.getY() - gotoY;
-                            double dz = mc.player.getZ() - gotoZ;
-                            if (dx*dx + dy*dy + dz*dz <= 4.0) break;
-                        }
-                    } catch (Exception ignored) {}
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                }
-
-                if (mc.level == null) { ChatUtils.warningPrefix("Swarm", "No world"); continue; }
-                BlockPos targetPos = new BlockPos(chestX, chestY, chestZ);
-
-                long waitStart = System.currentTimeMillis();
-                boolean hasFactory = false;
-                while (System.currentTimeMillis() - waitStart < openTimeoutMs) {
-                    try {
-                        if (mc.level.getBlockState(targetPos).getMenuProvider(mc.level, targetPos) != null) {
-                            hasFactory = true; break;
-                        }
-                    } catch (Exception ignored) {}
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                }
-                if (!hasFactory) { ChatUtils.warningPrefix("Swarm", "Not a container at %d %d %d", chestX, chestY, chestZ); continue; }
-
-                mc.execute(() -> {
-                    try {
-                        if (mc.player == null) return;
-                        try { mc.player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(targetPos)); } catch (Exception ignored) {}
-                        BlockHitResult bhr = new BlockHitResult(Vec3.atCenterOf(targetPos), Direction.UP, targetPos, false);
-                        try { mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, bhr); } catch (Exception ignored) {}
-                    } catch (Exception ignored) {}
-                });
-
-                final boolean[] transferDone = {false};
-                final int[] depositedCount = {0};
-                final boolean[] chestFull = {false};
-                final String fCategory = category;
-                final boolean fKeepFilter = keepFilter;
-                final int attemptLocal = attempt;
-
-                MeteorExecutor.execute(() -> {
-                    try {
-                        long ws = System.currentTimeMillis();
-                        boolean opened = false;
-                        while (System.currentTimeMillis() - ws < openTimeoutMs) {
-                            try {
-                                if (mc.player != null
-                                    && mc.player.containerMenu != mc.player.inventoryMenu) {
-                                    var handler = mc.player.containerMenu;
-                                    int containerSlots = 0;
-                                    for (int si = 0; si < handler.slots.size(); si++) {
-                                        try {
-                                            Slot s = handler.getSlot(si);
-                                            if (s.container != mc.player.getInventory()) containerSlots++;
-                                        } catch (Exception ignored) {}
-                                    }
-                                    if (containerSlots > 0) { opened = true; break; }
-                                }
-                            } catch (Exception ignored) {}
-                            try { Thread.sleep(150); } catch (InterruptedException ignored) {}
-                        }
-
-                        if (!opened) {
-                            lastDepositFailure = "chest did not open";
-                            ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — chest did not open (attempt %d)", attemptLocal);
-                            return;
-                        }
-
-                        lastDepositTransferRan = true;
-                        var handler = mc.player.containerMenu;
-                        int playerStart = handler.slots.size() - 36;
-                        int inventoryBefore = countInventoryItems(mc);
-
-                        int deposited = 0;
-                        // check container empty slots to detect full chest
-                        int containerEmptySlots = 0;
-                        try {
-                            for (int si = 0; si < handler.slots.size(); si++) {
-                                try {
-                                    Slot s = handler.getSlot(si);
-                                    if (s.container != mc.player.getInventory()) {
-                                        if (s.getItem() == null || s.getItem().isEmpty()) containerEmptySlots++;
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-                        } catch (Exception ignored) {}
-
-                        if (containerEmptySlots == 0) {
-                            chestFull[0] = true;
-                            lastDepositFailure = "chest full";
-                            ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — chest at %d,%d,%d is full", chestX, chestY, chestZ);
-                        } else {
-                            for (int i = playerStart; i < handler.slots.size(); i++) {
-                                try {
-                                    Slot slot = handler.getSlot(i);
-                                    ItemStack st = slot.getItem();
-                                    if (st == null || st.isEmpty()) continue;
-
-                                    String itemId = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
-                                    String keep = fKeepFilter ? keepReason(st) : null;
-                                    if (keep != null) {
-                                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> keep (%s)", itemId, st.getCount(), keep);
-                                        continue;
-                                    }
-                                    if (fCategory != null && !fCategory.equalsIgnoreCase("all")) {
-                                        if (!DepositConfig.matchesCategory(fCategory, st)) {
-                                            ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> keep (category %s)", itemId, st.getCount(), fCategory);
-                                            continue;
-                                        }
-                                    }
-
-                                    InvUtils.shiftClick().slotId(i);
-                                    deposited++;
-                                    ChatUtils.infoPrefix("Swarm", "DEPOSIT: %s x%d -> deposit", itemId, st.getCount());
-                                    try { Thread.sleep(50 + ThreadLocalRandom.current().nextInt(90)); } catch (InterruptedException ignored) {}
-                                } catch (Exception ignored) {}
-                            }
-                        }
-
-                        int inventoryAfter = countInventoryItems(mc);
-                        int moved = Math.max(0, inventoryBefore - inventoryAfter);
-                        if (moved > 0) { lastDepositMoved += moved; lastDepositSucceeded = true; }
-                        publishChestSnapshot(fCategory, chestX, chestY, chestZ, handler, playerStart);
-                        mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
-                        ChatUtils.infoPrefix("Swarm", "DEPOSIT: done moved=%d stacks, before=%d after=%d storageDelta=%d", deposited, inventoryBefore, inventoryAfter, moved);
-                        ChatUtils.infoPrefix("Swarm", "Deposited %d items to %s chest", deposited, fCategory);
-                        depositedCount[0] = deposited;
-                        transferDone[0] = true;
-                    } catch (Exception e) {
-                        ChatUtils.errorPrefix("Swarm", "Deposit transfer error: %s", e.getMessage());
-                    }
-                });
-
-                long transferWait = System.currentTimeMillis();
-                while (!transferDone[0] && System.currentTimeMillis() - transferWait < 30_000) {
-                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                }
-
-                if (transferDone[0]) {
-                    if (chestFull[0]) return 2;
-                    return depositedCount[0] > 0 ? 1 : 0;
-                }
-                if (lastDepositFailure.isEmpty()) lastDepositFailure = "transfer did not run";
-
-            } catch (Exception e) {
-                ChatUtils.errorPrefix("Swarm", "Deposit attempt %d failed: %s", attempt, e.getMessage());
-            }
-
-            try { Thread.sleep(500 + ThreadLocalRandom.current().nextInt(500)); } catch (InterruptedException ignored) {}
-        }
-        if (!lastDepositSucceeded && lastDepositFailure.isEmpty()) lastDepositFailure = "transfer did not run";
-        ChatUtils.warningPrefix("Swarm", "DEPOSIT: aborted — %s", lastDepositFailure);
-        return 0;
-    }
-
-    private void publishChestSnapshot(String category, int x, int y, int z, net.minecraft.world.inventory.AbstractContainerMenu handler, int playerStart) {
-        try {
-            if (out == null || handler == null) return;
-            Map<String, Integer> counts = new LinkedHashMap<>();
-            int used = 0;
-            int total = 0;
-            for (int i = 0; i < handler.slots.size(); i++) {
-                Slot s = handler.getSlot(i);
-                if (s.container == mc.player.getInventory()) continue;
-                total++;
-                ItemStack st = s.getItem();
-                if (st == null || st.isEmpty()) continue;
-                used++;
-                String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
-                counts.merge(id, st.getCount(), Integer::sum);
-            }
-            StringBuilder json = new StringBuilder("{\"counts\":{");
-            boolean first = true;
-            for (var e : counts.entrySet()) {
-                if (!first) json.append(',');
-                first = false;
-                json.append('"').append(e.getKey()).append("\":").append(e.getValue());
-            }
-            json.append("},\"lastScan\":").append(System.currentTimeMillis())
-                .append(",\"usedSlots\":").append(used)
-                .append(",\"totalSlots\":").append(total)
-                .append(",\"status\":\"FRESH\"}");
-            synchronized (out) {
-                out.writeUTF("SCAN_CHEST_RESULT:" + category + ":" + x + ":" + y + ":" + z + "|" + json);
-                out.flush();
-            }
-            try {
-                var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
-                if (brain != null && lastDepositMoved > 0) {
-                    Map<String, Long> delta = new LinkedHashMap<>();
-                    for (var e : counts.entrySet()) delta.put(e.getKey(), (long) e.getValue());
-                    brain.mergeLocalStorageCounts(delta);
-                }
-            } catch (Exception ignored) {}
-        } catch (Exception ignored) {}
-    }
-
-    private int countInventoryItems(Minecraft mc) {
-        int total = 0;
-        try {
-            for (int i = 0; i < 36; i++) total += mc.player.getInventory().getItem(i).getCount();
-        } catch (Exception ignored) {}
-        return total;
+        return "unknown";
     }
 
     private void resumeTask() {
@@ -1118,7 +845,17 @@ public class EnhancedSwarmWorker extends Thread {
     }
 
     public void tick() {
-        if (!autoDeposit || isDepositing || depositChests.isEmpty()) return;
+        if (depositDriver.isBusy()) {
+            depositDriver.tick();
+            lastDepositTransferRan = depositDriver.transferRan();
+            lastDepositSucceeded = depositDriver.succeeded();
+            lastDepositMoved = depositDriver.moved();
+            lastDepositFailure = depositDriver.failure();
+            if (!depositDriver.isBusy()) isDepositing = false;
+            return;
+        }
+        if (isDepositing) isDepositing = false;
+        if (!autoDeposit || depositChests.isEmpty()) return;
         if (System.currentTimeMillis() - lastAutoDepositTime < AUTO_DEPOSIT_COOLDOWN_MS) return;
 
         // Don't fire auto-deposit if BotBrain is already handling return/deposit flow
@@ -1157,11 +894,7 @@ public class EnhancedSwarmWorker extends Thread {
 
         if (emptySlots <= autoDepositThreshold) {
             ChatUtils.infoPrefix("Swarm", "Auto-deposit triggered (%d empty <= %d threshold)", emptySlots, autoDepositThreshold);
-            isDepositing = true;
-            MeteorExecutor.execute(() -> {
-                try { performCategoryDeposit(); }
-                finally { isDepositing = false; lastAutoDepositTime = System.currentTimeMillis(); }
-            });
+            if (startDeposit("low")) lastAutoDepositTime = System.currentTimeMillis();
         }
     }
 

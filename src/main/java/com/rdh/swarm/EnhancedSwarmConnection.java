@@ -11,6 +11,8 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import com.rdh.swarm.task.TaskQueue;
 import com.rdh.swarm.task.BotTask;
 
@@ -106,13 +108,15 @@ public class EnhancedSwarmConnection extends Thread {
                                     java.util.Map<String, java.util.List<int[]>> chests = depositConfig.getChests(server);
 
                                     int pushed = 0;
-                                    if (chests != null && !chests.isEmpty()) {
+                                    if (chests != null) {
+                                        messageQueue.add(String.format("swarm:%s deposit reset %d", wname, depositConfig.getGeneration(server)));
                                         for (var entry : chests.entrySet()) {
                                             for (int[] pos : entry.getValue()) {
                                                 messageQueue.add(String.format("swarm:%s deposit set %s %d %d %d", wname, entry.getKey(), pos[0], pos[1], pos[2]));
                                                 pushed++;
                                             }
                                         }
+                                        messageQueue.add(String.format("swarm:%s deposit commit", wname));
                                         ChatUtils.infoPrefix("Swarm", "Auto-pushed %d chest(s) to %s for server %s", pushed, wname, server);
                                         try { if (host.getWebServer() != null) host.getWebServer().logInfo("Pushed deposit config to " + wname); } catch (Exception ignored) {}
                                     }
@@ -361,6 +365,30 @@ public class EnhancedSwarmConnection extends Thread {
                                 String cat = parts.length > 1 ? parts[1] : "";
                                 ChatUtils.warningPrefix("Swarm", "Worker reported chest full for category: %s", cat);
                                 try { if (host != null && host.getWebServer() != null) host.getWebServer().logWarn("Worker reported chest full: " + cat); } catch (Exception ignored) {}
+                            } catch (Exception ignored) {}
+                        } else if (read.startsWith("CHEST_DELTA:")) {
+                            try {
+                                String body = read.substring("CHEST_DELTA:".length());
+                                int sep = body.indexOf('|');
+                                if (sep > 0) {
+                                    String header = body.substring(0, sep);
+                                    String[] parts = header.split(":");
+                                    if (parts.length >= 4 && host != null) {
+                                        String category = parts[0];
+                                        int x = Integer.parseInt(parts[1]);
+                                        int y = Integer.parseInt(parts[2]);
+                                        int z = Integer.parseInt(parts[3]);
+                                        JsonObject o = JsonParser.parseString(body.substring(sep + 1)).getAsJsonObject();
+                                        Map<String, Long> delta = new LinkedHashMap<>();
+                                        if (o.has("counts")) {
+                                            for (var entry : o.getAsJsonObject("counts").entrySet()) {
+                                                try { delta.put(entry.getKey(), entry.getValue().getAsLong()); } catch (Exception ignored) {}
+                                            }
+                                        }
+                                        long when = o.has("lastScan") ? o.get("lastScan").getAsLong() : System.currentTimeMillis();
+                                        host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
+                                    }
+                                }
                             } catch (Exception ignored) {}
                         } else if (read.startsWith("SCAN_CHEST_RESULT:")) {
                             try {

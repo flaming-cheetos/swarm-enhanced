@@ -788,9 +788,8 @@ public class BotBrain extends Module {
 
         // Check inventory fullness and transition to depositing if needed
         if (state == BrainState.GATHERING && shouldDeposit() && System.currentTimeMillis() - stateEnterTime > 5000) {
-            setState(BrainState.DEPOSITING);
-            // send #stop once when we detected the need to deposit (handled in state transition)
             if (canSendBaritone()) sendBaritoneChat("#stop");
+            startDeposit("full");
         }
 
         switch (state) {
@@ -1008,7 +1007,7 @@ public class BotBrain extends Module {
                             setState(BrainState.RETURNING_TO_BASE);
                         } else if (swarmMod != null && swarmMod.worker != null) {
                             // fallback: no known base, trigger immediate deposit
-                            swarmMod.worker.triggerDeposit();
+                            startDeposit("manual");
                             currentTask = null;
                             executionPlan = null;
                             planStep = 0;
@@ -1356,7 +1355,7 @@ public class BotBrain extends Module {
                                 currentTask = null; executionPlan = null; planStep = 0;
                                 setState(BrainState.RETURNING_TO_BASE);
                             } else {
-                                swarmMod.worker.triggerDeposit();
+                                startDeposit("manual");
                                 currentTask = null; executionPlan = null; planStep = 0;
                                 setState(BrainState.DEPOSITING);
                             }
@@ -1576,7 +1575,7 @@ public class BotBrain extends Module {
                         var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
                         if (swarmMod != null && swarmMod.worker != null) {
                             ChatUtils.infoPrefix("BotBrain", "Gather complete, returning to base before deposit");
-                            swarmMod.worker.triggerDeposit();
+                            startDeposit("manual");
                             pendingDepositAfterReturn = false;
                             currentTask = null; executionPlan = null; planStep = 0;
                             setState(BrainState.DEPOSITING);
@@ -2246,7 +2245,7 @@ public class BotBrain extends Module {
                                     setState(BrainState.RETURNING_TO_BASE);
                                     return;
                                 } else {
-                                    swarmMod.worker.triggerDeposit();
+                                    startDeposit("manual");
                                     currentTask = null; executionPlan = null; planStep = 0;
                                     setState(BrainState.DEPOSITING);
                                     return;
@@ -2274,7 +2273,7 @@ public class BotBrain extends Module {
                             try {
                                 var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
                                 if (swarmMod != null && swarmMod.worker != null) {
-                                    swarmMod.worker.triggerDeposit();
+                                    startDeposit("manual");
                                     currentTask = null;
                                     executionPlan = null;
                                     planStep = 0;
@@ -2761,6 +2760,27 @@ public class BotBrain extends Module {
     }
 
     private long lastDepositCheckLog = 0L;
+
+    /** The single brain-side entry point for every deposit path. */
+    public void startDeposit(String reason) {
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod == null || swarmMod.worker == null) {
+                setState(BrainState.IDLE);
+                return;
+            }
+            if (swarmMod.worker.startDeposit(reason)) {
+                currentTaskDescription = "Depositing items";
+                setState(BrainState.DEPOSITING);
+            } else {
+                ChatUtils.warningPrefix("BotBrain", "DEPOSIT: refused reason=busy");
+                setState(BrainState.IDLE);
+            }
+        } catch (Exception e) {
+            ChatUtils.warningPrefix("BotBrain", "DEPOSIT: failed reason=%s", e.getMessage());
+            setState(BrainState.IDLE);
+        }
+    }
 
     private void handleDepositing() {
         currentTaskDescription = "Depositing items";

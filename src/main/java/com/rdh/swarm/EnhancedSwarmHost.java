@@ -93,11 +93,15 @@ public class EnhancedSwarmHost extends Thread {
         depositChestZ = z;
 
         String server = getCurrentServer();
-        // append to stored config rather than replacing
-        depositConfig.addChest(server, category, x, y, z);
-
-        ChatUtils.infoPrefix("Swarm", "Linked %s chest at %d,%d,%d (server: %s)", category, x, y, z, server);
-        sendAll(String.format("swarm:all deposit set %s %d %d %d", category, x, y, z));
+        boolean added = depositConfig.addChest(server, category, x, y, z);
+        String dimension = currentDimension();
+        if (added) {
+            ChatUtils.infoPrefix("Swarm", "CHEST: add %s %d %d %d %s", dimension, x, y, z, category);
+            ChatUtils.infoPrefix("Swarm", "Linked %s chest at %d,%d,%d (server: %s)", category, x, y, z, server);
+            pushDepositConfigAll();
+        } else {
+            ChatUtils.infoPrefix("Swarm", "CHEST: duplicate ignored %s %d %d %d %s", dimension, x, y, z, category);
+        }
     }
 
     public void setBaseAnchor(int x, int y, int z) {
@@ -324,13 +328,16 @@ public class EnhancedSwarmHost extends Thread {
     public void pushDepositConfig(String workerName) {
         String server = getCurrentServer();
         Map<String, List<int[]>> chests = depositConfig.getChests(server);
+        int generation = depositConfig.getGeneration(server);
+        List<String> lines = new ArrayList<>();
+        lines.add("deposit reset " + generation);
         for (var entry : chests.entrySet()) {
             for (int[] pos : entry.getValue()) {
-                String msg = String.format("swarm:%s deposit set %s %d %d %d", workerName, entry.getKey(), pos[0], pos[1], pos[2]);
-                sendTo(workerName, msg);
+                lines.add(String.format("deposit set %s %d %d %d", entry.getKey(), pos[0], pos[1], pos[2]));
             }
         }
-        // push base anchor for this server if present
+        lines.add("deposit commit");
+        queueLines(workerName, lines);
         try {
             int[] b = depositConfig.getBase(server);
             if (b != null && b.length >= 3) sendTo(workerName, String.format("swarm:%s base set %d %d %d", workerName, b[0], b[1], b[2]));
@@ -340,16 +347,39 @@ public class EnhancedSwarmHost extends Thread {
     public void pushDepositConfigAll() {
         String server = getCurrentServer();
         Map<String, List<int[]>> chests = depositConfig.getChests(server);
+        int generation = depositConfig.getGeneration(server);
+        List<String> lines = new ArrayList<>();
+        lines.add("deposit reset " + generation);
         for (var entry : chests.entrySet()) {
             for (int[] pos : entry.getValue()) {
-                sendAll(String.format("swarm:all deposit set %s %d %d %d", entry.getKey(), pos[0], pos[1], pos[2]));
+                lines.add(String.format("deposit set %s %d %d %d", entry.getKey(), pos[0], pos[1], pos[2]));
             }
         }
-        // push base anchor to all workers
+        lines.add("deposit commit");
+        queueLines("all", lines);
         try {
             int[] b = depositConfig.getBase(server);
             if (b != null && b.length >= 3) sendAll(String.format("swarm:all base set %d %d %d", b[0], b[1], b[2]));
         } catch (Exception ignored) {}
+    }
+
+    private void queueLines(String workerName, List<String> lines) {
+        for (EnhancedSwarmConnection connection : connections) {
+            if (connection == null || connection.isInterrupted() || connection.socket == null || connection.socket.isClosed()) continue;
+            if (!workerName.equalsIgnoreCase("all")
+                && (connection.workerName == null || !connection.workerName.equalsIgnoreCase(workerName))) continue;
+            for (String line : lines) {
+                connection.messageQueue.add("swarm:" + workerName + " " + line);
+            }
+        }
+    }
+
+    private String currentDimension() {
+        try {
+            var mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc != null && mc.level != null) return mc.level.dimension().identifier().toString();
+        } catch (Exception ignored) {}
+        return "unknown";
     }
 
     public BotStatus getBotStatus(String workerName) {
