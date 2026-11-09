@@ -1,0 +1,25 @@
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "origin": "http://127.0.0.1:8791", "ts": "04:11:12"}
+{"event": "get", "path": "/", "status": 200, "has_cookie": false, "via_query": true, "ts": "04:11:15"}
+{"event": "get", "path": "/", "status": 200, "has_cookie": true, "via_query": true, "ts": "04:11:21"}
+{"event": "get", "path": "/app.js", "status": 200, "has_cookie": true, "ts": "04:11:21"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "origin": "http://127.0.0.1:8791", "ts": "04:11:21"}
+{"event": "post", "path": "/api/action/follow", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/cancel", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/resume", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/deposit", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/deposit_ores", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/deposit_shulkers", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/pvp_on", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/action/pvp_off", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/task/add", "body": "{\"item\":\"diamond\",\"qty\":7,\"bot\":\"Bob\",\"type\":\"CRAFT\"}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/task/remove", "body": "{\"id\":\"0f7c5ae2-1111-4a11-9a11-111111111111\"}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/task/clear_done", "body": "{}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/nickname", "body": "{\"username\":\"Miner01\",\"nickname\":\"Renamed\"}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "post", "path": "/api/command", "body": "{\"target\":\"all\",\"cmd\":\"say \\\"hi\\\" \\\\ test\"}", "has_cookie": true, "ts": "04:12:48"}
+{"event": "get", "path": "/", "status": 200, "has_cookie": false, "via_query": true, "ts": "04:16:03"}
+{"event": "get", "path": "/app.js", "status": 200, "has_cookie": true, "ts": "04:16:03"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "origin": "http://127.0.0.1:8791", "ts": "04:16:03"}
+{"event": "get", "path": "/favicon.ico", "status": 404, "ts": "04:16:03"}
+{"event": "get", "path": "/", "status": 200, "has_cookie": true, "via_query": true, "ts": "04:18:03"}
+{"event": "get", "path": "/app.js", "status": 200, "has_cookie": true, "ts": "04:18:03"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "origin": "http://127.0.0.1:8791", "ts": "04:18:03"}

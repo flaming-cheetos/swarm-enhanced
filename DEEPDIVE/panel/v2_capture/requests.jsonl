@@ -1,0 +1,32 @@
+{"event": "401", "path": "/v2", "has_cookie": false, "ts": "04:41:55"}
+{"event": "get", "path": "/v2", "status": 200, "ts": "04:41:55"}
+{"event": "401", "path": "/v2/app.css", "has_cookie": false, "ts": "04:41:55"}
+{"event": "401", "path": "/api/items", "has_cookie": false, "ts": "04:41:55"}
+{"event": "get", "path": "/v2", "status": 200, "ts": "04:41:59"}
+{"event": "get", "path": "/v2/app.css", "status": 200, "ts": "04:41:59"}
+{"event": "get", "path": "/v2/app.js", "status": 200, "ts": "04:41:59"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "via_query": true, "ts": "04:41:59"}
+{"event": "post", "path": "/api/nickname", "body": "{\"username\":\"Miner01\",\"nickname\":\"Focus Probe\"}", "ts": "04:44:17"}
+{"event": "authmode", "mode": "reject", "ts": "04:45:08"}
+{"event": "401", "path": "/ws", "has_cookie": true, "ts": "04:45:15"}
+{"event": "401", "path": "/v2/app.js", "ts": "04:45:15"}
+{"event": "authmode", "mode": "ok", "ts": "04:45:30"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "via_query": true, "ts": "04:45:35"}
+{"event": "post", "path": "/api/command", "body": "{\"target\":\"all\",\"cmd\":\"say \\\"hi\\\" test\"}", "ts": "04:45:54"}
+{"event": "get", "path": "/v2", "status": 200, "ts": "04:46:30"}
+{"event": "get", "path": "/api/items", "status": 200, "ts": "04:47:27"}
+{"event": "post", "path": "/api/task/cancel", "body": "{\"bot\":\"Miner01\"}", "ts": "04:47:35"}
+{"event": "get", "path": "/v2", "status": 200, "ts": "04:47:49"}
+{"event": "get", "path": "/v2/app.css", "status": 200, "ts": "04:47:49"}
+{"event": "get", "path": "/v2/app.js", "status": 200, "ts": "04:47:49"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "via_query": true, "ts": "04:47:49"}
+{"event": "get", "path": "/api/items", "status": 200, "ts": "04:47:55"}
+{"event": "get", "path": "/v2", "status": 200, "ts": "04:49:27"}
+{"event": "get", "path": "/v2/app.css", "status": 200, "ts": "04:49:27"}
+{"event": "get", "path": "/v2/app.js", "status": 200, "ts": "04:49:27"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "via_query": true, "ts": "04:49:27"}
+{"event": "authmode", "mode": "reject", "ts": "04:51:22"}
+{"event": "401", "path": "/ws", "has_cookie": true, "ts": "04:51:28"}
+{"event": "401", "path": "/v2/app.js", "ts": "04:51:28"}
+{"event": "authmode", "mode": "ok", "ts": "04:51:45"}
+{"event": "ws_open", "path": "/ws", "has_cookie": true, "via_query": true, "ts": "04:52:18"}
