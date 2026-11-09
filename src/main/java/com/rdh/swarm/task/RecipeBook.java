@@ -3,7 +3,6 @@ package com.rdh.swarm.task;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 
@@ -457,20 +456,6 @@ public class RecipeBook {
             }
         }
         return rawForm != null ? rawForm : oreForm;
-    }
-
-    // Fuel power in furnace ticks per item, read from the same 26.3 component the furnace uses.
-    public static boolean isFuel(Item item) {
-        return item != null && item != Items.AIR && new ItemStack(item).has(DataComponents.COOKING_FUEL);
-    }
-
-    public static int getFuelPower(Item item) {
-        if (!isFuel(item)) return 0;
-        try {
-            return Math.max(1, new ItemStack(item).get(DataComponents.COOKING_FUEL).burnTime().get(null, 0) / 200);
-        } catch (Exception e) {
-            return 0;
-        }
     }
 
     /**

@@ -452,6 +452,7 @@ public class BotBrain extends Module {
     private static final long COOK_COOLDOWN = 300_000L;
     private String lastCookLog = "";
     private boolean noCookFurnaceWarned = false;
+    private boolean noCookFuelWarned = false;
     private boolean autoHuntWasEnabled = true;
     private boolean autoHuntSkipLogged = false;
     private boolean autoCookSkipLogged = false;
@@ -630,6 +631,7 @@ public class BotBrain extends Module {
         deathRecorded = false;
         lastCookLog = "";
         noCookFurnaceWarned = false;
+        noCookFuelWarned = false;
         autoHuntWasEnabled = autoHunt.get();
         autoHuntSkipLogged = false;
         autoCookSkipLogged = false;
@@ -2628,8 +2630,8 @@ public class BotBrain extends Module {
                 if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: inserting fuel and ore into furnace");
                 boolean fuelOk = SmeltingManager.depositFuel();
                 boolean oreOk = SmeltingManager.depositOre(ore);
-                if (!fuelOk && !SmeltingManager.hasFuel() && SmeltingManager.countFuel() == 0) {
-                    ChatUtils.warningPrefix("BotBrain", "SMELT: no fuel in furnace or inventory");
+                if (!fuelOk && SmeltingManager.countFuel() == 0 && !SmeltingManager.hasFuel()) {
+                    ChatUtils.warningPrefix("BotBrain", "SMELT: %s", SmeltingManager.fuelStatus());
                     setState(BrainState.STUCK);
                     return;
                 }
@@ -3155,7 +3157,7 @@ public class BotBrain extends Module {
         }
 
         boolean hasRaw = bestRaw != null;
-        boolean inventoryFuel = SmeltingManager.countFuel() > 0;
+        boolean inventoryFuel = SmeltingManager.countFuel(furnace) > 0;
         boolean furnaceFuel = hasCookFuel(furnace);
 
         if (hasRaw && furnace == null && !noCookFurnaceWarned) {
@@ -3169,10 +3171,19 @@ public class BotBrain extends Module {
         if (now - lastCookAttempt < COOK_COOLDOWN) decision = "skip: cooldown";
         else if (!hasRaw) decision = "skip: no raw food";
         else if (furnace == null) decision = "skip: no furnace";
-        else if (!inventoryFuel && !furnaceFuel) decision = "skip: no fuel";
+        else if (!inventoryFuel && !furnaceFuel) decision = SmeltingManager.fuelDecision();
         else if (cooked == null) decision = "skip: no recipe";
         else if (want <= 0) decision = "skip: target reached";
         else decision = "cook";
+
+        if ((!inventoryFuel && !furnaceFuel) && hasRaw && furnace != null) {
+            if (!noCookFuelWarned) {
+                ChatUtils.warningPrefix("BotBrain", "G2: cook blocked — %s", SmeltingManager.fuelStatus());
+                noCookFuelWarned = true;
+            }
+        } else {
+            noCookFuelWarned = false;
+        }
 
         if ("cook".equals(decision) && currentTask != null) {
             if (currentTask.getType() != BotTask.Type.HUNT_FOOD) decision = "skip: busy";
@@ -3281,10 +3292,7 @@ public class BotBrain extends Module {
 
     private boolean hasCookFuel(BlockPos furnace) {
         if (furnace != null && (isCookFurnaceLit(furnace) || SmeltingManager.hasFuelAt(furnace))) return true;
-        if (SmeltingManager.isFurnaceOpen() && mc.player.containerMenu instanceof AbstractFurnaceMenu menu) {
-            return menu.getLitProgress() > 0 || !menu.slots.get(1).getItem().isEmpty();
-        }
-        return false;
+        return SmeltingManager.hasFuel();
     }
 
     private String cookRawIds() {

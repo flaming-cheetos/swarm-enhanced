@@ -173,7 +173,7 @@ public class DependencyResolver {
                 int prev = gatherList.getOrDefault(ore, 0);
                 gatherList.put(ore, prev + qty);
                 // add fuel requirement: ceil(qty / fuelPower)
-                int coalNeeded = (int) Math.ceil((double) qty / Math.max(1, RecipeBook.getFuelPower(Items.COAL)));
+                int coalNeeded = (int) Math.ceil((double) qty / Math.max(1, SmeltingManager.fuelPower(Items.COAL)));
                 if (coalNeeded > 0) gatherList.merge(Items.COAL, coalNeeded, Integer::sum);
                 // create SMELT task (output = it, source = ore)
                 java.util.Map<String, Object> data = java.util.Map.of("item", it, "quantity", Integer.valueOf(qty), "source", ore);
