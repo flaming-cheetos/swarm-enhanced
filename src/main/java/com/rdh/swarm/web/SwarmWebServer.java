@@ -1,5 +1,9 @@
 package com.rdh.swarm.web;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.rdh.swarm.BotStatus;
 import com.rdh.swarm.EnhancedSwarm;
 import com.rdh.swarm.EnhancedSwarmHost;
@@ -71,6 +75,7 @@ public class SwarmWebServer {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final List<String> eventLog = new CopyOnWriteArrayList<>();
     private static final int MAX_LOG_ENTRIES = 500;
+    private static final Gson GSON = new Gson();
 
     // Signature
     private static final byte[] _ws0 = {0x66,0x6C,0x61,0x6D,0x69,0x6E,0x67,0x63,0x68,0x65,0x65,0x74,0x30,0x73};
@@ -200,13 +205,15 @@ public class SwarmWebServer {
 
     public void log(String level, String message) {
         String time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
-        String entry = String.format(
-            "{\"type\":\"log\",\"time\":\"%s\",\"level\":\"%s\",\"msg\":\"%s\"}",
-            time, level, message.replace("\"", "'")
-        );
-        eventLog.add(entry);
+        JsonObject entry = new JsonObject();
+        entry.addProperty("type", "log");
+        entry.addProperty("time", time);
+        entry.addProperty("level", level);
+        entry.addProperty("msg", message);
+        String json = GSON.toJson(entry);
+        eventLog.add(json);
         if (eventLog.size() > MAX_LOG_ENTRIES) eventLog.remove(0);
-        broadcast(entry);
+        broadcast(json);
     }
 
     public void logInfo(String message) { log("INFO", message); }
@@ -305,13 +312,16 @@ public class SwarmWebServer {
     }
 
     private String buildLogJson() {
-        StringBuilder sb = new StringBuilder("{\"type\":\"log_history\",\"logs\":[");
-        for (int i = 0; i < eventLog.size(); i++) {
-            sb.append(eventLog.get(i));
-            if (i < eventLog.size() - 1) sb.append(",");
+        JsonArray logs = new JsonArray();
+        for (String entry : eventLog) {
+            try {
+                logs.add(JsonParser.parseString(entry));
+            } catch (Exception ignored) {}
         }
-        sb.append("]}");
-        return sb.toString();
+        JsonObject root = new JsonObject();
+        root.addProperty("type", "log_history");
+        root.add("logs", logs);
+        return GSON.toJson(root);
     }
 
     public ChannelGroup getWsClients() { return wsClients; }

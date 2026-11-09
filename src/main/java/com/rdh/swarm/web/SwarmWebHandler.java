@@ -70,7 +70,12 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
 
         // Serve HTML for GET /
         if (req.method() == HttpMethod.GET && uri.equals("/")) {
-            sendHtml(ctx, SwarmWebPanel.getHtml());
+            sendHtml(ctx, SwarmWebPanel.getHtml(), req.headers().get(HttpHeaderNames.HOST));
+            return;
+        }
+
+        if (req.method() == HttpMethod.GET && uri.equals("/app.js")) {
+            sendJs(ctx, SwarmWebPanelScript.getScript());
             return;
         }
 
@@ -101,9 +106,19 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
         ctx.close();
     }
 
-    private void sendHtml(ChannelHandlerContext ctx, String html) {
-        sendResponse(ctx, OK, "text/html; charset=UTF-8", html,
-            Map.of(HttpHeaderNames.SET_COOKIE.toString(), server.sessionCookie()));
+    private void sendHtml(ChannelHandlerContext ctx, String html, String host) {
+        String wsSource = host == null || host.isBlank() ? "" : " ws://" + host;
+        String csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            + "img-src 'self' data:; connect-src 'self'" + wsSource
+            + "; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+        sendResponse(ctx, OK, "text/html; charset=UTF-8", html, Map.of(
+            HttpHeaderNames.SET_COOKIE.toString(), server.sessionCookie(),
+            "Content-Security-Policy", csp
+        ));
+    }
+
+    private void sendJs(ChannelHandlerContext ctx, String js) {
+        sendResponse(ctx, OK, "application/javascript; charset=UTF-8", js);
     }
 
     private void sendJson(ChannelHandlerContext ctx, String json) {

@@ -295,10 +295,10 @@ button:disabled:hover { background: #151515; color: #666; }
       <select id="taskBot">
         <option value="any">Any bot</option>
       </select>
-      <button class="success" onclick="addTask()" title="Queue a task (/api/task/add)">+ Add</button>
+      <button class="success" id="addTaskButton" title="Queue a task (/api/task/add)">+ Add</button>
     </div>
     <div style="margin-top:8px;">
-      <button onclick="post('/api/task/clear_done',{})" title="Remove COMPLETE and FAILED tasks (/api/task/clear_done)">Clear Done/Failed</button>
+      <button id="clearDoneButton" title="Remove COMPLETE and FAILED tasks (/api/task/clear_done)">Clear Done/Failed</button>
     </div>
   </div>
 
@@ -306,16 +306,16 @@ button:disabled:hover { background: #151515; color: #666; }
   <div class="card">
     <h2>⚡ Quick Actions</h2>
     <div class="actions-grid">
-      <button id="followButton" onclick="action('follow')" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
-      <button class="danger" onclick="action('cancel')" title="swarm:all cancel">🛑 Stop All</button>
-      <button class="success" onclick="action('resume')" title="swarm:all resume">▶ Resume All</button>
-      <button onclick="action('deposit')" title="swarm:all depositall">📦 Deposit All</button>
-      <button onclick="action('deposit_ores')" title="swarm:all deposit ores">⛏ Dep. Ores</button>
-      <button onclick="action('deposit_shulkers')" title="swarm:all deposit shulkers">📫 Dep. Shulkers</button>
+      <button id="followButton" data-action="follow" title="swarm:all follow player &lt;your player name&gt;">👥 Follow Me</button>
+      <button class="danger" data-action="cancel" title="swarm:all cancel">🛑 Stop All</button>
+      <button class="success" data-action="resume" title="swarm:all resume">▶ Resume All</button>
+      <button data-action="deposit" title="swarm:all depositall">📦 Deposit All</button>
+      <button data-action="deposit_ores" title="swarm:all deposit ores">⛏ Dep. Ores</button>
+      <button data-action="deposit_shulkers" title="swarm:all deposit shulkers">📫 Dep. Shulkers</button>
       <button disabled title="Not implemented: needs the container reader. This control sends no request.">🔍 Scan Chests (unavailable)</button>
       <button disabled title="Not implemented: needs the container reader. This control sends no request.">🔥 Check Fuel (unavailable)</button>
-      <button class="success" onclick="action('pvp_on')" title="exec .toggle crystal-aura on; exec .toggle kill-aura on; exec .toggle auto-totem on; exec .toggle surround on; exec .toggle auto-trap on; exec .toggle auto-web on; exec .toggle auto-exp on">⚔ PVP ON</button>
-      <button class="danger" onclick="action('pvp_off')" title="exec .toggle crystal-aura off; exec .toggle kill-aura off; exec .toggle auto-totem off; exec .toggle surround off; exec .toggle auto-trap off; exec .toggle auto-web off; exec .toggle auto-exp off">🕊 PVP OFF</button>
+      <button class="success" data-action="pvp_on" title="exec .toggle crystal-aura on; exec .toggle kill-aura on; exec .toggle auto-totem on; exec .toggle surround on; exec .toggle auto-trap on; exec .toggle auto-web on; exec .toggle auto-exp on">⚔ PVP ON</button>
+      <button class="danger" data-action="pvp_off" title="exec .toggle crystal-aura off; exec .toggle kill-aura off; exec .toggle auto-totem off; exec .toggle surround off; exec .toggle auto-trap off; exec .toggle auto-web off; exec .toggle auto-exp off">🕊 PVP OFF</button>
     </div>
     <div style="margin-top:10px;">
       <h2 style="margin-bottom:6px;">💬 Send Command</h2>
@@ -323,9 +323,8 @@ button:disabled:hover { background: #151515; color: #666; }
         <select id="cmdTarget" style="width:100px;flex:none;">
           <option value="all">All</option>
         </select>
-        <input id="cmdInput" placeholder="command..." type="text" title="Type a command; Send wraps it in exec"
-               oninput="updateSendTitle()" onkeydown="if(event.key==='Enter')sendCmd()">
-        <button id="sendButton" onclick="sendCmd()" title="exec &lt;command from the box&gt;">Send</button>
+        <input id="cmdInput" placeholder="command..." type="text" title="Type a command; Send wraps it in exec">
+        <button id="sendButton" title="exec &lt;command from the box&gt;">Send</button>
       </div>
     </div>
   </div>
@@ -335,8 +334,8 @@ button:disabled:hover { background: #151515; color: #666; }
     <h2>📜 Live Log</h2>
     <div class="log-controls">
       <input class="log-filter" id="logFilter" placeholder="Filter logs..." title="Filter visible log lines by text"
-             type="text" oninput="filterLogs()">
-      <button onclick="clearLogs()" title="Clear the visible log (no server request)">Clear</button>
+             type="text">
+      <button id="clearLogsButton" title="Clear the visible log (no server request)">Clear</button>
       <label style="font-size:0.75rem;color:#888;display:flex;align-items:center;gap:4px;">
         <input type="checkbox" id="autoScroll" checked title="Keep the newest log line visible"> Auto-scroll
       </label>
@@ -350,225 +349,7 @@ button:disabled:hover { background: #151515; color: #666; }
   </div>
 </div>
 
-<script>
-let ws;
-let state = { bots: [], tasks: [], connected: 0 };
-let logs = [];
-const MAX_LOGS = 500;
-let wsConnected = false;
-
-function connect() {
-  ws = new WebSocket('ws://' + location.host + '/ws');
-  
-  ws.onopen = () => {
-    wsConnected = true;
-    document.getElementById('wsIndicator').className = 'ws-indicator connected';
-    document.getElementById('wsStatus').textContent = 'Connected';
-  };
-  
-  ws.onclose = () => {
-    wsConnected = false;
-    document.getElementById('wsIndicator').className = 'ws-indicator';
-    document.getElementById('wsStatus').textContent = 'Reconnecting...';
-    setTimeout(connect, 3000);
-  };
-  
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'state') {
-        state = msg;
-        renderState();
-      } else if (msg.type === 'log') {
-        addLog(msg);
-      } else if (msg.type === 'log_history') {
-        logs = msg.logs || [];
-        renderLogs();
-      }
-    } catch(err) {}
-  };
-}
-
-function renderState() {
-  document.getElementById('connectedCount').textContent = state.connected || 0;
-  document.getElementById('modVersion').textContent = state.modVersion || 'version unknown';
-  document.getElementById('buildCommit').textContent = state.buildCommit || 'commit unknown';
-  document.getElementById('followButton').title = 'swarm:all follow player ' + (state.hostName || 'your player name');
-  renderBots();
-  renderTasks();
-}
-
-function renderBots() {
-  const el = document.getElementById('botsList');
-  const botSel = document.getElementById('taskBot');
-  const cmdSel = document.getElementById('cmdTarget');
-  
-  // Update bot selectors
-  const currentBot = botSel.value;
-  const currentCmd = cmdSel.value;
-  botSel.innerHTML = '<option value="any">Any bot</option>';
-  cmdSel.innerHTML = '<option value="all">All</option>';
-  
-  if (!state.bots || state.bots.length === 0) {
-    el.innerHTML = '<div style="color:#555;font-size:0.82rem;">No bots connected</div>';
-    return;
-  }
-  
-  el.innerHTML = state.bots.map(bot => {
-    const hpPct = Math.min(100, (bot.health / 20) * 100);
-    const foodPct = Math.min(100, (bot.food / 20) * 100);
-    const tierClass = 'tier-' + (bot.tier || 'WOOD').toUpperCase();
-    
-    // Add to selectors
-    botSel.innerHTML += `<option value="${bot.nickname}">${bot.nickname}</option>`;
-    cmdSel.innerHTML += `<option value="${bot.username}">${bot.nickname}</option>`;
-    
-    return `
-    <div class="bot-card ${bot.online ? '' : 'offline'}">
-      <div class="bot-name">
-        <span class="dot ${bot.online ? 'online' : 'offline'}">●</span>
-        <span id="name-${bot.username}">${bot.nickname}</span>
-        <span class="tier-badge ${tierClass}">${bot.tier || 'Wood'}</span>
-        <input class="nick-input" value="${bot.nickname}" title="Set this bot's nickname (/api/nickname)"
-               placeholder="nickname"
-               onblur="setNick('${bot.username}', this.value)">
-      </div>
-      <div class="hp-bar"><div class="hp-fill" style="width:${hpPct}%"></div></div>
-      <div class="hp-bar"><div class="hp-fill food-fill" style="width:${foodPct}%"></div></div>
-      <div class="bot-stats">
-        <span>❤ ${bot.health}</span>
-        <span>🍗 ${bot.food}</span>
-        <span>${bot.halted ? 'halted' : (bot.state || 'IDLE')}</span>
-      </div>
-      <div class="bot-task">${bot.task || 'Idle'}</div>
-      <div class="bot-progress">${bot.progress || ''} ${bot.eta ? '| ETA ' + bot.eta : ''}</div>
-      <div class="bot-coords">${bot.x} ${bot.y} ${bot.z}</div>
-      <div class="bot-actions">
-        <button class="${bot.halted ? 'success' : 'danger'}" onclick="${bot.halted ? 'resumeBot' : 'cancelBot'}('${bot.username}')" title="swarm:${bot.username} ${bot.halted ? 'resume' : 'cancel'}">${bot.halted ? '▶ Resume' : '⏹ Stop'}</button>
-      </div>
-    </div>`;
-  }).join('');
-  
-  // Restore selections
-  if (currentBot) botSel.value = currentBot;
-  if (currentCmd) cmdSel.value = currentCmd;
-}
-
-function renderTasks() {
-  const el = document.getElementById('tasksList');
-  if (!state.tasks || state.tasks.length === 0) {
-    el.innerHTML = '<div style="color:#555;font-size:0.82rem;">No tasks</div>';
-    return;
-  }
-  el.innerHTML = state.tasks.map(t => `
-    <div class="task-item">
-      <div class="task-info">
-        <div class="task-name">${t.item || t.type} × ${t.quantity}</div>
-        <div class="task-meta">${t.progress} | ${t.bot}</div>
-        ${t.reason ? `<div class="task-meta" style="color:#c96">${t.reason}</div>` : ''}
-      </div>
-      <span class="task-status status-${t.status}">${t.status}</span>
-      <button class="danger" onclick="removeTask('${t.id}')" title="Remove task ${t.id} (/api/task/remove)" style="padding:3px 8px;">✕</button>
-    </div>
-  `).join('');
-}
-
-function addLog(msg) {
-  logs.push(msg);
-  if (logs.length > MAX_LOGS) logs.shift();
-  appendLogEntry(msg);
-}
-
-function appendLogEntry(msg) {
-  const el = document.getElementById('logEntries');
-  const filter = document.getElementById('logFilter').value.toLowerCase();
-  if (filter && !msg.msg.toLowerCase().includes(filter)) return;
-  
-  const div = document.createElement('div');
-  div.className = 'log-entry log-' + msg.level;
-  div.innerHTML = `<span class="time">${msg.time}</span><span class="level-${msg.level}">[${msg.level}]</span> <span class="msg">${msg.msg}</span>`;
-  el.appendChild(div);
-  
-  if (document.getElementById('autoScroll').checked) {
-    el.scrollTop = el.scrollHeight;
-  }
-}
-
-function renderLogs() {
-  const el = document.getElementById('logEntries');
-  el.innerHTML = '';
-  logs.forEach(appendLogEntry);
-}
-
-function filterLogs() {
-  renderLogs();
-}
-
-function clearLogs() {
-  logs = [];
-  document.getElementById('logEntries').innerHTML = '';
-}
-
-async function post(path, body) {
-  try {
-    await fetch(path, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
-    });
-  } catch(e) {}
-}
-
-function addTask() {
-  const item = document.getElementById('taskItem').value.trim();
-  const qty = parseInt(document.getElementById('taskQty').value) || 64;
-  const type = document.getElementById('taskType').value || 'AUTO';
-  const bot = document.getElementById('taskBot').value;
-  const actionType = type === 'HUNT_FOOD' || type === 'GRIND';
-  if (!item && !actionType) return;
-  // If AUTO selected, omit type so server will auto-detect
-  const payload = {item, qty, bot};
-  if (type && type !== 'AUTO') payload.type = type;
-  post('/api/task/add', payload);
-  document.getElementById('taskItem').value = '';
-}
-
-function removeTask(id) {
-  post('/api/task/remove', {id});
-}
-
-function cancelBot(username) {
-  post('/api/task/cancel', {bot: username});
-}
-
-function resumeBot(username) {
-  post('/api/task/resume', {bot: username});
-}
-
-function action(name) {
-  post('/api/action/' + name, {});
-}
-
-function updateSendTitle() {
-  const cmd = document.getElementById('cmdInput').value.trim();
-  document.getElementById('sendButton').title = cmd ? 'exec ' + cmd : 'exec <command from the box>';
-}
-
-function sendCmd() {
-  const target = document.getElementById('cmdTarget').value;
-  const cmd = document.getElementById('cmdInput').value.trim();
-  if (!cmd) return;
-  post('/api/command', {target, cmd});
-  document.getElementById('cmdInput').value = '';
-  updateSendTitle();
-}
-
-function setNick(username, nickname) {
-  post('/api/nickname', {username, nickname});
-}
-
-connect();
-</script>
+<script src="/app.js"></script>
 </body>
 </html>
 """;
