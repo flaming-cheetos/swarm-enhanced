@@ -8,7 +8,14 @@ import java.util.UUID;
 
 public class BotTask {
 
-    public enum Type { GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD, GRIND, SMITH, SHULKER, BUILD }
+    public enum Type {
+        GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD, GRIND, SMITH, SHULKER, BUILD;
+
+        /** True when BotBrain has an execution path for this type. */
+        public boolean isDispatchable() {
+            return this != EQUIP && this != DEPOSIT && this != SCAN_CHESTS;
+        }
+    }
     public enum Status { PENDING, ACTIVE, BLOCKED, COMPLETE, FAILED, CANCELLED }
 
     private final UUID id;

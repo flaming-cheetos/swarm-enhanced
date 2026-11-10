@@ -390,7 +390,16 @@ public class SwarmWebServer {
                         } catch (Exception ignored) {}
                         taskType = hasRecipe ? BotTask.Type.CRAFT : BotTask.Type.GATHER;
                     } else {
-                        taskType = BotTask.Type.valueOf(typeStr.toUpperCase());
+                        try {
+                            taskType = BotTask.Type.valueOf(typeStr.toUpperCase(Locale.ROOT));
+                        } catch (IllegalArgumentException e) {
+                            logWarn("unknown task type '" + typeStr + "', not queued");
+                            return;
+                        }
+                        if (!taskType.isDispatchable()) {
+                            logWarn("task type " + taskType + " has no handler, not queued");
+                            return;
+                        }
                     }
                     BotTask task = new BotTask(taskType, mcItem, qty);
                     if (!itemless && !com.rdh.swarm.task.DependencyResolver.hasKnownSource(mcItem)) {

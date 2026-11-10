@@ -92,8 +92,9 @@ restores `ACTIVE` rows as `ACTIVE`, and the host constructor does not requeue al
 active rows; after a host restart a task can stay assigned to a worker that no
 longer owns it, while `dispatchNextTask` sees `hasActiveTask` and refuses to give
 it out. The enum also declares `EQUIP`, `DEPOSIT` and `SCAN_CHESTS`, but
-`BotBrain.handleIdle` has no execution branch for those types; a task created
-with one of them reaches `failUnhandledTask`. Priority is honored by
+`BotBrain.handleIdle` has no execution branch for those types. Both panels
+omit them from the Add form, and `/api/task/add` rejects them before queueing;
+an older saved row that still carries one reaches `failUnhandledTask`. Priority is honored by
 `getNextPendingForBot`, not by the raw `PriorityQueue` iterator.
 
 Status: **CODE ONLY**. Sources: `src/main/java/com/rdh/swarm/task/TaskQueue.java`
