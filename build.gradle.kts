@@ -1,3 +1,4 @@
+import java.time.Instant
 import org.gradle.api.tasks.Copy
 
 plugins {
@@ -15,7 +16,7 @@ val buildCommit = try {
 }
 
 val buildVersion = "${libs.versions.mod.version.get()}+$buildCommit"
-val buildTime = java.time.Instant.now().toString()
+val buildTime = Instant.now().toString()
 
 base {
     archivesName = providers.gradleProperty("archives_base_name").get()
