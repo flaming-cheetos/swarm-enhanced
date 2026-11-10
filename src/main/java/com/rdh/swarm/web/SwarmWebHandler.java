@@ -85,6 +85,31 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
             return;
         }
 
+        // Web v2: additive page and classpath assets. / is untouched.
+        if (req.method() == HttpMethod.GET && (uri.equals("/v2") || uri.equals("/v2/"))) {
+            if (!SwarmWebPanelV2.isAvailable()) {
+                sendResponse(ctx, INTERNAL_SERVER_ERROR, "text/plain", "v2 assets missing");
+                return;
+            }
+            sendHtml(ctx, SwarmWebPanelV2.html(server.token()), req.headers().get(HttpHeaderNames.HOST));
+            return;
+        }
+
+        if (req.method() == HttpMethod.GET && uri.equals("/v2/app.css")) {
+            sendResource(ctx, "text/css; charset=UTF-8", SwarmWebPanelV2.css());
+            return;
+        }
+
+        if (req.method() == HttpMethod.GET && uri.equals("/v2/app.js")) {
+            sendResource(ctx, "application/javascript; charset=UTF-8", SwarmWebPanelV2.js());
+            return;
+        }
+
+        if (req.method() == HttpMethod.GET && uri.equals("/api/items")) {
+            sendJson(ctx, server.buildItemsJson());
+            return;
+        }
+
         // 404
         sendResponse(ctx, NOT_FOUND, "text/plain", "Not found");
     }
@@ -125,6 +150,14 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
 
     private void sendJs(ChannelHandlerContext ctx, String js) {
         sendResponse(ctx, OK, "application/javascript; charset=UTF-8", js);
+    }
+
+    private void sendResource(ChannelHandlerContext ctx, String contentType, String body) {
+        if (body == null || body.isEmpty()) {
+            sendResponse(ctx, NOT_FOUND, "text/plain", "Not found");
+            return;
+        }
+        sendResponse(ctx, OK, contentType, body);
     }
 
     private void sendJson(ChannelHandlerContext ctx, String json) {

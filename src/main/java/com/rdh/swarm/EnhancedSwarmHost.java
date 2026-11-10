@@ -300,6 +300,8 @@ public class EnhancedSwarmHost extends Thread {
     private static final int _hx = 0x726468;
     private static final String _hz = "\u0066\u006C\u0061\u006D\u0069\u006E\u0067\u0063\u0068\u0065\u0065\u0074\u0030\u0073";
 
+    public String getCurrentDimension() { return currentDimension(); }
+
     public String getCurrentServer() {
         try {
             net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
