@@ -39,6 +39,12 @@ Drop the built jar into `mods/` next to Meteor Client.
 The host panel uses port `8888`; set `bind-address` for LAN access. The panel token is required on every request.
 `/` is the current page; `/v2` is in progress.
 
+## Docs
+
+- `AGENTS.md` — the rules every AI session follows here
+- `docs/ROADMAP.md` — what's done, what's next, and what is explicitly not being built
+- `CONTRIBUTING.md` — how to work in this repo
+
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
