@@ -44,6 +44,8 @@ The host panel uses port `8888`; set `bind-address` for LAN access. The panel to
 - `AGENTS.md` — the rules every AI session follows here
 - `docs/ROADMAP.md` — what's done, what's next, and what is explicitly not being built
 - `CONTRIBUTING.md` — how to work in this repo
+- `docs/TODO.md` — completed gather-loop fix notes
+- `docs/TODO-placement.md` — crafting-table and furnace placement notes
 
 ## License
 
