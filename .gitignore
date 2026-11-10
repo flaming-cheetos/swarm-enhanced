@@ -33,3 +33,9 @@ bin/
 run/
 
 *.log
+
+# logs
+logs/
+
+# jars
+*.jar

@@ -1,0 +1,5 @@
+# One holder per area. Replace the handles — an invalid handle fails silently.
+*                       @flaming-cheetos
+/src/main/java/**/web/  @D33jay-Ember
+/panel/                 @D33jay-Ember
+/docs/                  @flaming-cheetos @D33jay-Ember
