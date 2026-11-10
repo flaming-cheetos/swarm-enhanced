@@ -46,13 +46,13 @@ against you · `ABSENT` not written
 | M11 | Hostile-server hardening: pacing, packet rates, reconnects | bot | `ABSENT` |
 | M12 | Threat and evasion — priority sits **above** M4 | bot | `ABSENT` |
 | M13 | Stash and travel: ender chest, stash registry, nether | bot | `ABSENT` |
-| W | Panel v2 at `/v2` | panel | `CODE ONLY` — never opened in a browser |
+| W | Panel v2 at `/v2` — static, no build step | panel | `CODE ONLY` — never opened in a browser |
 
 ## What is happening now
 
-1. **Land the fix stack on `main`** — fuel, deposits, completion, staging. Written, unmerged.
-2. **Gate A on `main`.** Not before, not on a side branch.
-3. **Panel v2 review** — it exists on `feat/panel-v2` and has never been looked at in a browser. Panel lane.
+1. **The fix stack is on `main`** — fuel, deposits, completion, staging. Landed as a fast-forward, builds green.
+2. **Gate A on `main`.** Not run yet, and it is the next thing that matters.
+3. **Panel v2 review** — static `/v2` exists on `feat/panel-v2` and has never been opened in a browser. Panel lane.
 4. **B6, the tick-owned request model**, before any tier work. A grind loop on a thread-racy planner produces
    failures that look like logic bugs.
 

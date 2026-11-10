@@ -26,12 +26,12 @@ issue — don't fix it in passing.
 
 | Area | Files | Owner |
 |---|---|---|
-| **Panel** | `panel/` (React source), `src/main/resources/web/v2/` (built output), `src/main/java/**/web/` | collaborator |
+| **Panel** | `src/main/resources/web/v2/` (`index.html`, `app.css`, `app.js`), `src/main/java/**/web/` | collaborator |
 | **Bot** | `BotBrain`, the drivers (`DepositDriver`, `MiningDriver`, …), `EnhancedSwarmConnection`, `SmeltingManager` | owner |
 | **Shared** | `docs/`, `.github/`, root build files | whoever asked first |
 
-Panel work needs no game running: `npm run build`, look at it in a browser, done. Bot work always needs a
-singleplayer test, and its result stays `NOT OBSERVED` until a person watches it happen.
+Panel work needs no game running: open it in a browser, done. Bot work always needs a singleplayer test, and its
+result stays `NOT OBSERVED` until a person watches it happen.
 
 `/` is the old panel and is not being redesigned. `/v2` is the new one. Never break `/`.
 
@@ -97,8 +97,14 @@ A green build proves it compiles. Nothing more.
 
 ## The panel
 
-Source in `panel/` (Vite + React + TypeScript). `npm run build` writes into `src/main/resources/web/v2/`, and
-**that output is committed**. Nobody hand-edits the dist, and Gradle never runs npm.
+Two pages, one server, one token rule:
+
+- `/` — the old panel, embedded in `SwarmWebPanel.java`. Not being redesigned, but it must keep working.
+- `/v2` — static files in `src/main/resources/web/v2/`: `index.html`, `app.css`, `app.js`. Committed as source,
+  hand-edited, no build step and no npm. There is no `panel/` directory today.
+
+If we adopt a Vite build later, the source goes in `panel/` and the built output is committed into `web/v2/` — Gradle
+must never invoke Node either way.
 
 The panel is reachable from a phone on the LAN, so every value it shows is hostile:
 
