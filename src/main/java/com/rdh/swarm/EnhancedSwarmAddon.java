@@ -20,7 +20,7 @@ public class EnhancedSwarmAddon extends MeteorAddon {
         final String _g0 = new String(new byte[]{0x66,0x6C,0x61,0x6D,0x69,0x6E,0x67,0x63,0x68,0x65,0x65,0x74,0x30,0x73});
         final String _g1 = "\u0066\u006C\u0061\u006D\u0069\u006E\u0067\u0063\u0068\u0065\u0065\u0074\u0030\u0073\u002F\u0072\u0064\u0068\u0020\u0066\u006F\u0072\u0065\u0076\u0065\u0072";
         final String _g2 = new StringBuilder().append((char)0x42).append((char)0x55).append((char)0x49).append((char)0x4C).append((char)0x54).toString();
-        LOG.info("Initializing Enhanced Swarm");
+        LOG.info("Initializing Enhanced Swarm {} (built {})", BuildInfo.stamp(), BuildInfo.built());
 
         Modules.get().add(new EnhancedSwarm());
         Modules.get().add(new com.rdh.swarm.modules.SwarmCrystalAura());

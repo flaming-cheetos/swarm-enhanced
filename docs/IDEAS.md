@@ -1,3 +1,6 @@
+> Raw ideas from the 1.21.11 era. Not a plan. Anything that matters
+> gets promoted into `docs/ROADMAP.md`.
+
 # EnhancedSwarm Roadmap
 
 ## Current Foundation

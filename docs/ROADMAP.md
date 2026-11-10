@@ -59,6 +59,9 @@ against you · `ABSENT` not written
 4. **B6, the tick-owned request model**, before any tier work. A grind loop on a thread-racy planner produces
    failures that look like logic bugs.
 
+Accepted work is above. Unaccepted ideas sit in `docs/IDEAS.md` and are
+reviewed, never merged.
+
 ## Order after Gate A
 
 Threat and stash (M12, M13, plus `local` vs `anarchy` profiles) → storage and bulk (M2, M3) → fleet (M9) →

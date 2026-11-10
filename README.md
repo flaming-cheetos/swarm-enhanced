@@ -46,6 +46,7 @@ The host panel uses port `8888`; set `bind-address` for LAN access. The panel to
 - `CONTRIBUTING.md` — how to work in this repo
 - `docs/TODO.md` — completed gather-loop fix notes
 - `docs/TODO-placement.md` — crafting-table and furnace placement notes
+- `docs/IDEAS.md` — raw 1.21.11 ideas, not a plan
 
 ## License
 
