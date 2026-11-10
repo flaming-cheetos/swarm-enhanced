@@ -1,26 +1,27 @@
+import java.time.Instant
 import org.gradle.api.tasks.Copy
 
 plugins {
     alias(libs.plugins.fabric.loom)
 }
 
-base {
-    archivesName = providers.gradleProperty("archives_base_name").get()
-    version = libs.versions.mod.version.get()
-    group = providers.gradleProperty("maven_group").get()
-}
-
-// Stamp the panel footer with the exact commit used for this build.
+// Stamp the version with the exact commit used for this build.
 val buildCommit = try {
     val head = providers.exec {
-        commandLine("git", "rev-parse", "--short=12", "HEAD")
+        commandLine("git", "rev-parse", "--short", "HEAD")
     }.standardOutput.asText.get().trim()
-    val dirty = providers.exec {
-        commandLine("git", "status", "--porcelain", "--untracked-files=no")
-    }.standardOutput.asText.get().isNotBlank()
-    if (dirty) "$head-dirty" else head
+    head.ifBlank { "local" }
 } catch (e: Exception) {
-    "unknown"
+    "local"
+}
+
+val buildVersion = "${libs.versions.mod.version.get()}+$buildCommit"
+val buildTime = Instant.now().toString()
+
+base {
+    archivesName = providers.gradleProperty("archives_base_name").get()
+    version = buildVersion
+    group = providers.gradleProperty("maven_group").get()
 }
 
 repositories {
@@ -63,7 +64,9 @@ tasks {
         val propertyMap = mapOf(
             "version" to project.version,
             "mc_version" to libs.versions.minecraft.get(),
-            "commit" to buildCommit
+            "commit" to buildCommit,
+            "buildVersion" to buildVersion,
+            "built" to buildTime
         )
 
         inputs.properties(propertyMap)
