@@ -26,7 +26,7 @@ issue — don't fix it in passing.
 
 | Area | Files | Owner |
 |---|---|---|
-| **Panel** | `src/main/resources/web/v2/` (`index.html`, `app.css`, `app.js`), `src/main/java/**/web/` | collaborator |
+| **Panel** | `src/main/resources/web/v2/` (source today), `src/main/java/**/web/`; `panel/` once a React port is agreed | collaborator |
 | **Bot** | `BotBrain`, the drivers (`DepositDriver`, `MiningDriver`, …), `EnhancedSwarmConnection`, `SmeltingManager` | owner |
 | **Shared** | `docs/`, `.github/`, root build files | whoever asked first |
 
@@ -100,11 +100,16 @@ A green build proves it compiles. Nothing more.
 Two pages, one server, one token rule:
 
 - `/` — the old panel, embedded in `SwarmWebPanel.java`. Not being redesigned, but it must keep working.
-- `/v2` — static files in `src/main/resources/web/v2/`: `index.html`, `app.css`, `app.js`. Committed as source,
-  hand-edited, no build step and no npm. There is no `panel/` directory today.
+- `/v2` — hand-written `index.html`, `app.css`, `app.js` in
+  `src/main/resources/web/v2/`. Committed as source, no build step, no npm.
 
-If we adopt a Vite build later, the source goes in `panel/` and the built output is committed into `web/v2/` — Gradle
-must never invoke Node either way.
+**Agreed direction, not started:** `/v2` moves to Vite + React +
+TypeScript in `panel/`. If that happens: npm builds into `web/v2/` and
+that output is committed; `gradlew build` never invokes Node; it's a
+port, not a redesign; no router, no state library, no component kit.
+
+Until someone is explicitly asked to do that, `web/v2/` is the source
+and you edit it directly.
 
 The panel is reachable from a phone on the LAN, so every value it shows is hostile:
 
