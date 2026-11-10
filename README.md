@@ -37,7 +37,7 @@ Drop the built jar into `mods/` next to Meteor Client.
 ## Panel
 
 The host panel uses port `8888`; set `bind-address` for LAN access. The panel token is required on every request.
-`/` is the current page; `/v2` is in progress.
+`/` is the old page; `/v2` is the static replacement. `/v2` has been opened on a desktop browser and a phone, against fake players. Layout, tabs and the task queue all render. No bot has driven it in game yet.
 
 ## Docs
 
@@ -47,6 +47,8 @@ The host panel uses port `8888`; set `bind-address` for LAN access. The panel to
 - `docs/TODO.md` — completed gather-loop fix notes
 - `docs/TODO-placement.md` — crafting-table and furnace placement notes
 - `docs/IDEAS.md` — raw 1.21.11 ideas, not a plan
+- `docs/FEATURES.md` — what is implemented and how to run it
+- `docs/deepdive/` — raw research notes, not maintained
 
 ## License
 
