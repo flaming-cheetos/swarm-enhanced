@@ -81,10 +81,12 @@ fix: resolve fuel from the client world on multiplayer servers
 
 ## Panel
 
-The panel may be a React app in `panel/` (Vite). Build it with `npm run build`, which writes into
-`src/main/resources/web/v2/`, and commit that output — `gradlew build` never runs Node, and nobody hand-edits the
-dist. `/` stays on the old page; the new one is `/v2`.
+`/` is the old panel, embedded in `SwarmWebPanel.java`. Don't redesign it; don't break it.
 
-If you touch the web panel: it's reachable from a phone over the LAN, so treat every value as hostile. Never
-`innerHTML` server or player-provided text, keep the token on every request, keep the `Origin` check, don't add an
-endpoint that returns coordinates to anyone but the owner. The full contract is in `docs/panel.md`.
+`/v2` is static files in `src/main/resources/web/v2/` (`index.html`, `app.css`, `app.js`), committed as they are. No
+npm, no build step. If we adopt a Vite build later, source goes in `panel/` and the output is committed into `web/v2/`
+— `gradlew build` never runs Node either way.
+
+If you touch the panel: it's reachable from a phone over the LAN, so treat every value as hostile. Never `innerHTML`
+server or player-provided text, keep the token on every request, keep the `Origin` check, don't add an endpoint that
+returns coordinates to anyone but the owner.
