@@ -30,7 +30,7 @@ issue — don't fix it in passing.
 | **Bot** | `BotBrain`, the drivers (`DepositDriver`, `MiningDriver`, …), `EnhancedSwarmConnection`, `SmeltingManager` | owner |
 | **Shared** | `docs/`, `.github/`, root build files | whoever asked first |
 
-Panel work needs no game running: open it in a browser, done. Bot work always needs a singleplayer test, and its
+Panel work needs no game running: `/v2` has been opened on a desktop browser and a phone, against fake players. Layout, tabs and the task queue all render. No bot has driven it in game yet. Bot work always needs a singleplayer test, and its
 result stays `NOT OBSERVED` until a person watches it happen.
 
 `/` is the old panel and is not being redesigned. `/v2` is the new one. Never break `/`.
