@@ -46,12 +46,6 @@ public final class TaskQueueRecoveryTest {
 
         TaskQueue queue = new TaskQueue();
 
-        // This is the exact host gate: an unrecovered ACTIVE row makes
-        // hasActiveTask() block any redispatch and the selection returns null.
-        BotTask selected = EnhancedSwarmHost.selectNextTaskForDispatch(queue, "jamal");
-        check(selected != null,
-            "host dispatch was blocked by a stranded ACTIVE task for jamal");
-
         BotTask task = queue.getAllTasks().stream()
             .filter(candidate -> candidate.getId().toString().equals(TASK_ID))
             .findFirst()
@@ -86,13 +80,17 @@ public final class TaskQueueRecoveryTest {
         check("host-restart".equals(persisted.getStatusReason()),
             "recovery reason did not persist across reload");
 
-        // Dispatch and claim through the host's real helpers, then complete
-        // the task through the queue.
-        BotTask claimed = EnhancedSwarmHost.selectNextTaskForDispatch(reloaded, "jamal");
+        // Dispatch and claim through the host's single lease path, then
+        // complete the task through the queue.
+        BotTask claimed = EnhancedSwarmHost.claimNextTaskForDispatch(
+            reloaded, "jamal", 1000L, 5000L);
         check(claimed != null, "reloaded task was not eligible for host dispatch");
-        EnhancedSwarmHost.beginDispatch(claimed, "jamal");
         check(claimed.getStatus() == BotTask.Status.ACTIVE,
             "host dispatch did not claim the recovered task");
+        check(!claimed.getLeaseToken().isEmpty(),
+            "host dispatch did not issue a lease token");
+        check(claimed.getLeaseExpiresAt() == 6000L,
+            "host dispatch lease expiry was not now + ttl");
         check(claimed.getAttempt() == 6,
             "host dispatch did not increment the persisted attempt");
         claimed.setStatus(BotTask.Status.COMPLETE);

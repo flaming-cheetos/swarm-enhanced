@@ -34,6 +34,8 @@ public class BotTask {
     private int attempt;
     private String lastOwner;
     private String statusReason;
+    private String leaseToken;
+    private long leaseExpiresAt;
 
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
@@ -91,6 +93,10 @@ public class BotTask {
     public void setLastOwner(String lastOwner) { this.lastOwner = lastOwner == null ? "" : lastOwner; }
     public String getStatusReason() { return statusReason == null ? "" : statusReason; }
     public void setStatusReason(String statusReason) { this.statusReason = statusReason == null ? "" : statusReason; }
+    public String getLeaseToken() { return leaseToken == null ? "" : leaseToken; }
+    public void setLeaseToken(String leaseToken) { this.leaseToken = leaseToken == null ? "" : leaseToken; }
+    public long getLeaseExpiresAt() { return leaseExpiresAt; }
+    public void setLeaseExpiresAt(long leaseExpiresAt) { this.leaseExpiresAt = Math.max(0L, leaseExpiresAt); }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }
 

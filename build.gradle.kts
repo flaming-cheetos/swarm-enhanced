@@ -130,7 +130,7 @@ val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
     onlyIf { copyToMmc.get() && modsFolder2.exists() }
 }
 
-// H5 Step 1 regression probe. Plain Java main, no test-framework dependency.
+// H5 regression probes. Plain Java mains, no test-framework dependency.
 val h5RecoveryTest = tasks.register<JavaExec>("h5RecoveryTest") {
     group = "verification"
     description = "Verify an orphaned ACTIVE task is recovered and redispatched"
@@ -141,6 +141,16 @@ val h5RecoveryTest = tasks.register<JavaExec>("h5RecoveryTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5LeaseTest = tasks.register<JavaExec>("h5LeaseTest") {
+    group = "verification"
+    description = "Verify lease claim, renewal, expiry, and host maintenance tick"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.LeaseLifecycleTest")
+    workingDir = layout.buildDirectory.dir("h5-lease-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest)
 }

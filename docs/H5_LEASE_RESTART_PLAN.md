@@ -1,6 +1,6 @@
 # H5 Lease/Restart Plan
 
-Status: **PLAN — Step 1 implemented; Steps 2–4 open; no H5 live result claimed**
+Status: **PLAN — Steps 1–2 implemented; Steps 3–4 open; no H5 live result claimed**
 Date: 2026-11-12
 Build under test: `0.1.0+e62b2f9`
 Harness status: H1 three consecutive live runs PASS under
@@ -19,9 +19,10 @@ Startup recovery is implemented and covered by
   known worker disconnect.
 - `EnhancedSwarmHost.dispatchNextTask()` increments the attempt when it
   claims work, so the next dispatch is not blocked by `hasActiveTask()`.
-- The probe calls `EnhancedSwarmHost.selectNextTaskForDispatch()` and
-  `beginDispatch()`, the same package-private decision/claim methods used by
-  the live host, rather than reimplementing dispatch in the test.
+- The Step 1 probe drives dispatch through
+  `EnhancedSwarmHost.claimNextTaskForDispatch()` and the same
+  `claimNextForBot()` path the live host uses, rather than reimplementing
+  dispatch in the test.
 
 Evidence:
 
@@ -51,7 +52,43 @@ AssertionError: host dispatch was blocked by a stranded ACTIVE task for jamal
 
 Restoring `TaskQueue.java` byte-for-byte made the same probe pass.
 
-Steps 2–4 (leases, heartbeat/expiry, fencing, H5 live) are still open.
+## Step 2 status — DONE (2026-11-12)
+
+Lease lifecycle is implemented:
+
+- `BotTask` persists `leaseToken` and `leaseExpiresAt`.
+- `TaskQueue.claimNextForBot()` is the single lease-granting path, including
+  the targeted overload used by manual `assignTask()`; it sets owner, token,
+  expiry, attempt, `ACTIVE`, and saves atomically, and refuses a task held by
+  another live lease.
+- `renewLease()` extends only a live, current-token lease;
+  `renewLeaseForBot()` is the `TASK_PROGRESS` owner check.
+- `expireLeases()` returns lapsed leases to `PENDING`, clears owner/token/
+  expiry, increments the attempt, and records `lease-expired`.
+- `EnhancedSwarmHost.dispatchNextTask()` uses the claim path, `TASK_PROGRESS`
+  renews through `renewLeaseForBot()`, and the host schedules
+  `runLeaseMaintenance()` every 5 seconds while running.
+
+Evidence:
+
+```text
+./gradlew.bat h5LeaseTest
+PASS LeaseLifecycleTest: claim/renew/expire/tick
+
+./gradlew.bat h5RecoveryTest
+PASS TaskQueueRecoveryTest: ACTIVE -> PENDING -> COMPLETE
+```
+
+The lease test's red state removed only the token-equality check:
+
+```text
+AssertionError: a superseded token renewed the lease
+  at LeaseLifecycleTest.check(LeaseLifecycleTest.java:154)
+  at LeaseLifecycleTest.renewalExtendsOnlyCurrentLease(LeaseLifecycleTest.java:73)
+```
+
+Step 2 panel/log fields and the H5 live gate remain open. Steps 3–4
+(fencing/reconnect and live H5) are still open.
 
 ## 1. Problem
 
@@ -111,11 +148,12 @@ restart remains unrun until the later steps and the manual gate.
 
 ## 3. Data model
 
-Step 1 has already landed `attempt`, `lastOwner`, and `statusReason` on
-`BotTask` and in `task-queue.json`. The lease fields below are the future
-Steps 2–3 model, not a claim that they exist yet.
+Steps 1–2 have landed `attempt`, `lastOwner`, `statusReason`, `leaseToken`,
+and `leaseExpiresAt` on `BotTask` and in `task-queue.json`. The token/attempt
+protocol and completion fencing below remain future Steps 3–4; do not assume
+they exist yet.
 
-Add a small lease value to `BotTask`:
+Relevant lease fields:
 
 ```text
 leaseOwner      String   worker name
@@ -151,16 +189,18 @@ Lease defaults:
 All lease operations are synchronized inside `TaskQueue`:
 
 ```text
-claimNextForBot(botName, now, ttlMs) -> ClaimedTask(task, token, attempt)
-  Only PENDING tasks eligible for botName. Sets ACTIVE, owner, token,
-  expiry, attempt++, saves, logs.
+claimNextForBot(botName, now, ttlMs) -> BotTask
+  Step 2: single lease-granting path. Only PENDING eligible tasks. Sets
+  ACTIVE, owner, token, expiry, attempt++, saves. A targeted overload serves
+  manual assignTask().
 
 renewLease(taskId, token, now, ttlMs) -> boolean
-  Only if task ACTIVE and token matches. Extends expiry and heartbeat.
+  Step 2: only if ACTIVE, unexpired, and token matches; extends expiry.
+  renewLeaseForBot() adds the TASK_PROGRESS owner check.
 
 expireLeases(now) -> requeued count
-  ACTIVE && now >= expiry -> PENDING, owner/token cleared, expiry 0,
-  attempt retained, reason "lease-expired", save, log.
+  Step 2: ACTIVE && now >= expiry -> PENDING, owner/token cleared, expiry 0,
+  attempt++, reason "lease-expired", save.
 
 recoverActiveAfterHostRestart() -> requeued count
   Step 1: called at the end of TaskQueue.load(). Every restored ACTIVE task
@@ -182,19 +222,18 @@ recovery. Recovery runs before any connection is accepted or dispatched.
 
 1. Step 1: `TaskQueue.load()` calls `recoverActiveAfterHostRestart()`; the
    host field initializer constructs the queue before accepting workers.
-2. Future: replace the dispatch body with `claimNextForBot()` and send the
-   lease token/attempt in the assignment. Step 1 only increments the persisted
-   attempt and keeps the existing assignment shape.
-3. On `TASK_PROGRESS`, renew the lease if the token matches.
-4. On `TASK_COMPLETE`, `TASK_FAILED`, and `TASK_CANCELLED`, call the
-   lease-checked finish method; only then update queue and panel logs.
-5. On worker disconnect and `cleanDead()`, requeue by owner and token.
-6. Add a host-side periodic tick (or existing maintenance point) that calls
-   `expireLeases()`, logs `TASK: lease expired ...`, and dispatches pending
-   work.
-7. On a worker reconnect after host restart, do not assume the old worker
-   state is valid. Send a cancel/reset for any stale assignment, then claim
-   the requeued task with a fresh token.
+2. Step 2: `dispatchNextTask()` uses `claimNextForBot()`; manual `assignTask()`
+   uses its targeted overload. The assignment payload still omits the lease
+   token until Step 3.
+3. Step 2: `TASK_PROGRESS` renews through `renewLeaseForBot()`; the host runs
+   `runLeaseMaintenance()` on a 5-second scheduled tick while running.
+4. Step 3: on `TASK_COMPLETE`, `TASK_FAILED`, and `TASK_CANCELLED`, call the
+   lease-checked finish method with the worker-returned token; only then
+   update queue and panel logs.
+5. Step 3: on worker disconnect/reconnect, requeue by owner/token, cancel any
+   stale assignment, and issue a fresh token.
+6. Future: add panel/log fields for the lease and recovery reason.
+7. Future: add stale-completion rejection and the reconnect handshake.
 
 ## 6. Protocol compatibility
 
@@ -289,11 +328,19 @@ the assertion.
 - [ ] Panel/log visibility (deliberately left to a later step).
 - [ ] Stage a new jar for live H5 (not requested in this Step 1 pass).
 
-### Step 2 — Claim, heartbeat, expiry
+### Step 2 — Claim, heartbeat, expiry — DONE 2026-11-12
 
-- Add `claimNextForBot`, `renewLease`, `expireLeases`.
-- Wire `dispatchNextTask` and `TASK_PROGRESS` heartbeat.
-- Add lease expiry maintenance tick and panel fields.
+- [x] Add `claimNextForBot`, `renewLease`, `renewLeaseForBot`, and
+  `expireLeases`; persist token/expiry.
+- [x] Route `dispatchNextTask` and manual `assignTask` through the claim path.
+- [x] Wire `TASK_PROGRESS` heartbeat renewal.
+- [x] Add the host maintenance tick (`runLeaseMaintenance`).
+- [x] Add `LeaseLifecycleTest` for claim exclusivity, renewal, expiry, and
+  tick-driven expiry; `h5LeaseTest` is part of `check`.
+- [x] Verify the lease test fails when the token-equality check is removed and
+  passes after restoring it.
+- [ ] Panel/log lease fields (left open).
+- [ ] Stage a new jar for live H5 (not requested in this pass).
 
 ### Step 3 — Fencing and reconnect handshake
 
@@ -329,14 +376,16 @@ the assertion.
 - `src/main/java/com/rdh/swarm/task/TaskQueue.java` — persistence, load,
   `requeueActiveForBot`, `hasActiveTask`.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmHost.java` — queue ownership,
-  `selectNextTaskForDispatch`, `beginDispatch`, `dispatchNextTask`, `cleanDead`,
-  `disconnect`.
+  `claimNextTaskForDispatch`, `runLeaseMaintenance`, `dispatchNextTask`,
+  `cleanDead`, `disconnect`.
+- `src/h5Test/java/com/rdh/swarm/LeaseLifecycleTest.java` — claim, renewal,
+  expiry, and host-maintenance-tick regression probe.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmConnection.java` —
   `TASK_PROGRESS`, `TASK_COMPLETE`, `TASK_FAILED`, `TASK_CANCELLED`.
 - `tools/harness/scenarios/h5.json` — intended stub contract.
 - `tools/harness/panel-stub.mjs` — `hostRestart`/requeue simulation.
 - `docs/TEST_HARNESS_SPEC.md` — H5 gate and acceptance criteria.
 
-Step 1 is implemented and tested. Steps 2–4 (lease expiry, heartbeat,
-stale-completion fencing, panel/log visibility, and the live H5 gate) remain
-open; no H5 live result is claimed.
+Steps 1–2 are implemented and tested. Steps 3–4 (token/attempt protocol,
+stale-completion fencing, reconnect handshake, panel/log visibility, and the
+live H5 gate) remain open; no H5 live result is claimed.

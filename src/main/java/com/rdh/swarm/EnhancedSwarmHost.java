@@ -11,6 +11,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.Map;
 
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
@@ -29,6 +32,13 @@ public class EnhancedSwarmHost extends Thread {
     private final Map<String, WorkerConfig> workerConfigs = new ConcurrentHashMap<>();
     private final Map<String, BotStatus> botStatuses = new ConcurrentHashMap<>();
     private final TaskQueue taskQueue = new TaskQueue();
+    static final long LEASE_TTL_MS = 30_000L;
+    private static final long LEASE_SWEEP_MS = 5_000L;
+    private final ScheduledExecutorService leaseMaintenance = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "swarm-lease-maintenance");
+        t.setDaemon(true);
+        return t;
+    });
     // Optional linked deposit chest position (x,y,z) set by host
     private Integer depositChestX = null;
     private Integer depositChestY = null;
@@ -83,6 +93,11 @@ public class EnhancedSwarmHost extends Thread {
             } catch (Throwable e) {
                 ChatUtils.errorPrefix("Swarm", "Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
             }
+            leaseMaintenance.scheduleWithFixedDelay(() -> {
+                try {
+                    if (running) runLeaseMaintenance(taskQueue, System.currentTimeMillis());
+                } catch (Throwable ignored) {}
+            }, LEASE_SWEEP_MS, LEASE_SWEEP_MS, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -262,6 +277,8 @@ public class EnhancedSwarmHost extends Thread {
             ChatUtils.infoPrefix("Swarm", "Server closed on port %s.", socket == null ? "?" : socket.getLocalPort());
         } catch (Exception ignored) {}
 
+        leaseMaintenance.shutdownNow();
+
         if (webServer != null) {
             try { webServer.stop(); } catch (Exception ignored) {}
             webServer = null;
@@ -393,34 +410,20 @@ public class EnhancedSwarmHost extends Thread {
         return taskQueue;
     }
 
-    /**
-     * The host's dispatch decision, also used by the H5 regression probe.
-     * A task that is still ACTIVE for this bot blocks dispatch by design; the
-     * startup recovery must clear that stale ownership first.
-     */
-    static BotTask selectNextTaskForDispatch(TaskQueue queue, String botName) {
+    /** The host's sole dispatch/claim path, also used by the H5 probes. */
+    static BotTask claimNextTaskForDispatch(TaskQueue queue, String botName, long now, long ttlMs) {
         if (queue == null || botName == null || botName.isEmpty()) return null;
-        if (queue.hasActiveTask(botName)) return null;
-        return queue.getNextPendingForBot(botName);
+        return queue.claimNextForBot(botName, now, ttlMs);
     }
 
-    /** Apply the host's dispatch claim transition after selection. */
-    static void beginDispatch(BotTask task, String botName) {
-        if (task == null) return;
-        String assigned = task.getAssignedBot();
-        if (assigned == null || assigned.isEmpty()
-            || assigned.equalsIgnoreCase("any")
-            || assigned.equalsIgnoreCase("all")) {
-            task.setAssignedBot(botName);
-        }
-        task.setAttempt(task.getAttempt() + 1);
-        task.setStatusReason("active");
-        task.setStatus(BotTask.Status.ACTIVE);
+    /** The maintenance tick body; kept static so the expiry path is testable. */
+    static int runLeaseMaintenance(TaskQueue queue, long now) {
+        return queue == null ? 0 : queue.expireLeases(now);
     }
 
     /**
      * Dispatch the next pending task to a bot, but ONLY if that
-     * bot doesn't already have an active task.
+     * bot doesn't already have a live leased task.
      */
     public void dispatchNextTask(String botName) {
         if (botName == null || botName.isEmpty()) return;
@@ -429,26 +432,24 @@ public class EnhancedSwarmHost extends Thread {
             BotStatus st = botStatuses.get(botName);
             if (st != null && st.halted) return;
 
-            BotTask next = selectNextTaskForDispatch(taskQueue, botName);
+            BotTask next = claimNextTaskForDispatch(taskQueue, botName,
+                System.currentTimeMillis(), LEASE_TTL_MS);
             if (next == null) return;
 
-            beginDispatch(next, botName);
             String payload = String.format("task assign %s|%s|%s|%d|%s",
                 next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(), next.getAssignedBot() == null ? "" : next.getAssignedBot());
             sendTo(botName, payload);
-
-            taskQueue.save();
         } catch (Exception ignored) {}
     }
 
     public void assignTask(String workerName, com.rdh.swarm.task.BotTask task) {
-        if (workerName == null || task == null) return;
-        if (workerName != null && !workerName.isEmpty()) {
-            try { task.setAssignedBot(workerName); } catch (Exception ignored) {}
-        }
+        if (workerName == null || workerName.isEmpty() || task == null) return;
+        BotTask claimed = taskQueue.claimNextForBot(task.getId(), workerName,
+            System.currentTimeMillis(), LEASE_TTL_MS);
+        if (claimed == null) return;
         String itemName = "";
-        try { itemName = task.getItemName(); } catch (Exception ignored) {}
-        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s", workerName, task.getId().toString(), task.getType().name(), itemName, task.getTargetQuantity(), task.getAssignedBot() == null ? "" : task.getAssignedBot());
+        try { itemName = claimed.getItemName(); } catch (Exception ignored) {}
+        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot());
         sendTo(workerName, msg);
     }
 

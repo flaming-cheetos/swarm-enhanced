@@ -112,6 +112,8 @@ public class TaskQueue {
                 jo.addProperty("attempt", t.getAttempt());
                 jo.addProperty("lastOwner", t.getLastOwner());
                 jo.addProperty("statusReason", t.getStatusReason());
+                jo.addProperty("leaseToken", t.getLeaseToken());
+                jo.addProperty("leaseExpiresAt", t.getLeaseExpiresAt());
                 if (t.getFailureReason() != null) jo.addProperty("failureReason", t.getFailureReason());
                 tasks.add(jo);
             }
@@ -161,6 +163,8 @@ public class TaskQueue {
                         int attempt = jo.has("attempt") ? jo.get("attempt").getAsInt() : 0;
                         String lastOwner = jo.has("lastOwner") ? jo.get("lastOwner").getAsString() : "";
                         String statusReason = jo.has("statusReason") ? jo.get("statusReason").getAsString() : "";
+                        String leaseToken = jo.has("leaseToken") ? jo.get("leaseToken").getAsString() : "";
+                        long leaseExpiresAt = jo.has("leaseExpiresAt") ? jo.get("leaseExpiresAt").getAsLong() : 0L;
 
                         Map<String, Object> data = new HashMap<>();
                         if (itemName != null && !itemName.isEmpty()) {
@@ -179,6 +183,8 @@ public class TaskQueue {
                         t.setAttempt(attempt);
                         t.setLastOwner(lastOwner);
                         t.setStatusReason(statusReason);
+                        t.setLeaseToken(leaseToken);
+                        t.setLeaseExpiresAt(leaseExpiresAt);
                         if (jo.has("failureReason")) t.setFailureReason(jo.get("failureReason").getAsString());
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
@@ -236,6 +242,102 @@ public class TaskQueue {
     }
 
     /**
+     * The single lease-granting path. Selection, ownership, token, expiry,
+     * attempt, status, and persistence happen under one synchronized claim so
+     * two workers cannot receive the same task.
+     */
+    public synchronized BotTask claimNextForBot(String botName, long now, long ttlMs) {
+        return claimNextForBot(null, botName, now, ttlMs);
+    }
+
+    /** Targeted claim for manual/command assignment; same lease core as dispatch. */
+    public synchronized BotTask claimNextForBot(UUID targetTaskId, String botName, long now, long ttlMs) {
+        if (botName == null || botName.isEmpty() || ttlMs <= 0) return null;
+        if (hasActiveTask(botName)) return null;
+
+        List<BotTask> ordered = toList();
+        ordered.sort(Comparator.comparingInt(BotTask::getPriority).reversed());
+        for (BotTask task : ordered) {
+            if (task == null || task.getStatus() != BotTask.Status.PENDING) continue;
+            if (targetTaskId != null && !targetTaskId.equals(task.getId())) continue;
+            String assigned = task.getAssignedBot();
+            if (assigned != null && !assigned.isEmpty()
+                && !assigned.equalsIgnoreCase("any")
+                && !assigned.equalsIgnoreCase("all")
+                && !assigned.equalsIgnoreCase(botName)) {
+                continue;
+            }
+            if (!task.getLeaseToken().isEmpty() && task.getLeaseExpiresAt() > now) {
+                // A live lease on a PENDING row is inconsistent (for example,
+                // a racing requeue). Never hand it to a second owner.
+                continue;
+            }
+
+            long expiry = ttlMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + ttlMs;
+            task.setAssignedBot(botName);
+            task.setLeaseToken(UUID.randomUUID().toString());
+            task.setLeaseExpiresAt(expiry);
+            task.setAttempt(task.getAttempt() + 1);
+            task.setStatusReason("leased");
+            task.setStatus(BotTask.Status.ACTIVE);
+            save();
+            return task;
+        }
+        return null;
+    }
+
+    /** Extend only a live, current-token lease. */
+    public synchronized boolean renewLease(UUID taskId, String token, long now, long ttlMs) {
+        if (taskId == null || token == null || token.isEmpty() || ttlMs <= 0) return false;
+        BotTask task = findById(taskId);
+        if (task == null || task.getStatus() != BotTask.Status.ACTIVE) return false;
+        if (task.getLeaseToken().isEmpty() || !task.getLeaseToken().equals(token)) return false;
+        if (task.getLeaseExpiresAt() <= now) return false;
+
+        long expiry = ttlMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + ttlMs;
+        task.setLeaseExpiresAt(expiry);
+        save();
+        return true;
+    }
+
+    /** Renew by the worker that currently owns the lease; used by TASK_PROGRESS. */
+    public synchronized boolean renewLeaseForBot(UUID taskId, String botName, long now, long ttlMs) {
+        if (taskId == null || botName == null || botName.isEmpty() || ttlMs <= 0) return false;
+        BotTask task = findById(taskId);
+        if (task == null || task.getStatus() != BotTask.Status.ACTIVE) return false;
+        String assigned = task.getAssignedBot();
+        if (assigned == null || !assigned.equalsIgnoreCase(botName)) return false;
+        return renewLease(taskId, task.getLeaseToken(), now, ttlMs);
+    }
+
+    /** Return every ACTIVE row whose lease is absent or lapsed to PENDING. */
+    public synchronized int expireLeases(long now) {
+        int expired = 0;
+        for (BotTask task : queue) {
+            if (task == null || task.getStatus() != BotTask.Status.ACTIVE) continue;
+            if (!task.getLeaseToken().isEmpty() && task.getLeaseExpiresAt() > now) continue;
+
+            task.setLastOwner(task.getAssignedBot());
+            task.setAssignedBot("");
+            task.setLeaseToken("");
+            task.setLeaseExpiresAt(0L);
+            task.setAttempt(task.getAttempt() + 1);
+            task.setStatus(BotTask.Status.PENDING);
+            task.setStatusReason("lease-expired");
+            expired++;
+        }
+        if (expired > 0) save();
+        return expired;
+    }
+
+    private BotTask findById(UUID id) {
+        for (BotTask task : queue) {
+            if (task != null && id.equals(task.getId())) return task;
+        }
+        return null;
+    }
+
+    /**
      * Recover tasks that were ACTIVE when the host died. There is no live
      * owner to trust at startup, so the task is requeued instead of remaining
      * permanently blocked by hasActiveTask().
@@ -246,6 +348,8 @@ public class TaskQueue {
             if (task == null || task.getStatus() != BotTask.Status.ACTIVE) continue;
             task.setLastOwner(task.getAssignedBot());
             task.setAssignedBot("");
+            task.setLeaseToken("");
+            task.setLeaseExpiresAt(0L);
             task.setAttempt(task.getAttempt() + 1);
             task.setStatus(BotTask.Status.PENDING);
             task.setStatusReason("host-restart");
@@ -269,6 +373,8 @@ public class TaskQueue {
                 task.setLastOwner(assigned);
                 task.setStatus(BotTask.Status.PENDING);
                 task.setAssignedBot("");
+                task.setLeaseToken("");
+                task.setLeaseExpiresAt(0L);
                 task.setAttempt(task.getAttempt() + 1);
                 task.setStatusReason("worker-disconnect");
                 requeued++;

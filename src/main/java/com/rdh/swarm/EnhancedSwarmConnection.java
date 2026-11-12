@@ -261,6 +261,8 @@ public class EnhancedSwarmConnection extends Thread {
                                                     if (task.getId().toString().equals(taskId)) {
                                                         int diff = collected - task.getCollectedQuantity();
                                                         if (diff > 0) task.addCollected(diff);
+                                                        tq.renewLeaseForBot(task.getId(), wName,
+                                                            System.currentTimeMillis(), EnhancedSwarmHost.LEASE_TTL_MS);
                                                         break;
                                                     }
                                                 } catch (Exception ignored) {}
