@@ -1,0 +1,373 @@
+{
+  "ok": true,
+  "skipped": false,
+  "status": "PASS",
+  "mode": "live",
+  "baseUrl": "http://127.0.0.1:8899",
+  "panelBaseUrl": "http://127.0.0.1:9999",
+  "runId": "2026-11-12T07-03-41-472Z-live",
+  "startedAt": "2026-11-12T07:03:41.472Z",
+  "finishedAt": "2026-11-12T07:04:02.284Z",
+  "outDir": "C:\\Projects\\swarm\\swarm-improved\\test-runs\\h1-3x-e62b2f9\\run1",
+  "probe": {
+    "ok": true,
+    "inGame": true,
+    "screenOpen": false,
+    "menuOpen": false,
+    "version": "0.1.0+e62b2f9"
+  },
+  "artifacts": {
+    "hostLog": {
+      "source": "C:\\Users\\rdh\\AppData\\Roaming\\PrismLauncher\\instances\\bot\\.minecraft\\logs\\latest.log",
+      "file": "host.log",
+      "bytes": 39601
+    },
+    "botLog": {
+      "source": "C:\\Users\\rdh\\AppData\\Roaming\\PrismLauncher\\instances\\main\\.minecraft\\logs\\latest.log",
+      "file": "bot.log",
+      "bytes": 86655
+    },
+    "hostQueue": null,
+    "botQueue": null
+  },
+  "simulation": {
+    "simulated": false,
+    "label": "LIVE"
+  },
+  "results": [
+    {
+      "id": "H1",
+      "title": "Gather oak_log x1 with evidence",
+      "simulated": false,
+      "status": "PASS",
+      "error": null,
+      "assertions": [
+        {
+          "path": "task.status",
+          "pass": true,
+          "expected": "COMPLETE",
+          "actual": "COMPLETE",
+          "detail": "task.status matched"
+        },
+        {
+          "path": "task.reason",
+          "pass": true,
+          "expected": "",
+          "actual": "",
+          "detail": "task.reason matched"
+        },
+        {
+          "path": "taskLogs",
+          "pass": true,
+          "expected": "contains \"completed\"",
+          "actual": [
+            {
+              "type": "log",
+              "time": "00:19:46",
+              "level": "INFO",
+              "msg": "🔗 localhost:60539 connected"
+            },
+            {
+              "type": "log",
+              "time": "00:19:46",
+              "level": "INFO",
+              "msg": "REQUEST_CONFIG from jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:19:46",
+              "level": "INFO",
+              "msg": "Pushed deposit config to jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:31",
+              "level": "INFO",
+              "msg": "cancel received for jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:31",
+              "level": "INFO",
+              "msg": "cancel received — sent to all bots"
+            },
+            {
+              "type": "log",
+              "time": "00:23:32",
+              "level": "INFO",
+              "msg": "Task removed: 80f1f4bc-01e4-4d62-9025-8e4f68556e22"
+            },
+            {
+              "type": "log",
+              "time": "00:23:32",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:23:41",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:23:41",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "00:23:52",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:23:52",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:52",
+              "level": "INFO",
+              "msg": "cancel received for jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:53",
+              "level": "INFO",
+              "msg": "■ jamal task cancelled: cancelled by user"
+            },
+            {
+              "type": "log",
+              "time": "00:23:54",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:23:54",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:54",
+              "level": "INFO",
+              "msg": "Paused: jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:23:58",
+              "level": "INFO",
+              "msg": "resume received for jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:24:16",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "00:24:28",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "00:24:53",
+              "level": "INFO",
+              "msg": "Task removed: 50229b9e-c142-4951-88d1-25aa52453def"
+            },
+            {
+              "type": "log",
+              "time": "00:24:53",
+              "level": "INFO",
+              "msg": "Task removed: 7995f3e4-efe0-4649-a472-291ef909723e"
+            },
+            {
+              "type": "log",
+              "time": "00:24:53",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:25:01",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:25:01",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "00:25:22",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "00:25:24",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:25:24",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:25:24",
+              "level": "INFO",
+              "msg": "cancel received for jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:25:24",
+              "level": "INFO",
+              "msg": "■ jamal task cancelled: cancelled by user"
+            },
+            {
+              "type": "log",
+              "time": "00:25:26",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "00:25:26",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:25:26",
+              "level": "INFO",
+              "msg": "Paused: jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:25:30",
+              "level": "INFO",
+              "msg": "resume received for jamal"
+            },
+            {
+              "type": "log",
+              "time": "00:25:38",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "01:02:27",
+              "level": "INFO",
+              "msg": "Task removed: 26b0c3fc-7602-4afd-955a-82fcfbfbf274"
+            },
+            {
+              "type": "log",
+              "time": "01:02:27",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "01:02:35",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "01:02:35",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "01:02:57",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "01:03:01",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "01:03:01",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "01:03:13",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "01:03:17",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "01:03:17",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "01:03:28",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            },
+            {
+              "type": "log",
+              "time": "01:03:41",
+              "level": "INFO",
+              "msg": "Cleared completed tasks"
+            },
+            {
+              "type": "log",
+              "time": "01:03:41",
+              "level": "INFO",
+              "msg": "Task added: oak_log x1 → any"
+            },
+            {
+              "type": "log",
+              "time": "01:04:00",
+              "level": "INFO",
+              "msg": "✓ jamal completed: oak_log x1"
+            }
+          ],
+          "detail": "taskLogs matched"
+        },
+        {
+          "path": "state.inGame",
+          "pass": true,
+          "expected": true,
+          "actual": true,
+          "detail": "state.inGame matched"
+        }
+      ],
+      "evidence": "h1.json"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "H1",
+      "result": "h1.result.json",
+      "scenario": "h1.scenario.json"
+    }
+  ]
+}

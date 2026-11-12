@@ -1,0 +1,2 @@
+# Preserve raw test evidence byte-for-byte; logs can contain CRLF/LF and trailing whitespace.
+test-runs/** -text
