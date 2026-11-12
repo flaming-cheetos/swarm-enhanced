@@ -1,6 +1,6 @@
 # H5 Lease/Restart Plan
 
-Status: **Steps 1–3 implemented; Step 4 live gate PASSED on `0.1.0+8e2eed6`; panel/log lease visibility and full protocol matrix remain open**
+Status: **Steps 1–4 implemented; Step 4 live gate PASSED on `0.1.0+8e2eed6`; panel/log lease visibility, protocol matrix, and progress accounting covered by tests; live H5 not rerun after the gap closure**
 Date: 2026-11-12
 Builds under test: H1 `0.1.0+e62b2f9`; H5 Step 4 `0.1.0+8e2eed6`
 Harness status: H1 three consecutive live runs PASS under
@@ -388,7 +388,7 @@ the assertion.
   `check`.
 - [x] Verify the probe fails before the recovery hook and passes after it.
 - [x] Run stub suite, self-test, and full build. H1 evidence remains unchanged.
-- [ ] Panel/log visibility (deliberately left to a later step).
+- [x] Panel/log visibility (closed by `PanelLeaseJsonTest`; see gap closure below).
 - [x] Stage a new jar for live H5 (done for Step 4 on `8e2eed6`).
 
 ### Step 2 — Claim, heartbeat, expiry — DONE 2026-11-12
@@ -402,7 +402,7 @@ the assertion.
   tick-driven expiry; `h5LeaseTest` is part of `check`.
 - [x] Verify the lease test fails when the token-equality check is removed and
   passes after restoring it.
-- [ ] Panel/log lease fields (left open).
+- [x] Panel/log lease fields (closed by `PanelLeaseJsonTest`; see gap closure below).
 - [x] Stage a new jar for live H5 (done for Step 4 on `8e2eed6`).
 
 ### Step 3 — Fencing and reconnect handshake — DONE 2026-11-12
@@ -417,9 +417,9 @@ the assertion.
   of `check`.
 - [x] Verify the fencing test fails when token equality is removed and passes
   after a byte-for-byte restore.
-- [ ] Panel/log lease fields (left open).
-- [ ] Protocol compatibility matrix for every old/new combination beyond the
-  legacy token fallback (left open).
+- [x] Panel/log lease fields (closed by `PanelLeaseJsonTest`; see gap closure below).
+- [x] Protocol compatibility matrix for every old/new combination beyond the
+  legacy token fallback (covered by `ProtocolMatrixTest`; see gap closure below).
 
 ### Step 4 — H5 live gate — PASS 2026-11-12 on `0.1.0+8e2eed6`
 
@@ -447,11 +447,61 @@ The successful gate therefore used the already-built H5 jar from `8e2eed6`
 deployed to both instances; no source fix was needed. Do not describe this as
 an e62b2f9 pass.
 
-**Open after Step 4:** panel JSON still omits `attempt`, `statusReason`,
-`lastOwner`, and lease fields; the queue is the source of truth for those.
-The completed row also still reports progress `0/2` / `collected: 0`, a
-pre-existing progress-reporting gap. The full old/new protocol matrix remains
-open.
+### Post-Step 4 gap closure — DONE 2026-11-12
+
+This pass added tests and instrumentation only. It did **not** rerun the live
+H5 gate, deploy a jar, or change the `e62b2f9` build identity.
+
+**Panel JSON and rendering.** `SwarmWebServer.buildTaskJson()` now emits
+`attempt`, `statusReason`, `lastOwner`, `leaseOwner`, `leaseExpiresAt`,
+`leaseExpiresInMs`, `lastHeartbeatAt`, `heartbeatAgeMs`, and `leaseActive`.
+It deliberately omits `leaseToken`; `PanelLeaseJsonTest` asserts both the
+fields and the token absence. Both `SwarmWebPanelScript` (v1) and the v2
+resource panel render attempt, status/recovery reason, lease owner, expiry,
+and heartbeat age.
+
+**Lifecycle logs.** `TaskQueue` records the real claim, renewal, expiry,
+host-restart, and worker-disconnect events; `EnhancedSwarmHost` drains them
+to the host log and panel log. Anchors now include:
+
+```text
+TASK: claimed <id> by <bot> attempt=<n>
+TASK: lease renewed <id> attempt=<n>
+TASK: lease expired <id> attempt=<n>; requeued
+TASK: requeued <id> reason=host-restart
+TASK: requeued <id> reason=worker-disconnect
+Requeued <n> active task(s) from <bot>
+Host restart recovery: requeued <n> active task(s)
+```
+
+`TASK: rejected stale ...` remains on the socket rejection paths in
+`EnhancedSwarmConnection`.
+
+**Protocol matrix.** `ProtocolMatrixTest` documents and exercises:
+
+| host / worker | progress | completion | failure / cancellation |
+|---|---|---|---|
+| new host + new worker (token) | accepted | accepted | accepted |
+| new host + old worker (no token) | accepted while owner ACTIVE | accepted while owner ACTIVE | accepted while owner ACTIVE |
+| old host + new worker (no lease/token) | accepted | accepted | accepted |
+| missing token, active legacy worker | accepted | accepted | accepted |
+| stale token after reconnect/restart | rejected | rejected | rejected |
+
+It also covers reconnect (`worker-disconnect`) and host-startup
+(`host-restart`) recovery, then a fresh claim and exactly one completion. The
+legacy token fallback in `FencingReconnectTest` remains covered.
+
+**Progress accounting.** Root cause: the GATHER loop logged
+`Gathering oak_log: N/2` but never called `sendTaskProgress`, so the host only
+saw the initial zero and the terminal completion. `BotBrain` now publishes
+gather progress (and a final pre-completion progress) through the real fenced
+`TASK_PROGRESS` path. `TaskQueue.recordProgressIfLeaseMatches()` clamps to the
+requested quantity. `ProgressAccountingTest` proves a completed row reports
+`2/2`, `collected: 2`, `COMPLETE`.
+
+**Verification:** `./gradlew.bat clean build` with the full H5 probe suite
+then passes. New evidence is under `test-runs/h5-gap-closure/`; earlier
+`test-runs/h5-step4-lease-restart/` and H1 evidence are untouched.
 
 1. Clear terminal tasks; add `oak_log x2` assigned to `jamal`.
 2. Wait for `ACTIVE` and record the task id/attempt.
@@ -468,7 +518,7 @@ open.
 - No restored `ACTIVE` task survives host startup.
 - H5 live produced `PENDING` with `host-restart` on `8e2eed6`, never a stranded `ACTIVE`; the e62b2f9 baseline failed with a stranded `ACTIVE`.
 - One terminal completion per task; stale attempts cannot complete.
-- Task queue and logs name the recovery reason and attempt; panel lease/reason fields remain open.
+- Task queue, panel JSON, and logs name the recovery reason and attempt without exposing the fencing token.
 - `gradlew build` green; H1 three-run gate remains green.
 - Docs/spec updated with the actual log anchors and live evidence path.
 
@@ -486,6 +536,12 @@ open.
   expiry, and host-maintenance-tick regression probe.
 - `src/h5Test/java/com/rdh/swarm/FencingReconnectTest.java` — stale-report
   fencing, reconnect fresh claim, exactly-once completion, legacy fallback.
+- `src/h5Test/java/com/rdh/swarm/PanelLeaseJsonTest.java` — panel lease fields,
+  token absence, and v1/v2 renderer wiring.
+- `src/h5Test/java/com/rdh/swarm/ProtocolMatrixTest.java` — old/new
+  host-worker matrix, missing/stale tokens, reconnect and host recovery.
+- `src/h5Test/java/com/rdh/swarm/ProgressAccountingTest.java` — clamped
+  progress and completed-row `2/2` accounting.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmConnection.java` — token-aware
   protocol parsing, progress/terminal fencing, reconnect handshake.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmWorker.java` and
@@ -497,5 +553,6 @@ open.
 
 Steps 1–4 are implemented and tested. Step 4 passed live on `0.1.0+8e2eed6`;
 the e62b2f9 baseline failed as expected. Panel/log lease visibility, the
-completed-row progress counter, and the full old/new protocol matrix remain
-open.
+completed-row progress counter, and the full old/new protocol matrix are now
+covered by automated tests. The only remaining limitation is build identity:
+the live gate ran on `0.1.0+8e2eed6`, not e62b2f9.

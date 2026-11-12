@@ -60,7 +60,8 @@ java {
 // normal test source set avoids changing the project's dependency set.
 val h5Test = sourceSets.create("h5Test") {
     java.srcDir("src/h5Test/java")
-    compileClasspath += sourceSets.main.get().output
+    // Include main's compile dependencies (Gson is used by the panel JSON test).
+    compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
     runtimeClasspath += sourceSets.main.get().runtimeClasspath
 }
 
@@ -161,6 +162,36 @@ val h5FencingTest = tasks.register<JavaExec>("h5FencingTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5PanelTest = tasks.register<JavaExec>("h5PanelTest") {
+    group = "verification"
+    description = "Verify panel lease JSON omits the fencing token and both panels render its diagnostics"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.PanelLeaseJsonTest")
+    workingDir = layout.buildDirectory.dir("h5-panel-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5ProtocolTest = tasks.register<JavaExec>("h5ProtocolTest") {
+    group = "verification"
+    description = "Verify the old/new host-worker compatibility matrix"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.ProtocolMatrixTest")
+    workingDir = layout.buildDirectory.dir("h5-protocol-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5ProgressTest = tasks.register<JavaExec>("h5ProgressTest") {
+    group = "verification"
+    description = "Verify fenced progress is clamped and survives completion as 2/2"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.ProgressAccountingTest")
+    workingDir = layout.buildDirectory.dir("h5-progress-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest)
 }

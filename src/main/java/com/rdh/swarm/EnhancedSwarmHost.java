@@ -91,12 +91,18 @@ public class EnhancedSwarmHost extends Thread {
             try {
                 webServer = new SwarmWebServer(bindAddress, webPort, token);
                 webServer.start();
+                // Startup recovery happens during TaskQueue construction, before
+                // the web server exists. Flush those events once the panel is up.
+                logTaskEvents();
             } catch (Throwable e) {
                 ChatUtils.errorPrefix("Swarm", "Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
             }
             leaseMaintenance.scheduleWithFixedDelay(() -> {
                 try {
-                    if (running) runLeaseMaintenance(taskQueue, System.currentTimeMillis());
+                    if (running) {
+                        runLeaseMaintenance(taskQueue, System.currentTimeMillis());
+                        logTaskEvents();
+                    }
                 } catch (Throwable ignored) {}
             }, LEASE_SWEEP_MS, LEASE_SWEEP_MS, TimeUnit.MILLISECONDS);
         }
@@ -250,6 +256,7 @@ public class EnhancedSwarmHost extends Thread {
     }
 
     public void cleanDead() {
+        boolean changed = false;
         for (EnhancedSwarmConnection c : connections) {
             if (c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed()) {
                 // If the same worker already reconnected, the task belongs to the
@@ -257,11 +264,12 @@ public class EnhancedSwarmHost extends Thread {
                 // alone.
                 if (c != null && c.workerName != null
                     && !hasOtherLiveConnection(c.workerName, c)) {
-                    taskQueue.requeueActiveForBot(c.workerName);
+                    changed |= taskQueue.requeueActiveForBot(c.workerName) > 0;
                 }
             }
         }
         connections.removeIf(c -> c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed());
+        if (changed) logTaskEvents();
     }
 
     private boolean hasOtherLiveConnection(String workerName, EnhancedSwarmConnection exclude) {
@@ -282,6 +290,7 @@ public class EnhancedSwarmHost extends Thread {
                 connection.disconnect();
             }
         }
+        logTaskEvents();
 
         try {
             if (socket != null) socket.close();
@@ -426,6 +435,17 @@ public class EnhancedSwarmHost extends Thread {
         return taskQueue;
     }
 
+    /** Flush structured lease/recovery events to the host log and panel log. */
+    private void logTaskEvents() {
+        if (taskQueue == null) return;
+        for (String event : taskQueue.drainEvents()) {
+            try { ChatUtils.infoPrefix("Swarm", event); } catch (Throwable ignored) {}
+            try {
+                if (webServer != null) webServer.logInfo(event);
+            } catch (Throwable ignored) {}
+        }
+    }
+
     /** The host's sole dispatch/claim path, also used by the H5 probes. */
     static BotTask claimNextTaskForDispatch(TaskQueue queue, String botName, long now, long ttlMs) {
         if (queue == null || botName == null || botName.isEmpty()) return null;
@@ -461,7 +481,9 @@ public class EnhancedSwarmHost extends Thread {
     }
 
     int handleWorkerReconnect(String workerName) {
-        return prepareWorkerReconnect(taskQueue, workerName);
+        int requeued = prepareWorkerReconnect(taskQueue, workerName);
+        if (requeued > 0) logTaskEvents();
+        return requeued;
     }
 
     /**
@@ -478,6 +500,7 @@ public class EnhancedSwarmHost extends Thread {
             BotTask next = claimNextTaskForDispatch(taskQueue, botName,
                 System.currentTimeMillis(), LEASE_TTL_MS);
             if (next == null) return;
+            logTaskEvents();
 
             String payload = String.format("task assign %s|%s|%s|%d|%s|%s|%d",
                 next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(),
@@ -495,6 +518,7 @@ public class EnhancedSwarmHost extends Thread {
         String itemName = "";
         try { itemName = claimed.getItemName(); } catch (Exception ignored) {}
         String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s|%s|%d", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot(), claimed.getLeaseToken(), claimed.getAttempt());
+        logTaskEvents();
         sendTo(workerName, msg);
     }
 

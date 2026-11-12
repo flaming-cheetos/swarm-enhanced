@@ -302,22 +302,44 @@ public class SwarmWebServer {
         sb.append("\"tasks\":[");
         if (host.getTaskQueue() != null) {
             List<BotTask> tasks = host.getTaskQueue().getAllTasks();
+            long now = System.currentTimeMillis();
             for (int i = 0; i < tasks.size(); i++) {
-                BotTask task = tasks.get(i);
-                sb.append("{");
-                sb.append("\"id\":\"").append(task.getId()).append("\",");
-                sb.append("\"type\":\"").append(task.getType().name()).append("\",");
-                sb.append("\"item\":\"").append(esc(task.getItemName())).append("\",");
-                sb.append("\"quantity\":").append(task.getTargetQuantity()).append(",");
-                sb.append("\"progress\":\"").append(esc(task.getProgressString())).append("\",");
-                sb.append("\"status\":\"").append(task.getStatus().name()).append("\",");
-                sb.append("\"reason\":\"").append(esc(task.getFailureReason() == null ? "" : task.getFailureReason())).append("\",");
-                sb.append("\"bot\":\"").append(esc(task.getAssignedBot() != null ? task.getAssignedBot() : "any")).append("\"");
-                sb.append("}");
+                sb.append(buildTaskJson(tasks.get(i), now));
                 if (i < tasks.size() - 1) sb.append(",");
             }
         }
         sb.append("]}");
+        return sb.toString();
+    }
+
+    /**
+     * Serialize one task without its fencing token. Lease diagnostics are
+     * intentionally owner/expiry/age only; exposing the token would let a
+     * panel client forge a stale completion.
+     */
+    public static String buildTaskJson(BotTask task, long now) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        sb.append("\"id\":\"").append(task.getId()).append("\",");
+        sb.append("\"type\":\"").append(task.getType().name()).append("\",");
+        sb.append("\"item\":\"").append(esc(task.getItemName())).append("\",");
+        sb.append("\"quantity\":").append(task.getTargetQuantity()).append(",");
+        sb.append("\"progress\":\"").append(esc(task.getProgressString())).append("\",");
+        sb.append("\"status\":\"").append(task.getStatus().name()).append("\",");
+        sb.append("\"reason\":\"").append(esc(task.getFailureReason() == null ? "" : task.getFailureReason())).append("\",");
+        sb.append("\"bot\":\"").append(esc(task.getAssignedBot() != null ? task.getAssignedBot() : "any")).append("\",");
+        sb.append("\"attempt\":").append(task.getAttempt()).append(",");
+        sb.append("\"statusReason\":\"").append(esc(task.getStatusReason())).append("\",");
+        sb.append("\"lastOwner\":\"").append(esc(task.getLastOwner())).append("\",");
+        sb.append("\"leaseOwner\":\"").append(esc(task.getAssignedBot() != null ? task.getAssignedBot() : "")).append("\",");
+        long expiresAt = task.getLeaseExpiresAt();
+        long heartbeatAt = task.getLastHeartbeatAt();
+        sb.append("\"leaseExpiresAt\":").append(expiresAt).append(",");
+        sb.append("\"leaseExpiresInMs\":").append(expiresAt <= 0 ? 0 : Math.max(0L, expiresAt - now)).append(",");
+        sb.append("\"lastHeartbeatAt\":").append(heartbeatAt).append(",");
+        sb.append("\"heartbeatAgeMs\":").append(heartbeatAt <= 0 ? 0 : Math.max(0L, now - heartbeatAt)).append(",");
+        sb.append("\"leaseActive\":").append(task.getStatus() == BotTask.Status.ACTIVE && expiresAt > now);
+        sb.append("}");
         return sb.toString();
     }
 
@@ -551,7 +573,7 @@ public class SwarmWebServer {
         }
     }
 
-    private String esc(String s) {
+    private static String esc(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
     }

@@ -874,6 +874,9 @@ public class BotBrain extends Module {
             failTaskWithReason(task, "unproven-completion");
             return true;
         }
+        // Send the last known collected value before the terminal transition so
+        // a fast path cannot complete with a stale zero-progress row.
+        try { sendTaskProgress(task); } catch (Exception ignored) {}
         task.setStatus(BotTask.Status.COMPLETE);
         String evidenceValue = verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.NOTHING_TO_COLLECT
             ? "verified-empty" : (evidence == null || evidence.isEmpty() ? "inv" : evidence);
@@ -1061,12 +1064,17 @@ public class BotBrain extends Module {
                 int have = countForTask(tgt);
                 int need = currentTask.getTargetQuantity();
                 ChatUtils.infoPrefix("BotBrain", "Gathering %s: %d/%d", cleanTarget, have, need);
+                // TASK_PROGRESS is also the lease heartbeat. The gather loop used
+                // to log the inventory count without ever sending it, so a fast
+                // completion left the host row at collected=0.
+                syncTaskProgress(currentTask, have);
                 long inStorage = lastStorageCache != null ? lastStorageCache.getOrDefault(tgtId, lastStorageCache.getOrDefault(cleanTarget, 0L)) : 0L;
                 int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d", cleanTarget, need, have, inStorage, effectiveHave);
                 if (have >= need) {
                     if (canSendBaritone()) sendBaritoneChat("#stop");
                     ChatUtils.infoPrefix("BotBrain", "Gathered enough %s (%d/%d)", cleanTarget, have, need);
+                    syncTaskProgress(currentTask, have);
                     if (!finishTaskWithEvidence(currentTask, "inv")) return;
                     try {
                         var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
@@ -4952,6 +4960,15 @@ public class BotBrain extends Module {
                 return Minecraft.getInstance().getUser().getName();
         } catch (Exception ignored) {}
         return "unknown";
+    }
+
+    private void syncTaskProgress(BotTask task, int collected) {
+        if (task == null) return;
+        int capped = Math.max(0, Math.min(collected, task.getTargetQuantity()));
+        if (capped > task.getCollectedQuantity()) {
+            task.addCollected(capped - task.getCollectedQuantity());
+        }
+        try { sendTaskProgress(task); } catch (Exception ignored) {}
     }
 
     private void sendTaskProgress(BotTask task) {

@@ -21,6 +21,8 @@ public class TaskQueue {
 
     private final Queue<BotTask> queue;
     private final java.util.Map<String, String> nicknames = new java.util.concurrent.ConcurrentHashMap<>();
+    private final List<String> events = new ArrayList<>();
+    private int lastRecoveryCount;
     private static final Path CONFIG_DIR = Path.of("meteor-client", "enhanced-swarm");
     private static final Path CONFIG_FILE = CONFIG_DIR.resolve("task-queue.json");
 
@@ -87,6 +89,25 @@ public class TaskQueue {
         return new java.util.HashMap<>(nicknames);
     }
 
+    /**
+     * Structured lifecycle events generated on the real claim/renew/recover
+     * paths. The host drains these to the panel log; tests can drain them
+     * directly without needing a live socket.
+     */
+    public synchronized List<String> drainEvents() {
+        List<String> copy = new ArrayList<>(events);
+        events.clear();
+        return copy;
+    }
+
+    public synchronized int getLastRecoveryCount() {
+        return lastRecoveryCount;
+    }
+
+    private void emit(String event) {
+        if (event != null && !event.isEmpty()) events.add(event);
+    }
+
     public synchronized void addTask(BotTask task) {
         add(task); // add() persists once; do not save twice
     }
@@ -113,6 +134,7 @@ public class TaskQueue {
                 jo.addProperty("statusReason", t.getStatusReason());
                 jo.addProperty("leaseToken", t.getLeaseToken());
                 jo.addProperty("leaseExpiresAt", t.getLeaseExpiresAt());
+                jo.addProperty("lastHeartbeatAt", t.getLastHeartbeatAt());
                 if (t.getFailureReason() != null) jo.addProperty("failureReason", t.getFailureReason());
                 tasks.add(jo);
             }
@@ -164,6 +186,7 @@ public class TaskQueue {
                         String statusReason = jo.has("statusReason") ? jo.get("statusReason").getAsString() : "";
                         String leaseToken = jo.has("leaseToken") ? jo.get("leaseToken").getAsString() : "";
                         long leaseExpiresAt = jo.has("leaseExpiresAt") ? jo.get("leaseExpiresAt").getAsLong() : 0L;
+                        long lastHeartbeatAt = jo.has("lastHeartbeatAt") ? jo.get("lastHeartbeatAt").getAsLong() : 0L;
 
                         Map<String, Object> data = new HashMap<>();
                         if (itemName != null && !itemName.isEmpty()) {
@@ -184,6 +207,7 @@ public class TaskQueue {
                         t.setStatusReason(statusReason);
                         t.setLeaseToken(leaseToken);
                         t.setLeaseExpiresAt(leaseExpiresAt);
+                        t.setLastHeartbeatAt(lastHeartbeatAt);
                         if (jo.has("failureReason")) t.setFailureReason(jo.get("failureReason").getAsString());
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
@@ -276,9 +300,11 @@ public class TaskQueue {
             task.setAssignedBot(botName);
             task.setLeaseToken(UUID.randomUUID().toString());
             task.setLeaseExpiresAt(expiry);
+            task.setLastHeartbeatAt(now);
             task.setAttempt(task.getAttempt() + 1);
             task.setStatusReason("leased");
             task.setStatus(BotTask.Status.ACTIVE);
+            emit("TASK: claimed " + task.getId() + " by " + botName + " attempt=" + task.getAttempt());
             save();
             return task;
         }
@@ -295,6 +321,8 @@ public class TaskQueue {
 
         long expiry = ttlMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + ttlMs;
         task.setLeaseExpiresAt(expiry);
+        task.setLastHeartbeatAt(now);
+        emit("TASK: lease renewed " + task.getId() + " attempt=" + task.getAttempt());
         save();
         return true;
     }
@@ -320,9 +348,11 @@ public class TaskQueue {
             task.setAssignedBot("");
             task.setLeaseToken("");
             task.setLeaseExpiresAt(0L);
+            task.setLastHeartbeatAt(0L);
             task.setAttempt(task.getAttempt() + 1);
             task.setStatus(BotTask.Status.PENDING);
             task.setStatusReason("lease-expired");
+            emit("TASK: lease expired " + task.getId() + " attempt=" + task.getAttempt() + "; requeued");
             expired++;
         }
         if (expired > 0) save();
@@ -341,10 +371,13 @@ public class TaskQueue {
         // Progress is also the heartbeat. Do not resurrect an already-lapsed lease.
         if (task.getLeaseExpiresAt() <= now) return false;
 
-        int diff = collected - task.getCollectedQuantity();
+        int capped = Math.min(collected, task.getTargetQuantity());
+        int diff = capped - task.getCollectedQuantity();
         if (diff > 0) task.addCollected(diff);
         long expiry = ttlMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + ttlMs;
         task.setLeaseExpiresAt(expiry);
+        task.setLastHeartbeatAt(now);
+        emit("TASK: lease renewed " + task.getId() + " attempt=" + task.getAttempt());
         save();
         return true;
     }
@@ -375,6 +408,7 @@ public class TaskQueue {
         // The lease is spent once the terminal transition is accepted.
         task.setLeaseToken("");
         task.setLeaseExpiresAt(0L);
+        task.setLastHeartbeatAt(0L);
         save();
         return true;
     }
@@ -412,12 +446,18 @@ public class TaskQueue {
             task.setAssignedBot("");
             task.setLeaseToken("");
             task.setLeaseExpiresAt(0L);
+            task.setLastHeartbeatAt(0L);
             task.setAttempt(task.getAttempt() + 1);
             task.setStatus(BotTask.Status.PENDING);
             task.setStatusReason("host-restart");
+            emit("TASK: requeued " + task.getId() + " reason=host-restart");
             requeued++;
         }
-        if (requeued > 0) save();
+        lastRecoveryCount = requeued;
+        if (requeued > 0) {
+            emit("Host restart recovery: requeued " + requeued + " active task(s)");
+            save();
+        }
         return requeued;
     }
 
@@ -437,12 +477,15 @@ public class TaskQueue {
                 task.setAssignedBot("");
                 task.setLeaseToken("");
                 task.setLeaseExpiresAt(0L);
+                task.setLastHeartbeatAt(0L);
                 task.setAttempt(task.getAttempt() + 1);
                 task.setStatusReason("worker-disconnect");
+                emit("TASK: requeued " + task.getId() + " reason=worker-disconnect");
                 requeued++;
             }
         }
         if (requeued > 0) {
+            emit("Requeued " + requeued + " active task(s) from " + botName);
             save();
         }
         return requeued;

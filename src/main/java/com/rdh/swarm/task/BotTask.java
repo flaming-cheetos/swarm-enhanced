@@ -36,6 +36,7 @@ public class BotTask {
     private String statusReason;
     private String leaseToken;
     private long leaseExpiresAt;
+    private long lastHeartbeatAt;
 
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
@@ -97,6 +98,8 @@ public class BotTask {
     public void setLeaseToken(String leaseToken) { this.leaseToken = leaseToken == null ? "" : leaseToken; }
     public long getLeaseExpiresAt() { return leaseExpiresAt; }
     public void setLeaseExpiresAt(long leaseExpiresAt) { this.leaseExpiresAt = Math.max(0L, leaseExpiresAt); }
+    public long getLastHeartbeatAt() { return lastHeartbeatAt; }
+    public void setLastHeartbeatAt(long lastHeartbeatAt) { this.lastHeartbeatAt = Math.max(0L, lastHeartbeatAt); }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }
 

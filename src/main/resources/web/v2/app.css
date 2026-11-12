@@ -270,6 +270,8 @@ button, input, select { font: inherit; }
 .task-info { flex: 1; min-width: 0; }
 .task-name { color: #fff; font-weight: bold; overflow-wrap: anywhere; }
 .task-meta { color: var(--muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+.task-meta.lease { color: #8bb; }
+.task-meta.lease[hidden] { display: none; }
 .task-meta.reason { color: #c96; }
 .task-meta.reason[hidden] { display: none; }
 

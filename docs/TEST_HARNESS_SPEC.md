@@ -1,6 +1,6 @@
 # Enhanced Swarm Test Harness — 0.2.0 Spec
 
-Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; live H0/H0b/H1–H3 pass on e62b2f9; live H5 passes on `0.1.0+8e2eed6` (e62b2f9 baseline fails as expected); H4/H6/H8–H12 are simulated, manual gates pending**
+Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; live H0/H0b/H1–H3 pass on e62b2f9; live H5 passes on `0.1.0+8e2eed6` (e62b2f9 baseline fails as expected); H5 panel/matrix/progress gaps test-covered, live H5 not rerun since; H4/H6/H8–H12 are simulated, manual gates pending**
 Direction: **menu-aware HarnessBridge; external MCP fork rejected**
 Target build: `0.1.0+e62b2f9` (`fix/phantom-task-types`)
 Last updated: 2026-11-12
@@ -303,7 +303,9 @@ Each `state` message contains:
 - per bot: `username`, `nickname`, `online`, `health`, `food`, `x`, `y`, `z`,
   `task`, `progress`, `eta`, `tier`, `state`, `halted`;
 - per task: `id`, `type`, `item`, `quantity`, `progress`, `status`, `reason`,
-  `bot`.
+  `bot`, `attempt`, `statusReason`, `lastOwner`, `leaseOwner`, `leaseExpiresAt`,
+  `leaseExpiresInMs`, `lastHeartbeatAt`, `heartbeatAgeMs`, `leaseActive`.
+  The raw `leaseToken` is intentionally absent.
 
 The feed has no inventory and no per-bot dimension. The HarnessBridge covers
 those gaps.
@@ -529,7 +531,7 @@ not the product behavior of a real client.
 | H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
 | H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
-| H5 | PASS | yes | **PASS live** 2026-11-12 on `0.1.0+8e2eed6`; pre-H5 `0.1.0+e62b2f9` baseline FAIL (stranded ACTIVE). Task `2b7aa4f5…`: ACTIVE attempt 1 → restart → PENDING attempt 2 `host-restart` → reconnect COMPLETE attempt 3, exactly one completion. Evidence: `test-runs/h5-step4-lease-restart/`. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
+| H5 | PASS | yes | **PASS live** 2026-11-12 on `0.1.0+8e2eed6`; pre-H5 `0.1.0+e62b2f9` baseline FAIL (stranded ACTIVE). Task `2b7aa4f5…`: ACTIVE attempt 1 → restart → PENDING attempt 2 `host-restart` → reconnect COMPLETE attempt 3, exactly one completion. Evidence: `test-runs/h5-step4-lease-restart/`. Post-Step-4 gap closure: panel lease JSON without token, claim/recovery/reject logs, old/new matrix, and `2/2` progress are covered by `PanelLeaseJsonTest`, `ProtocolMatrixTest`, and `ProgressAccountingTest`; live gate not rerun since. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
 | H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
 | H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
@@ -560,15 +562,19 @@ maintenance tick return lapsed leases to `PENDING`, and
 `recordProgressIfLeaseMatches()`/`finishIfLeaseMatches()` reject stale reports.
 A new connection requeues the old assignment, sends `task reset`, and the next
 dispatch claims a fresh token; a re-leased task completes once.
-`TaskQueueRecoveryTest`, `LeaseLifecycleTest`, and `FencingReconnectTest` are
+`TaskQueueRecoveryTest`, `LeaseLifecycleTest`, `FencingReconnectTest`,
+`PanelLeaseJsonTest`, `ProtocolMatrixTest`, and `ProgressAccountingTest` are
 part of the Gradle `check` task. The simulated H5 still only asserts the stub
 contract. Live H5 (Step 4) passed on `0.1.0+8e2eed6`: the host restart
 converted the ACTIVE row to PENDING attempt 2 with `statusReason:
 host-restart`, then the reconnected worker completed attempt 3 exactly once.
 The `0.1.0+e62b2f9` baseline failed with the row still ACTIVE. Evidence is in
 `test-runs/h5-step4-lease-restart/`; the implementation plan is tracked in
-`docs/H5_LEASE_RESTART_PLAN.md`. Panel lease/reason fields and the full
-protocol matrix remain open; do not weaken the assertion.
+`docs/H5_LEASE_RESTART_PLAN.md`. The post-Step-4 gap closure now emits lease
+diagnostics without the fencing token, records claim/recovery/reject anchors,
+covers the old/new protocol matrix, and fixes GATHER progress accounting.
+Those gaps are test-covered but the live H5 gate has not been rerun since the
+closure; do not weaken the assertion.
 
 H11 needs a third Prism instance live. The stub uses a second simulated worker
 to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not

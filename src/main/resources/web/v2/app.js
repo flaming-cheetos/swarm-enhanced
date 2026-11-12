@@ -395,9 +395,11 @@ function createTaskRow(task) {
   const info = element('div', 'task-info');
   const name = element('div', 'task-name', '');
   const meta = element('div', 'task-meta', '');
+  const lease = element('div', 'task-meta lease', '');
+  lease.hidden = true;
   const reason = element('div', 'task-meta reason', '');
   reason.hidden = true;
-  info.append(name, meta, reason);
+  info.append(name, meta, lease, reason);
 
   const status = element('span', 'task-status', '');
   const remove = document.createElement('button');
@@ -407,12 +409,21 @@ function createTaskRow(task) {
   remove.addEventListener('click', () => removeTask(task.id));
 
   row.append(info, status, remove);
-  return { row, name, meta, reason, status, remove };
+  return { row, name, meta, lease, reason, status, remove };
 }
 
 function updateTaskRow(node, task) {
   setText(node.name, (task.item || task.type || 'Task') + ' × ' + (task.quantity ?? 0));
   setText(node.meta, (task.progress || '') + ' | ' + (task.bot || 'any'));
+  const leaseBits = [];
+  if (task.attempt !== undefined && task.attempt !== null) leaseBits.push('attempt ' + task.attempt);
+  if (task.statusReason) leaseBits.push('reason ' + task.statusReason);
+  if (task.leaseOwner) leaseBits.push('lease ' + task.leaseOwner);
+  if (task.leaseExpiresAt) leaseBits.push('expires ' + new Date(task.leaseExpiresAt).toLocaleTimeString());
+  else if (task.lastOwner) leaseBits.push('last ' + task.lastOwner);
+  if (task.heartbeatAgeMs) leaseBits.push('heartbeat ' + Math.round(task.heartbeatAgeMs / 1000) + 's ago');
+  node.lease.hidden = !leaseBits.length;
+  setText(node.lease, leaseBits.join(' | '), '');
   const reason = task.reason || '';
   node.reason.hidden = !reason;
   setText(node.reason, reason, '');
