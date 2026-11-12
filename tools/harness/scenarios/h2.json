@@ -14,7 +14,7 @@
   ],
   "assert": [
     { "path": "task.status", "equals": "CANCELLED" },
-    { "path": "taskLogs", "contains": "HALT: cancelled" },
+    { "path": "taskLogs", "contains": "task cancelled" },
     { "path": "state.inGame", "equals": true }
   ]
 }

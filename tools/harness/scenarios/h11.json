@@ -38,7 +38,7 @@
     { "path": "duplicateLogs", "contains": "TASK: claim rejected" },
     { "path": "finalTruth.completionCount", "equals": 1 },
     { "path": "task.status", "equals": "COMPLETE" },
-    { "path": "finalLogs", "contains": "TASK: complete" },
+    { "path": "finalLogs", "contains": "completed" },
     { "path": "finalTruth.liveActiveTaskCount", "equals": 0 }
   ]
 }

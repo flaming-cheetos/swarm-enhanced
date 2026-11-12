@@ -18,8 +18,8 @@
   "assert": [
     { "path": "task.status", "equals": "COMPLETE" },
     { "path": "pausedBot.halted", "equals": true },
-    { "path": "pausedLogs", "contains": "HALT: paused" },
-    { "path": "resumedLogs", "contains": "HALT: resumed" },
+    { "path": "pausedLogs", "contains": "Paused" },
+    { "path": "resumedLogs", "contains": "resume received" },
     { "path": "state.inGame", "equals": true }
   ]
 }

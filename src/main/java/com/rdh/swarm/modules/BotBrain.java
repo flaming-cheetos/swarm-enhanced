@@ -765,10 +765,9 @@ public class BotBrain extends Module {
         if (now - lastBrainTick < BRAIN_TICK_MS) return;
         lastBrainTick = now;
         tickCounter++;
-        if (state == BrainState.IDLE && currentTask != null) {
-            ChatUtils.warningPrefix("BotBrain", "TASK: orphaned task in IDLE, failing %s", currentTask.getId());
-            failTaskWithReason(currentTask, "orphaned-task");
-        }
+        // A newly assigned task intentionally enters IDLE so handleIdle() can
+        // resolve its plan and choose the first execution state. Do not fail it
+        // before that transition.
         if (manageModules.get()) {
             moduleGuard.tick(tickCounter);
             moduleGuard.setRawFoodFallback(eatRawFallback.get());

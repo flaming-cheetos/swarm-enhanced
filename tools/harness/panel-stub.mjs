@@ -139,7 +139,7 @@ export async function startPanelStub({ port = 0 } = {}) {
             bot.task = 'Idle';
           }
         }
-        log('INFO', `HALT: cancelled ${task.id}`);
+        log('INFO', `■ ${body.bot} task cancelled: cancelled by user`);
         broadcastState();
       }
       return;
@@ -150,7 +150,7 @@ export async function startPanelStub({ port = 0 } = {}) {
       const bot = findBot(body.bot);
       if (task && bot) {
         bot.halted = true;
-        log('INFO', `HALT: paused ${task.id}`);
+        log('INFO', `Paused: ${body.bot}`);
         broadcastState();
       }
       return;
@@ -161,7 +161,7 @@ export async function startPanelStub({ port = 0 } = {}) {
       const task = activeTaskFor(body.bot);
       if (task && bot) {
         bot.halted = false;
-        log('INFO', `HALT: resumed ${task.id}`);
+        log('INFO', `resume received for ${body.bot}`);
         broadcastState();
       }
       return;
@@ -336,7 +336,7 @@ export async function startPanelStub({ port = 0 } = {}) {
       bot.state = 'IDLE';
       bot.task = 'Idle';
     }
-    log('INFO', `TASK: complete ${task.id} evidence=inv`);
+    log('INFO', `✓ ${task.bot} completed: ${task.item} x${task.quantity}`);
     broadcastState();
     return true;
   }

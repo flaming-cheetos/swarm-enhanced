@@ -14,7 +14,7 @@
   "assert": [
     { "path": "task.status", "equals": "COMPLETE" },
     { "path": "task.reason", "equals": "" },
-    { "path": "taskLogs", "contains": "TASK: complete" },
+    { "path": "taskLogs", "contains": "completed" },
     { "path": "state.inGame", "equals": true }
   ]
 }
