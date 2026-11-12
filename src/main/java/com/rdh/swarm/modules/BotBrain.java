@@ -2105,6 +2105,23 @@ public class BotBrain extends Module {
         }
     }
 
+    /**
+     * The SMELT scan accepts furnace, smoker, and (non-cooking) blast furnace
+     * appliances, so the confirm guards must accept the same set — otherwise a
+     * found smoker/blast furnace is discarded and the bot pointlessly places a
+     * plain furnace next to it.
+     */
+    private boolean isSmelterAt(BlockPos pos) {
+        if (pos == null || mc.player == null || mc.level == null) return false;
+        try {
+            var b = mc.level.getBlockState(pos).getBlock();
+            if (b == Blocks.FURNACE || b == Blocks.SMOKER) return true;
+            return !isCookingTask() && b == Blocks.BLAST_FURNACE;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private BlockPos getBasePosition() {
         // Use deposit chest coordinates as base location
         try {
@@ -2651,11 +2668,11 @@ public class BotBrain extends Module {
 
             case SMELT_WAIT_PLACE -> {
                 if (smeltTicks >= 4) {
-                    if (isBlockAt(smelterPos, Blocks.FURNACE)) {
+                    if (isSmelterAt(smelterPos)) {
                         pendingPlacementPos = null;
                         pendingPlacementItem = null;
                         pendingPlacementRetries = 0;
-                        ChatUtils.infoPrefix("BotBrain", "Furnace confirmed at %d %d %d", smelterPos.getX(), smelterPos.getY(), smelterPos.getZ());
+                        ChatUtils.infoPrefix("BotBrain", "Smelter confirmed at %d %d %d", smelterPos.getX(), smelterPos.getY(), smelterPos.getZ());
                         smeltPhase = SMELT_OPEN;
                         smeltTicks = 0;
                     } else {
@@ -2680,7 +2697,7 @@ public class BotBrain extends Module {
             case SMELT_OPEN -> {
                 if (smelterPos == null) { smeltPhase = SMELT_SCAN; smeltTicks = 0; return; }
 
-                if (!isBlockAt(smelterPos, Blocks.FURNACE)) {
+                if (!isSmelterAt(smelterPos)) {
                     pendingPlacementPos = null;
                     pendingPlacementItem = null;
                     pendingPlacementRetries = 0;
