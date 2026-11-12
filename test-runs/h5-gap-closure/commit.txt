@@ -1,0 +1,1 @@
+4f24d62dfe3693fa59740d5446de4cef0e9fc1b0 fix(h5): expose lease state and prove progress/matrix paths 2026-11-12 02:33:05 -0600

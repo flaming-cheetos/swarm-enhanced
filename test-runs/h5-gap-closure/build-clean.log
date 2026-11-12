@@ -1,0 +1,83 @@
+
+> Configure project :
+Fabric Loom: 1.18.4
+
+> Task :clean
+
+> Task :compileJava
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\EnhancedSwarmWorker.java:835: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+                            boolean supportOk = !below.isAir() && below.isSolid();
+                                                                       ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\DepositDriver.java:677: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+                        if ((state.isAir() || !state.canOcclude()) && !below.isAir() && below.isSolid()) {
+                                                                                             ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:72: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+    private NioEventLoopGroup bossGroup;
+            ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:73: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+    private NioEventLoopGroup workerGroup;
+            ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:162: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+        bossGroup = new NioEventLoopGroup(1);
+                        ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:163: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+        workerGroup = new NioEventLoopGroup(2);
+                          ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:175: warning: [deprecation] WebSocketServerCompressionHandler() in WebSocketServerCompressionHandler has been deprecated
+                        p.addLast(new WebSocketServerCompressionHandler());
+                                  ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\modules\BotBrain.java:2091: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+                        if (state.isAir() && below.isSolid()) return candidate;
+                                                  ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\task\DropCollector.java:450: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+        if (floor.isAir() || !floor.isSolid()) {
+                                   ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\SwarmHudPresets.java:10: warning: [unchecked] unchecked conversion
+        final HudElementInfo<TextHud>[] holder = new HudElementInfo[1];
+                                                 ^
+  required: HudElementInfo<TextHud>[]
+  found:    HudElementInfo[]
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\utils\OLEPOSSUtils.java:93: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+        return mc.level.getBlockState(block).isSolid();
+                                            ^
+11 warnings
+
+> Task :processResources
+> Task :classes
+> Task :processIncludeJars
+> Task :jar
+> Task :compileH5TestJava
+> Task :assemble
+> Task :processH5TestResources NO-SOURCE
+> Task :h5TestClasses
+
+> Task :h5FencingTest
+PASS FencingReconnectTest: stale/reconnect/exactly-once
+
+> Task :h5LeaseTest
+PASS LeaseLifecycleTest: claim/renew/expire/tick
+
+> Task :h5PanelTest
+PASS PanelLeaseJsonTest: visible lease diagnostics without token
+
+> Task :h5ProgressTest
+PASS ProgressAccountingTest: 2/2 complete and clamped
+
+> Task :h5ProtocolTest
+PASS ProtocolMatrixTest: old/new matrix covered
+
+> Task :h5RecoveryTest
+PASS TaskQueueRecoveryTest: ACTIVE -> PENDING -> COMPLETE
+
+> Task :compileTestJava NO-SOURCE
+> Task :processTestResources NO-SOURCE
+> Task :testClasses UP-TO-DATE
+> Task :test NO-SOURCE
+> Task :validateAccessWidener NO-SOURCE
+> Task :check
+> Task :build
+
+[Incubating] Problems report is available at: file:///C:/Projects/swarm/swarm-improved/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 4s
+12 actionable tasks: 12 executed
