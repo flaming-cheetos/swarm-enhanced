@@ -1,13 +1,17 @@
-package com.rdh.swarm.task;
+package com.rdh.swarm;
+
+import com.rdh.swarm.task.BotTask;
+import com.rdh.swarm.task.TaskQueue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
  * H5 Step 1 regression probe: a host restart must not leave an ACTIVE task
- * stranded. The test uses the real persisted queue file and the same
- * TaskQueue constructor the host uses at startup. No test framework is
- * required, so the repo keeps its existing dependency set.
+ * stranded. The probe seeds the real persisted queue, constructs the same
+ * TaskQueue the host uses, and drives dispatch through EnhancedSwarmHost's
+ * own selection/claim methods. No test framework is required, so the repo
+ * keeps its existing dependency set.
  */
 public final class TaskQueueRecoveryTest {
 
@@ -41,6 +45,13 @@ public final class TaskQueueRecoveryTest {
             """.formatted(TASK_ID));
 
         TaskQueue queue = new TaskQueue();
+
+        // This is the exact host gate: an unrecovered ACTIVE row makes
+        // hasActiveTask() block any redispatch and the selection returns null.
+        BotTask selected = EnhancedSwarmHost.selectNextTaskForDispatch(queue, "jamal");
+        check(selected != null,
+            "host dispatch was blocked by a stranded ACTIVE task for jamal");
+
         BotTask task = queue.getAllTasks().stream()
             .filter(candidate -> candidate.getId().toString().equals(TASK_ID))
             .findFirst()
@@ -59,9 +70,6 @@ public final class TaskQueueRecoveryTest {
         check(!queue.hasActiveTask("jamal"),
             "host still sees a stranded ACTIVE task for jamal");
 
-        BotTask next = queue.getNextPendingForBot("jamal");
-        check(next != null, "recovered task was not eligible for redispatch");
-
         // Recovery must survive the same persisted-queue load the next host
         // performs before redispatching the task.
         TaskQueue reloaded = new TaskQueue();
@@ -78,17 +86,19 @@ public final class TaskQueueRecoveryTest {
         check("host-restart".equals(persisted.getStatusReason()),
             "recovery reason did not persist across reload");
 
-        // This is the host dispatch contract: hasActiveTask() must not block
-        // the recovered row, and the next claim must reach a terminal state.
-        BotTask claimed = reloaded.getNextPendingForBot("jamal");
-        check(claimed != null, "reloaded task was not eligible for redispatch");
-        claimed.setAssignedBot("jamal");
-        claimed.setAttempt(claimed.getAttempt() + 1);
-        claimed.setStatus(BotTask.Status.ACTIVE);
+        // Dispatch and claim through the host's real helpers, then complete
+        // the task through the queue.
+        BotTask claimed = EnhancedSwarmHost.selectNextTaskForDispatch(reloaded, "jamal");
+        check(claimed != null, "reloaded task was not eligible for host dispatch");
+        EnhancedSwarmHost.beginDispatch(claimed, "jamal");
+        check(claimed.getStatus() == BotTask.Status.ACTIVE,
+            "host dispatch did not claim the recovered task");
+        check(claimed.getAttempt() == 6,
+            "host dispatch did not increment the persisted attempt");
         claimed.setStatus(BotTask.Status.COMPLETE);
         reloaded.save();
         check(claimed.getStatus() == BotTask.Status.COMPLETE,
-            "recovered task did not reach COMPLETE after redispatch");
+            "recovered task did not reach COMPLETE after hosted dispatch");
 
         System.out.println("PASS TaskQueueRecoveryTest: ACTIVE -> PENDING -> COMPLETE");
     }

@@ -394,6 +394,31 @@ public class EnhancedSwarmHost extends Thread {
     }
 
     /**
+     * The host's dispatch decision, also used by the H5 regression probe.
+     * A task that is still ACTIVE for this bot blocks dispatch by design; the
+     * startup recovery must clear that stale ownership first.
+     */
+    static BotTask selectNextTaskForDispatch(TaskQueue queue, String botName) {
+        if (queue == null || botName == null || botName.isEmpty()) return null;
+        if (queue.hasActiveTask(botName)) return null;
+        return queue.getNextPendingForBot(botName);
+    }
+
+    /** Apply the host's dispatch claim transition after selection. */
+    static void beginDispatch(BotTask task, String botName) {
+        if (task == null) return;
+        String assigned = task.getAssignedBot();
+        if (assigned == null || assigned.isEmpty()
+            || assigned.equalsIgnoreCase("any")
+            || assigned.equalsIgnoreCase("all")) {
+            task.setAssignedBot(botName);
+        }
+        task.setAttempt(task.getAttempt() + 1);
+        task.setStatusReason("active");
+        task.setStatus(BotTask.Status.ACTIVE);
+    }
+
+    /**
      * Dispatch the next pending task to a bot, but ONLY if that
      * bot doesn't already have an active task.
      */
@@ -404,24 +429,10 @@ public class EnhancedSwarmHost extends Thread {
             BotStatus st = botStatuses.get(botName);
             if (st != null && st.halted) return;
 
-            // Don't send if bot already has an active task
-            if (taskQueue.hasActiveTask(botName)) return;
-
-            BotTask next = taskQueue.getNextPendingForBot(botName);
+            BotTask next = selectNextTaskForDispatch(taskQueue, botName);
             if (next == null) return;
 
-            // Assign the bot name if it was "any"/"all"/empty
-            String assigned = next.getAssignedBot();
-            if (assigned == null || assigned.isEmpty()
-                || assigned.equalsIgnoreCase("any")
-                || assigned.equalsIgnoreCase("all")) {
-                next.setAssignedBot(botName);
-            }
-
-            // Set to ACTIVE and send assignment
-            next.setAttempt(next.getAttempt() + 1);
-            next.setStatusReason("active");
-            next.setStatus(BotTask.Status.ACTIVE);
+            beginDispatch(next, botName);
             String payload = String.format("task assign %s|%s|%s|%d|%s",
                 next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(), next.getAssignedBot() == null ? "" : next.getAssignedBot());
             sendTo(botName, payload);

@@ -9,7 +9,7 @@ Harness status: H1 three consecutive live runs PASS under
 ## Step 1 status — DONE (2026-11-12)
 
 Startup recovery is implemented and covered by
-`com.rdh.swarm.task.TaskQueueRecoveryTest`:
+`com.rdh.swarm.TaskQueueRecoveryTest`:
 
 - `BotTask` persists `attempt`, `lastOwner`, and `statusReason`.
 - `TaskQueue.load()` converts every persisted `ACTIVE` row to `PENDING`,
@@ -19,6 +19,9 @@ Startup recovery is implemented and covered by
   known worker disconnect.
 - `EnhancedSwarmHost.dispatchNextTask()` increments the attempt when it
   claims work, so the next dispatch is not blocked by `hasActiveTask()`.
+- The probe calls `EnhancedSwarmHost.selectNextTaskForDispatch()` and
+  `beginDispatch()`, the same package-private decision/claim methods used by
+  the live host, rather than reimplementing dispatch in the test.
 
 Evidence:
 
@@ -30,12 +33,23 @@ PASS TaskQueueRecoveryTest: ACTIVE -> PENDING -> COMPLETE
 BUILD SUCCESSFUL
 ```
 
-The same probe failed before the hook was added:
+The original queue-level probe failed before Step 1:
 
 ```text
 AssertionError: orphaned ACTIVE task was not recovered to PENDING
   at TaskQueueRecoveryTest.check(TaskQueueRecoveryTest.java:46)
 ```
+
+The strengthened host-path probe was then run with the load-time recovery
+hook temporarily disabled; it failed on the exact stranded-host gate:
+
+```text
+AssertionError: host dispatch was blocked by a stranded ACTIVE task for jamal
+  at TaskQueueRecoveryTest.check(TaskQueueRecoveryTest.java:107)
+  at TaskQueueRecoveryTest.main(TaskQueueRecoveryTest.java:52)
+```
+
+Restoring `TaskQueue.java` byte-for-byte made the same probe pass.
 
 Steps 2–4 (leases, heartbeat/expiry, fencing, H5 live) are still open.
 
@@ -267,8 +281,9 @@ the assertion.
 - [x] Make `requeueActiveForBot()` preserve the same ownership/attempt data.
 - [x] Increment the attempt when `EnhancedSwarmHost.dispatchNextTask()` claims
   work, so the recovered row is eligible.
-- [x] Add `TaskQueueRecoveryTest`, runnable with
-  `./gradlew.bat h5RecoveryTest`; `build` depends on it through `check`.
+- [x] Add `TaskQueueRecoveryTest` through the real host dispatch gate,
+  runnable with `./gradlew.bat h5RecoveryTest`; `build` depends on it through
+  `check`.
 - [x] Verify the probe fails before the recovery hook and passes after it.
 - [x] Run stub suite, self-test, and full build. H1 evidence remains unchanged.
 - [ ] Panel/log visibility (deliberately left to a later step).
@@ -314,7 +329,8 @@ the assertion.
 - `src/main/java/com/rdh/swarm/task/TaskQueue.java` — persistence, load,
   `requeueActiveForBot`, `hasActiveTask`.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmHost.java` — queue ownership,
-  `dispatchNextTask`, `cleanDead`, `disconnect`.
+  `selectNextTaskForDispatch`, `beginDispatch`, `dispatchNextTask`, `cleanDead`,
+  `disconnect`.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmConnection.java` —
   `TASK_PROGRESS`, `TASK_COMPLETE`, `TASK_FAILED`, `TASK_CANCELLED`.
 - `tools/harness/scenarios/h5.json` — intended stub contract.

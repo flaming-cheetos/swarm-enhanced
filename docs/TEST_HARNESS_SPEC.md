@@ -552,7 +552,8 @@ user's manual final gate. H7 is live-only and has no stub scenario at all.
 
 H5 Step 1 startup recovery landed on 2026-11-12: `TaskQueue.load()` requeues
 persisted `ACTIVE` rows with owner/attempt/reason, and
-`TaskQueueRecoveryTest` is part of the Gradle `check` task. The simulated H5
+`TaskQueueRecoveryTest` goes through `EnhancedSwarmHost`'s dispatch gate and
+is part of the Gradle `check` task. The simulated H5
 still only asserts the stub contract, and live H5 has not been run; lease
 expiry and stale-completion fencing remain open. The implementation plan is
 tracked in `docs/H5_LEASE_RESTART_PLAN.md`; do not weaken the assertion.

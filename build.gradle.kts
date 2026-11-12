@@ -136,7 +136,7 @@ val h5RecoveryTest = tasks.register<JavaExec>("h5RecoveryTest") {
     description = "Verify an orphaned ACTIVE task is recovered and redispatched"
     dependsOn(tasks.named("h5TestClasses"))
     classpath = sourceSets["h5Test"].runtimeClasspath
-    mainClass.set("com.rdh.swarm.task.TaskQueueRecoveryTest")
+    mainClass.set("com.rdh.swarm.TaskQueueRecoveryTest")
     workingDir = layout.buildDirectory.dir("h5-recovery-test").get().asFile
     doFirst { workingDir.mkdirs() }
 }
