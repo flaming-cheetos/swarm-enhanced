@@ -526,7 +526,7 @@ not the product behavior of a real client.
 | H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
 | H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
-| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Step 1 startup recovery and Step 2 lease claim/renew/expiry landed 2026-11-12; `h5RecoveryTest` and `h5LeaseTest` are part of `check`. Live H5 still unrun; fencing/reconnect pending. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
+| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Steps 1–3 (recovery, lease lifecycle, fencing/reconnect) landed 2026-11-12; `h5RecoveryTest`, `h5LeaseTest`, and `h5FencingTest` are part of `check`. Live H5 is Step 4 and still unrun. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
 | H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
 | H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
@@ -550,15 +550,17 @@ npm --prefix tools/harness run harness:live -- `
 H4–H6 and H8–H12 have no automated live scenario in 0.2.0; they remain the
 user's manual final gate. H7 is live-only and has no stub scenario at all.
 
-H5 Step 1 startup recovery and Step 2 lease lifecycle landed on 2026-11-12:
-`TaskQueue.load()` requeues persisted `ACTIVE` rows, `claimNextForBot()`
-leases work, `renewLease()`/`renewLeaseForBot()` renew live tokens, and
-`expireLeases()` plus the host maintenance tick return lapsed leases to
-`PENDING`. `TaskQueueRecoveryTest` and `LeaseLifecycleTest` are part of the
-Gradle `check` task. The simulated H5 still only asserts the stub contract,
-and live H5 has not been run; stale-completion fencing and reconnect safety
-remain open. The implementation plan is tracked in
-`docs/H5_LEASE_RESTART_PLAN.md`; do not weaken the assertion.
+H5 Steps 1–3 landed on 2026-11-12: `TaskQueue.load()` requeues persisted
+`ACTIVE` rows, `claimNextForBot()` leases work, `renewLease()`/
+`renewLeaseForBot()` renew live tokens, `expireLeases()` plus the host
+maintenance tick return lapsed leases to `PENDING`, and
+`recordProgressIfLeaseMatches()`/`finishIfLeaseMatches()` reject stale reports.
+A new connection requeues the old assignment, sends `task reset`, and the next
+dispatch claims a fresh token; a re-leased task completes once.
+`TaskQueueRecoveryTest`, `LeaseLifecycleTest`, and `FencingReconnectTest` are
+part of the Gradle `check` task. The simulated H5 still only asserts the stub
+contract, and live H5 (Step 4) has not been run. The implementation plan is
+tracked in `docs/H5_LEASE_RESTART_PLAN.md`; do not weaken the assertion.
 
 H11 needs a third Prism instance live. The stub uses a second simulated worker
 to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not

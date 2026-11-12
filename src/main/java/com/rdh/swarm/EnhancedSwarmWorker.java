@@ -451,6 +451,16 @@ public class EnhancedSwarmWorker extends Thread {
                                         task = new com.rdh.swarm.task.BotTask(ttype, item, qty);
                                     }
 
+                                    // Optional trailing lease fields are ignored by
+                                    // old hosts; new hosts use them to fence reports.
+                                    try {
+                                        String leaseToken = f.length > 5 ? f[5] : "";
+                                        int attempt = 0;
+                                        if (f.length > 6) attempt = Integer.parseInt(f[6]);
+                                        task.setLeaseToken(leaseToken);
+                                        task.setAttempt(attempt);
+                                    } catch (Exception ignored) {}
+
                                     // assign to local BotBrain if present
                                     try {
                                         var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
@@ -467,7 +477,9 @@ public class EnhancedSwarmWorker extends Thread {
                                     // send initial TASK_PROGRESS back to host
                                     try {
                                         if (out != null) {
-                                            String msg = String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), 0, task.getTargetQuantity(), task.getStatus().name(), "");
+                                            String msg = task.getLeaseToken().isEmpty()
+                                                ? String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), 0, task.getTargetQuantity(), task.getStatus().name(), "")
+                                                : String.format("TASK_PROGRESS:%s:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), task.getLeaseToken(), 0, task.getTargetQuantity(), task.getStatus().name(), "");
                                             writeLine(msg);
                                             out.flush();
                                         }
@@ -479,6 +491,13 @@ public class EnhancedSwarmWorker extends Thread {
                                 try {
                                     var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
                                     if (brain != null) brain.cancel();
+                                } catch (Exception ignored) {}
+                                break;
+                            }
+                            case "reset": {
+                                try {
+                                    var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                                    if (brain != null) brain.resetForReconnect();
                                 } catch (Exception ignored) {}
                                 break;
                             }

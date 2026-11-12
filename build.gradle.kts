@@ -151,6 +151,16 @@ val h5LeaseTest = tasks.register<JavaExec>("h5LeaseTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5FencingTest = tasks.register<JavaExec>("h5FencingTest") {
+    group = "verification"
+    description = "Verify stale-worker fencing, reconnect fresh leases, and exactly-once completion"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.FencingReconnectTest")
+    workingDir = layout.buildDirectory.dir("h5-fencing-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest)
 }

@@ -7,6 +7,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
@@ -34,6 +35,30 @@ public class EnhancedSwarmConnection extends Thread {
     private DataInputStream in;
     private static final int _cx = 0x726468;
     private static final long _cn = 0x666C616D696E67L;
+
+    private static UUID parseTaskId(String value) {
+        try { return UUID.fromString(value); } catch (Exception ignored) { return null; }
+    }
+
+    private static boolean isInteger(String value) {
+        if (value == null || value.isEmpty()) return false;
+        try { Integer.parseInt(value); return true; } catch (Exception ignored) { return false; }
+    }
+
+    private static boolean looksLikeUuid(String value) {
+        return parseTaskId(value) != null;
+    }
+
+    private void logRejectedReport(String kind, String taskId, String token) {
+        String shortToken = token == null || token.isEmpty()
+            ? "legacy" : token.substring(0, Math.min(8, token.length()));
+        ChatUtils.warningPrefix("Swarm", "TASK: rejected stale %s %s token=%s", kind, taskId, shortToken);
+        try {
+            if (host != null && host.getWebServer() != null) {
+                host.getWebServer().logWarn("TASK: rejected stale " + kind + " " + taskId + " token=" + shortToken);
+            }
+        } catch (Exception ignored) {}
+    }
 
     public EnhancedSwarmConnection(EnhancedSwarmHost host, Socket socket) {
         this.host = host;
@@ -88,6 +113,18 @@ public class EnhancedSwarmConnection extends Thread {
                 disconnect();
                 return;
             }
+
+            // Reconnect handshake: fence the old assignment, then tell the
+            // worker to drop its local copy before the next claim is dispatched.
+            try {
+                if (workerName != null && host != null) {
+                    int requeued = host.handleWorkerReconnect(workerName);
+                    if (requeued > 0) {
+                        try { if (host.getWebServer() != null) host.getWebServer().logWarn("Requeued " + requeued + " active task(s) on reconnect for " + workerName); } catch (Exception ignored) {}
+                    }
+                    messageQueue.add("swarm:" + workerName + " task reset");
+                }
+            } catch (Exception ignored) {}
 
             // Request a sync from the worker once we have a name (non-blocking)
             try {
@@ -231,41 +268,40 @@ public class EnhancedSwarmConnection extends Thread {
                             }
                         } else if (read.startsWith("TASK_PROGRESS:")) {
                             try {
-                                String[] parts = read.split(":", 7);
+                                String[] parts = read.split(":", 8);
                                 if (parts.length >= 5) {
                                     String wName = parts[1];
                                     String taskId = parts[2];
+                                    // New protocol puts the token before collected; legacy
+                                    // workers start with the numeric collected count.
+                                    boolean hasToken = !isInteger(parts[3]);
+                                    int base = hasToken ? 4 : 3;
+                                    String leaseToken = hasToken ? parts[3] : "";
                                     int collected = 0;
                                     int total = 0;
-                                    try { collected = Integer.parseInt(parts[3]); } catch (Exception ignored) {}
-                                    try { total = Integer.parseInt(parts[4]); } catch (Exception ignored) {}
-                                    String taskState = parts.length > 5 ? parts[5] : "";
-                                    String eta = parts.length > 6 ? parts[6] : "";
+                                    try { collected = Integer.parseInt(parts[base]); } catch (Exception ignored) {}
+                                    try { total = Integer.parseInt(parts[base + 1]); } catch (Exception ignored) {}
+                                    String taskState = parts.length > base + 2 ? parts[base + 2] : "";
+                                    String eta = parts.length > base + 3 ? parts[base + 3] : "";
 
                                     if (host != null) {
-                                        BotStatus bs = host.getBotStatus(wName);
-                                        if (bs != null) {
-                                            bs.collected = collected;
-                                            bs.total = total;
-                                            bs.taskId = taskId;
-                                            bs.state = taskState;
-                                            bs.eta = eta;
-                                            bs.lastUpdate = System.currentTimeMillis();
-                                            bs.online = true;
-                                        }
-
                                         TaskQueue tq = host.getTaskQueue();
-                                        if (tq != null) {
-                                            for (BotTask task : tq.getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(taskId)) {
-                                                        int diff = collected - task.getCollectedQuantity();
-                                                        if (diff > 0) task.addCollected(diff);
-                                                        tq.renewLeaseForBot(task.getId(), wName,
-                                                            System.currentTimeMillis(), EnhancedSwarmHost.LEASE_TTL_MS);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
+                                        UUID tid = parseTaskId(taskId);
+                                        boolean accepted = tq != null && tid != null
+                                            && EnhancedSwarmHost.recordWorkerProgress(tq, tid, wName, leaseToken,
+                                                collected, System.currentTimeMillis(), EnhancedSwarmHost.LEASE_TTL_MS);
+                                        if (!accepted) {
+                                            logRejectedReport("progress", taskId, leaseToken);
+                                        } else {
+                                            BotStatus bs = host.getBotStatus(wName);
+                                            if (bs != null) {
+                                                bs.collected = collected;
+                                                bs.total = total;
+                                                bs.taskId = taskId;
+                                                bs.state = taskState;
+                                                bs.eta = eta;
+                                                bs.lastUpdate = System.currentTimeMillis();
+                                                bs.online = true;
                                             }
                                         }
                                     }
@@ -273,87 +309,79 @@ public class EnhancedSwarmConnection extends Thread {
                             } catch (Exception ignored) {}
                         } else if (read.startsWith("TASK_COMPLETE:")) {
                             try {
-                                // TASK_COMPLETE:<workerName>:<taskId>:<itemName>:<quantity>:<elapsed>
-                                String[] parts = read.split(":", 6);
+                                // New: TASK_COMPLETE:<worker>:<id>:<token>:<item>:<qty>:<elapsed>
+                                // Legacy: TASK_COMPLETE:<worker>:<id>:<item>:<qty>:<elapsed>
+                                String[] parts = read.split(":", 7);
                                 if (parts.length >= 6) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String item = parts[3];
-                                    String qty = parts[4];
-                                    String elapsed = parts[5];
-                                    ChatUtils.infoPrefix("Swarm", "✓ %s completed: %s x%s in %s", w, item, qty, elapsed);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logInfo("✓ " + w + " completed: " + item + " x" + qty); } catch (Exception ignored) {}
-
-                                    // Mark the task COMPLETE in the host task queue if present
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.COMPLETE);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
-
-                                    // Try to dispatch next pending task for this worker
-                                    try { if (host != null) host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 7 || (parts.length == 6 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    int base = hasToken ? 4 : 3;
+                                    String item = parts[base];
+                                    String qty = parts[base + 1];
+                                    String elapsed = parts[base + 2];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.COMPLETE, "completed");
+                                    if (!accepted) {
+                                        logRejectedReport("completion", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.infoPrefix("Swarm", "✓ %s completed: %s x%s in %s", w, item, qty, elapsed);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logInfo("✓ " + w + " completed: " + item + " x" + qty); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_COMPLETE: %s", e.getMessage()); }
                         } else if (read.startsWith("TASK_FAILED:")) {
                             try {
-                                // TASK_FAILED:<workerName>:<taskId>:<reason>
-                                String[] parts = read.split(":", 4);
+                                // New: TASK_FAILED:<worker>:<id>:<token>:<reason>
+                                // Legacy: TASK_FAILED:<worker>:<id>:<reason>
+                                String[] parts = read.split(":", 5);
                                 if (parts.length >= 4) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String reason = parts[3];
-                                    ChatUtils.warningPrefix("Swarm", "✗ %s task failed: %s", w, reason);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logWarn("✗ " + w + " task failed: " + reason); } catch (Exception ignored) {}
-
-                                    // Mark task FAILED in queue if present
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null && tid != null && !tid.isEmpty()) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.FAILED);
-                                                        task.setFailureReason(reason);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
-
-                                    // Dispatch next task for this worker
-                                    try { if (host != null) host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 5 || (parts.length == 4 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    String reason = hasToken && parts.length >= 5 ? parts[4] : "";
+                                    if (!hasToken) reason = parts[3];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.FAILED, reason);
+                                    if (!accepted) {
+                                        logRejectedReport("failure", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.warningPrefix("Swarm", "✗ %s task failed: %s", w, reason);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logWarn("✗ " + w + " task failed: " + reason); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_FAILED: %s", e.getMessage()); }
                         } else if (read.startsWith("TASK_CANCELLED:")) {
                             try {
-                                // TASK_CANCELLED:<workerName>:<taskId>:<reason>
-                                String[] parts = read.split(":", 4);
+                                // New: TASK_CANCELLED:<worker>:<id>:<token>:<reason>
+                                // Legacy: TASK_CANCELLED:<worker>:<id>:<reason>
+                                String[] parts = read.split(":", 5);
                                 if (parts.length >= 4) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String reason = parts[3];
-                                    ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null && tid != null && !tid.isEmpty()) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.CANCELLED);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 5 || (parts.length == 4 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    String reason = hasToken && parts.length >= 5 ? parts[4] : "";
+                                    if (!hasToken) reason = parts[3];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.CANCELLED, reason);
+                                    if (!accepted) {
+                                        logRejectedReport("cancellation", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_CANCELLED: %s", e.getMessage()); }
                         } else if (read.startsWith("BOT_STATUS:")) {

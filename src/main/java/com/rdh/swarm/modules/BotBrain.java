@@ -1378,13 +1378,14 @@ public class BotBrain extends Module {
             lastReportedCount = have;
             try {
                 if (out != null) {
-                    out.writeUTF(String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s",
-                        getWorkerName(),
-                        currentTask.getId().toString(),
-                        have,
-                        currentTask.getTargetQuantity(),
-                        state.name(),
-                        currentEta != null ? currentEta : ""));
+                    String progress = currentTask.getLeaseToken().isEmpty()
+                        ? String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s",
+                            getWorkerName(), currentTask.getId().toString(), have,
+                            currentTask.getTargetQuantity(), state.name(), currentEta != null ? currentEta : "")
+                        : String.format("TASK_PROGRESS:%s:%s:%s:%d:%d:%s:%s",
+                            getWorkerName(), currentTask.getId().toString(), currentTask.getLeaseToken(),
+                            have, currentTask.getTargetQuantity(), state.name(), currentEta != null ? currentEta : "");
+                    out.writeUTF(progress);
                     out.flush();
                 }
             } catch (Exception ignored) {}
@@ -4957,7 +4958,9 @@ public class BotBrain extends Module {
         if (task == null || out == null) return;
         try {
             String worker = getWorkerName();
-            String msg = String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", worker, task.getId().toString(), task.getCollectedQuantity(), task.getTargetQuantity(), task.getStatus() == null ? "" : task.getStatus().name(), task.getElapsedString());
+            String msg = task.getLeaseToken().isEmpty()
+                ? String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", worker, task.getId().toString(), task.getCollectedQuantity(), task.getTargetQuantity(), task.getStatus() == null ? "" : task.getStatus().name(), task.getElapsedString())
+                : String.format("TASK_PROGRESS:%s:%s:%s:%d:%d:%s:%s", worker, task.getId().toString(), task.getLeaseToken(), task.getCollectedQuantity(), task.getTargetQuantity(), task.getStatus() == null ? "" : task.getStatus().name(), task.getElapsedString());
             synchronized (out) {
                 out.writeUTF(msg);
                 out.flush();
@@ -4969,7 +4972,9 @@ public class BotBrain extends Module {
         if (task == null || out == null) return;
         try {
             String worker = getWorkerName();
-            String msg = String.format("TASK_COMPLETE:%s:%s:%s:%d:%s", worker, task.getId().toString(), task.getItemName(), task.getTargetQuantity(), task.getElapsedString());
+            String msg = task.getLeaseToken().isEmpty()
+                ? String.format("TASK_COMPLETE:%s:%s:%s:%d:%s", worker, task.getId().toString(), task.getItemName(), task.getTargetQuantity(), task.getElapsedString())
+                : String.format("TASK_COMPLETE:%s:%s:%s:%s:%d:%s", worker, task.getId().toString(), task.getLeaseToken(), task.getItemName(), task.getTargetQuantity(), task.getElapsedString());
             synchronized (out) {
                 out.writeUTF(msg);
                 out.flush();
@@ -4981,7 +4986,9 @@ public class BotBrain extends Module {
         if (task == null || out == null) return;
         try {
             String worker = getWorkerName();
-            String msg = String.format("TASK_FAILED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason);
+            String msg = task.getLeaseToken().isEmpty()
+                ? String.format("TASK_FAILED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason)
+                : String.format("TASK_FAILED:%s:%s:%s:%s", worker, task.getId().toString(), task.getLeaseToken(), reason == null ? "" : reason);
             synchronized (out) {
                 out.writeUTF(msg);
                 out.flush();
@@ -4993,7 +5000,9 @@ public class BotBrain extends Module {
         if (task == null || out == null) return;
         try {
             String worker = getWorkerName();
-            String msg = String.format("TASK_CANCELLED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason);
+            String msg = task.getLeaseToken().isEmpty()
+                ? String.format("TASK_CANCELLED:%s:%s:%s", worker, task.getId().toString(), reason == null ? "" : reason)
+                : String.format("TASK_CANCELLED:%s:%s:%s:%s", worker, task.getId().toString(), task.getLeaseToken(), reason == null ? "" : reason);
             synchronized (out) {
                 out.writeUTF(msg);
                 out.flush();
@@ -5068,6 +5077,38 @@ public class BotBrain extends Module {
             if (swarmMod != null && swarmMod.worker != null) swarmMod.worker.cancelDeposit();
         } catch (Exception ignored) {}
         setState(BrainState.IDLE);
+    }
+
+    /**
+     * Drop the local copy of an assignment after the socket reconnects. The
+     * host has already requeued/fenced the old token; the next assignment is a
+     * fresh claim and must not be ignored because currentTask is still ACTIVE.
+     * No terminal message is sent: the old lease is deliberately abandoned.
+     */
+    public void resetForReconnect() {
+        BotTask abandoned = currentTask != null ? currentTask : pendingTask;
+        currentTask = null;
+        pendingTask = null;
+        executionPlan = null;
+        planStep = 0;
+        directSmelt = false;
+        resolverGatherList = null;
+        resolverCraftPlan = null;
+        currentTaskDescription = "Idle — reconnect reset";
+        lastReportedCount = 0;
+        try { meteordevelopment.meteorclient.pathing.PathManagers.get().stop(); } catch (Throwable ignored) {}
+        try {
+            var bar = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            bar.getPathingBehavior().cancelEverything();
+            bar.getCustomGoalProcess().onLostControl();
+        } catch (Throwable ignored) {}
+        releaseMovementKeys();
+        try { dropCollector.cancel(); } catch (Exception ignored) {}
+        try { stopHuntMovement(); } catch (Exception ignored) {}
+        setState(BrainState.IDLE);
+        if (abandoned != null) {
+            ChatUtils.infoPrefix("BotBrain", "TASK: reset abandoned assignment %s for reconnect", abandoned.getId());
+        }
     }
 
     private void releaseMovementKeys() {

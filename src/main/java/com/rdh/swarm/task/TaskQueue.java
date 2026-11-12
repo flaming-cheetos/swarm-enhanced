@@ -1,7 +1,6 @@
 package com.rdh.swarm.task;
 
 import com.google.gson.*;
-import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -330,6 +329,69 @@ public class TaskQueue {
         return expired;
     }
 
+    /**
+     * Apply progress only when it comes from the current lease holder. A stale
+     * worker never changes collected progress or extends the live lease.
+     */
+    public synchronized boolean recordProgressIfLeaseMatches(UUID taskId, String botName, String token,
+                                                              int collected, long now, long ttlMs) {
+        if (taskId == null || botName == null || botName.isEmpty() || collected < 0 || ttlMs <= 0) return false;
+        BotTask task = findById(taskId);
+        if (!isCurrentLeaseHolder(task, botName, token)) return false;
+        // Progress is also the heartbeat. Do not resurrect an already-lapsed lease.
+        if (task.getLeaseExpiresAt() <= now) return false;
+
+        int diff = collected - task.getCollectedQuantity();
+        if (diff > 0) task.addCollected(diff);
+        long expiry = ttlMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + ttlMs;
+        task.setLeaseExpiresAt(expiry);
+        save();
+        return true;
+    }
+
+    /**
+     * Finish a task only when the reporting worker holds the current lease.
+     * A stale/superseded report returns false and leaves the live task intact.
+     * Duplicate terminal reports also return false, so completion is once-only.
+     */
+    public synchronized boolean finishIfLeaseMatches(UUID taskId, String botName, String token,
+                                                     BotTask.Status terminal, String reason) {
+        if (taskId == null || botName == null || botName.isEmpty() || terminal == null) return false;
+        if (terminal != BotTask.Status.COMPLETE
+            && terminal != BotTask.Status.FAILED
+            && terminal != BotTask.Status.CANCELLED) return false;
+
+        BotTask task = findById(taskId);
+        if (!isCurrentLeaseHolder(task, botName, token)) return false;
+
+        task.setStatus(terminal);
+        String cleanedReason = reason == null ? "" : reason.trim();
+        if (terminal == BotTask.Status.FAILED && !cleanedReason.isEmpty()) {
+            task.setFailureReason(cleanedReason);
+            task.setStatusReason(cleanedReason);
+        } else {
+            task.setStatusReason(cleanedReason.isEmpty() ? terminal.name().toLowerCase() : cleanedReason);
+        }
+        // The lease is spent once the terminal transition is accepted.
+        task.setLeaseToken("");
+        task.setLeaseExpiresAt(0L);
+        save();
+        return true;
+    }
+
+    private boolean isCurrentLeaseHolder(BotTask task, String botName, String token) {
+        if (task == null || task.getStatus() != BotTask.Status.ACTIVE) return false;
+        String assigned = task.getAssignedBot();
+        if (assigned == null || !assigned.equalsIgnoreCase(botName)) return false;
+        if (token != null && !token.isEmpty()) {
+            return !task.getLeaseToken().isEmpty() && task.getLeaseToken().equals(token);
+        }
+        // Legacy worker fallback: only while this exact owner is still ACTIVE.
+        // Once a reconnect/expiry requeues the row, the old task is not ACTIVE
+        // and this path cannot accept the stale terminal report.
+        return true;
+    }
+
     private BotTask findById(UUID id) {
         for (BotTask task : queue) {
             if (task != null && id.equals(task.getId())) return task;
@@ -382,7 +444,6 @@ public class TaskQueue {
         }
         if (requeued > 0) {
             save();
-            ChatUtils.warningPrefix("TaskQueue", "Requeued %d active task(s) from %s", requeued, botName);
         }
         return requeued;
     }

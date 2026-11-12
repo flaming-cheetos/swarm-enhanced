@@ -15,6 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.Map;
+import java.util.UUID;
 
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
@@ -251,10 +252,25 @@ public class EnhancedSwarmHost extends Thread {
     public void cleanDead() {
         for (EnhancedSwarmConnection c : connections) {
             if (c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed()) {
-                if (c != null && c.workerName != null) taskQueue.requeueActiveForBot(c.workerName);
+                // If the same worker already reconnected, the task belongs to the
+                // replacement connection and must not be requeued by owner name
+                // alone.
+                if (c != null && c.workerName != null
+                    && !hasOtherLiveConnection(c.workerName, c)) {
+                    taskQueue.requeueActiveForBot(c.workerName);
+                }
             }
         }
         connections.removeIf(c -> c == null || c.isInterrupted() || c.socket == null || c.socket.isClosed());
+    }
+
+    private boolean hasOtherLiveConnection(String workerName, EnhancedSwarmConnection exclude) {
+        for (EnhancedSwarmConnection c : connections) {
+            if (c == null || c == exclude) continue;
+            if (c.workerName == null || !c.workerName.equalsIgnoreCase(workerName)) continue;
+            if (!c.isInterrupted() && c.socket != null && !c.socket.isClosed()) return true;
+        }
+        return false;
     }
 
     public void disconnect() {
@@ -421,6 +437,33 @@ public class EnhancedSwarmHost extends Thread {
         return queue == null ? 0 : queue.expireLeases(now);
     }
 
+    /** Fenced progress path used by the socket handler and the H5 probes. */
+    static boolean recordWorkerProgress(TaskQueue queue, UUID taskId, String workerName,
+                                        String leaseToken, int collected, long now, long ttlMs) {
+        return queue != null && queue.recordProgressIfLeaseMatches(
+            taskId, workerName, leaseToken, collected, now, ttlMs);
+    }
+
+    /** Fenced terminal path; false means the report was stale and changed nothing. */
+    static boolean finishTaskFromWorker(TaskQueue queue, UUID taskId, String workerName,
+                                        String leaseToken, BotTask.Status terminal, String reason) {
+        return queue != null && queue.finishIfLeaseMatches(
+            taskId, workerName, leaseToken, terminal, reason);
+    }
+
+    /**
+     * A new connection is a reconnect handshake: any task owned by the old
+     * socket is requeued, and the next dispatch must claim a fresh token.
+     */
+    static int prepareWorkerReconnect(TaskQueue queue, String workerName) {
+        if (queue == null || workerName == null || workerName.isEmpty()) return 0;
+        return queue.requeueActiveForBot(workerName);
+    }
+
+    int handleWorkerReconnect(String workerName) {
+        return prepareWorkerReconnect(taskQueue, workerName);
+    }
+
     /**
      * Dispatch the next pending task to a bot, but ONLY if that
      * bot doesn't already have a live leased task.
@@ -436,8 +479,10 @@ public class EnhancedSwarmHost extends Thread {
                 System.currentTimeMillis(), LEASE_TTL_MS);
             if (next == null) return;
 
-            String payload = String.format("task assign %s|%s|%s|%d|%s",
-                next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(), next.getAssignedBot() == null ? "" : next.getAssignedBot());
+            String payload = String.format("task assign %s|%s|%s|%d|%s|%s|%d",
+                next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(),
+                next.getAssignedBot() == null ? "" : next.getAssignedBot(),
+                next.getLeaseToken(), next.getAttempt());
             sendTo(botName, payload);
         } catch (Exception ignored) {}
     }
@@ -449,7 +494,7 @@ public class EnhancedSwarmHost extends Thread {
         if (claimed == null) return;
         String itemName = "";
         try { itemName = claimed.getItemName(); } catch (Exception ignored) {}
-        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot());
+        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s|%s|%d", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot(), claimed.getLeaseToken(), claimed.getAttempt());
         sendTo(workerName, msg);
     }
 
