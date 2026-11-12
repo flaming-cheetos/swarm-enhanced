@@ -56,6 +56,14 @@ java {
     }
 }
 
+// The H5 probe is a plain Java main, not a JUnit suite. Keeping it out of the
+// normal test source set avoids changing the project's dependency set.
+val h5Test = sourceSets.create("h5Test") {
+    java.srcDir("src/h5Test/java")
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().runtimeClasspath
+}
+
 val modsFolder1 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/thisistnothi14/.minecraft/mods")
 val modsFolder2 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/1.21.4/.minecraft/mods")
 
@@ -120,4 +128,19 @@ val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
     into(modsFolder2)
     rename { "swarm-improved.jar" }
     onlyIf { copyToMmc.get() && modsFolder2.exists() }
+}
+
+// H5 Step 1 regression probe. Plain Java main, no test-framework dependency.
+val h5RecoveryTest = tasks.register<JavaExec>("h5RecoveryTest") {
+    group = "verification"
+    description = "Verify an orphaned ACTIVE task is recovered and redispatched"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.task.TaskQueueRecoveryTest")
+    workingDir = layout.buildDirectory.dir("h5-recovery-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+tasks.named("check") {
+    dependsOn(h5RecoveryTest)
 }

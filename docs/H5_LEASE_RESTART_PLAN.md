@@ -1,10 +1,43 @@
 # H5 Lease/Restart Plan
 
-Status: **PLAN — not implemented; no H5 live result claimed**
+Status: **PLAN — Step 1 implemented; Steps 2–4 open; no H5 live result claimed**
 Date: 2026-11-12
 Build under test: `0.1.0+e62b2f9`
 Harness status: H1 three consecutive live runs PASS under
 `test-runs/h1-3x-e62b2f9/run1..run3`.
+
+## Step 1 status — DONE (2026-11-12)
+
+Startup recovery is implemented and covered by
+`com.rdh.swarm.task.TaskQueueRecoveryTest`:
+
+- `BotTask` persists `attempt`, `lastOwner`, and `statusReason`.
+- `TaskQueue.load()` converts every persisted `ACTIVE` row to `PENDING`,
+  clears the dead owner, records the previous owner and `host-restart`
+  reason, increments the attempt, and saves the recovered queue.
+- `requeueActiveForBot()` records the same ownership/attempt data for a
+  known worker disconnect.
+- `EnhancedSwarmHost.dispatchNextTask()` increments the attempt when it
+  claims work, so the next dispatch is not blocked by `hasActiveTask()`.
+
+Evidence:
+
+```text
+./gradlew.bat h5RecoveryTest
+PASS TaskQueueRecoveryTest: ACTIVE -> PENDING -> COMPLETE
+
+./gradlew.bat build
+BUILD SUCCESSFUL
+```
+
+The same probe failed before the hook was added:
+
+```text
+AssertionError: orphaned ACTIVE task was not recovered to PENDING
+  at TaskQueueRecoveryTest.check(TaskQueueRecoveryTest.java:46)
+```
+
+Steps 2–4 (leases, heartbeat/expiry, fencing, H5 live) are still open.
 
 ## 1. Problem
 
@@ -12,22 +45,25 @@ H5 is: restart the host while a task is `ACTIVE`; no task may remain
 stranded, and any surviving task must become `PENDING` or explicitly
 `FAILED`.
 
-Current code has no task lease and no startup recovery:
+Before Step 1, the code had no task lease and no startup recovery:
 
-- `BotTask` stores only `status` and `assignedBot`; it has no owner token,
-  lease deadline, heartbeat, attempt number, or host epoch.
+- Before Step 1, `BotTask` stored only `status` and `assignedBot`; it had no
+  owner token, lease deadline, heartbeat, attempt number, or host epoch.
   (`src/main/java/com/rdh/swarm/task/BotTask.java`)
-- `TaskQueue.save()` and `load()` persist the task status and assigned bot,
-  but no lease or ownership generation.
+- `TaskQueue.save()` and `load()` now persist the status, assigned bot,
+  `attempt`, `lastOwner`, and `statusReason`; lease tokens and expiry are
+  still future work.
   (`src/main/java/com/rdh/swarm/task/TaskQueue.java`)
-- `TaskQueue.load()` adds non-terminal tasks, including `ACTIVE`, and
-  `clearStale()` only removes terminal rows.
+- Before Step 1, `TaskQueue.load()` added non-terminal tasks, including
+  `ACTIVE`, and `clearStale()` only removed terminal rows. Step 1 now
+  recovers `ACTIVE` rows at load time.
 - `EnhancedSwarmHost.dispatchNextTask()` returns early when
-  `taskQueue.hasActiveTask(botName)` is true, so a restored `ACTIVE` row can
-  never be dispatched again.
+  `taskQueue.hasActiveTask(botName)` is true. Recovery now clears the stale
+  owner before a reconnect reaches this check.
   (`src/main/java/com/rdh/swarm/EnhancedSwarmHost.java`)
 - `cleanDead()` and `disconnect()` call `requeueActiveForBot()` on a known
-  disconnected worker, but a host crash never runs that path.
+  disconnected worker; Step 1 now records ownership/attempt/reason there too.
+  A host crash reaches the load-time recovery path instead.
 - Completion, failure, and cancellation messages identify only the task ID;
   there is no fencing token to reject a late message from a worker that was
   assigned the task before a restart.
@@ -37,6 +73,9 @@ The H5 stub already models the intended contract: restart marks the worker
 offline, requeues the `ACTIVE` row to `PENDING`, and recovery brings the
 worker back online. That is contract evidence only, not product evidence.
 (`tools/harness/scenarios/h5.json`, `tools/harness/panel-stub.mjs`)
+
+Step 1 implements the persisted queue side of that contract. The live H5
+restart remains unrun until the later steps and the manual gate.
 
 ## 2. Desired invariants
 
@@ -57,6 +96,10 @@ worker back online. That is contract evidence only, not product evidence.
    gate.
 
 ## 3. Data model
+
+Step 1 has already landed `attempt`, `lastOwner`, and `statusReason` on
+`BotTask` and in `task-queue.json`. The lease fields below are the future
+Steps 2–3 model, not a claim that they exist yet.
 
 Add a small lease value to `BotTask`:
 
@@ -105,9 +148,10 @@ expireLeases(now) -> requeued count
   ACTIVE && now >= expiry -> PENDING, owner/token cleared, expiry 0,
   attempt retained, reason "lease-expired", save, log.
 
-recoverActiveAfterHostRestart(now) -> requeued count
-  Called once by the host after load. Every restored ACTIVE task becomes
-  PENDING, owner/token cleared, attempt++, reason "host-restart", save, log.
+recoverActiveAfterHostRestart() -> requeued count
+  Step 1: called at the end of TaskQueue.load(). Every restored ACTIVE task
+  becomes PENDING, owner cleared, attempt++, reason "host-restart", save.
+  Future lease fields/tokens are not part of this Step 1 signature.
 
 finishIfLeaseMatches(taskId, token, terminalStatus, reason) -> boolean
   COMPLETE/FAILED/CANCELLED only when token matches. Stale tokens are
@@ -122,11 +166,11 @@ recovery. Recovery runs before any connection is accepted or dispatched.
 
 ## 5. Host changes
 
-1. After constructing `TaskQueue`, call
-   `recoverActiveAfterHostRestart(System.currentTimeMillis())` before the
-   host starts accepting workers.
-2. Replace the dispatch body with `claimNextForBot()` and send the lease
-   token/attempt in the assignment.
+1. Step 1: `TaskQueue.load()` calls `recoverActiveAfterHostRestart()`; the
+   host field initializer constructs the queue before accepting workers.
+2. Future: replace the dispatch body with `claimNextForBot()` and send the
+   lease token/attempt in the assignment. Step 1 only increments the persisted
+   attempt and keeps the existing assignment shape.
 3. On `TASK_PROGRESS`, renew the lease if the token matches.
 4. On `TASK_COMPLETE`, `TASK_FAILED`, and `TASK_CANCELLED`, call the
    lease-checked finish method; only then update queue and panel logs.
@@ -215,14 +259,20 @@ the assertion.
 
 ## 9. Implementation sequence
 
-### Step 1 — Startup recovery (smallest H5 fix)
+### Step 1 — Startup recovery (smallest H5 fix) — DONE 2026-11-12
 
-- Add lease/attempt fields and persistence.
-- Add `recoverActiveAfterHostRestart()`.
-- Call it from `EnhancedSwarmHost` before serving connections.
-- Add panel/log visibility.
-- Update H5 stub only if product log strings differ.
-- Build, stub suite, self-test, stage jar.
+- [x] Add `attempt`, `lastOwner`, and `statusReason` fields and persistence.
+- [x] Add `recoverActiveAfterHostRestart()` and call it at the end of
+  `TaskQueue.load()` before a worker can dispatch.
+- [x] Make `requeueActiveForBot()` preserve the same ownership/attempt data.
+- [x] Increment the attempt when `EnhancedSwarmHost.dispatchNextTask()` claims
+  work, so the recovered row is eligible.
+- [x] Add `TaskQueueRecoveryTest`, runnable with
+  `./gradlew.bat h5RecoveryTest`; `build` depends on it through `check`.
+- [x] Verify the probe fails before the recovery hook and passes after it.
+- [x] Run stub suite, self-test, and full build. H1 evidence remains unchanged.
+- [ ] Panel/log visibility (deliberately left to a later step).
+- [ ] Stage a new jar for live H5 (not requested in this Step 1 pass).
 
 ### Step 2 — Claim, heartbeat, expiry
 
@@ -271,5 +321,6 @@ the assertion.
 - `tools/harness/panel-stub.mjs` — `hostRestart`/requeue simulation.
 - `docs/TEST_HARNESS_SPEC.md` — H5 gate and acceptance criteria.
 
-This is a plan, not a claim that H5 is fixed. The next implementation step is
-Step 1; H5 live remains unrun until the recovery path exists.
+Step 1 is implemented and tested. Steps 2–4 (lease expiry, heartbeat,
+stale-completion fencing, panel/log visibility, and the live H5 gate) remain
+open; no H5 live result is claimed.

@@ -109,6 +109,9 @@ public class TaskQueue {
                 jo.addProperty("collected", t.getCollectedQuantity());
                 try { jo.addProperty("status", t.getStatus().name()); } catch (Exception ignored) { jo.addProperty("status", "PENDING"); }
                 jo.addProperty("assignedBot", t.getAssignedBot() == null ? "" : t.getAssignedBot());
+                jo.addProperty("attempt", t.getAttempt());
+                jo.addProperty("lastOwner", t.getLastOwner());
+                jo.addProperty("statusReason", t.getStatusReason());
                 if (t.getFailureReason() != null) jo.addProperty("failureReason", t.getFailureReason());
                 tasks.add(jo);
             }
@@ -155,6 +158,9 @@ public class TaskQueue {
                         int collected = jo.has("collected") ? jo.get("collected").getAsInt() : 0;
                         String statusStr = jo.has("status") ? jo.get("status").getAsString() : "PENDING";
                         String assigned = jo.has("assignedBot") ? jo.get("assignedBot").getAsString() : "";
+                        int attempt = jo.has("attempt") ? jo.get("attempt").getAsInt() : 0;
+                        String lastOwner = jo.has("lastOwner") ? jo.get("lastOwner").getAsString() : "";
+                        String statusReason = jo.has("statusReason") ? jo.get("statusReason").getAsString() : "";
 
                         Map<String, Object> data = new HashMap<>();
                         if (itemName != null && !itemName.isEmpty()) {
@@ -170,6 +176,9 @@ public class TaskQueue {
                         if (collected > 0) t.addCollected(collected);
                         try { t.setStatus(BotTask.Status.valueOf(statusStr)); } catch (Exception ignored) {}
                         if (assigned != null && !assigned.isEmpty()) t.setAssignedBot(assigned);
+                        t.setAttempt(attempt);
+                        t.setLastOwner(lastOwner);
+                        t.setStatusReason(statusReason);
                         if (jo.has("failureReason")) t.setFailureReason(jo.get("failureReason").getAsString());
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
@@ -184,6 +193,11 @@ public class TaskQueue {
         // Remove any stale completed/failed tasks that might remain and persist the clean state
         try {
             clearStale();
+        } catch (Exception ignored) {}
+        // A host restart has no live connection to prove an ACTIVE owner still
+        // exists. Recover those rows before the first dispatch can see them.
+        try {
+            recoverActiveAfterHostRestart();
         } catch (Exception ignored) {}
     }
 
@@ -222,6 +236,26 @@ public class TaskQueue {
     }
 
     /**
+     * Recover tasks that were ACTIVE when the host died. There is no live
+     * owner to trust at startup, so the task is requeued instead of remaining
+     * permanently blocked by hasActiveTask().
+     */
+    public synchronized int recoverActiveAfterHostRestart() {
+        int requeued = 0;
+        for (BotTask task : queue) {
+            if (task == null || task.getStatus() != BotTask.Status.ACTIVE) continue;
+            task.setLastOwner(task.getAssignedBot());
+            task.setAssignedBot("");
+            task.setAttempt(task.getAttempt() + 1);
+            task.setStatus(BotTask.Status.PENDING);
+            task.setStatusReason("host-restart");
+            requeued++;
+        }
+        if (requeued > 0) save();
+        return requeued;
+    }
+
+    /**
      * Return ACTIVE tasks assigned to a dead/removed bot to PENDING so another worker can take them.
      * Returns the number of tasks requeued.
      */
@@ -232,8 +266,11 @@ public class TaskQueue {
             if (task == null || task.getStatus() != BotTask.Status.ACTIVE) continue;
             String assigned = task.getAssignedBot();
             if (assigned != null && assigned.equalsIgnoreCase(botName)) {
+                task.setLastOwner(assigned);
                 task.setStatus(BotTask.Status.PENDING);
                 task.setAssignedBot("");
+                task.setAttempt(task.getAttempt() + 1);
+                task.setStatusReason("worker-disconnect");
                 requeued++;
             }
         }

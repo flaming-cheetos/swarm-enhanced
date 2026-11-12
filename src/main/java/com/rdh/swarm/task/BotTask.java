@@ -31,6 +31,9 @@ public class BotTask {
     private Status status;
     private String assignedBot;
     private String failureReason;
+    private int attempt;
+    private String lastOwner;
+    private String statusReason;
 
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
@@ -81,6 +84,13 @@ public class BotTask {
     public void setAssignedBot(String assignedBot) { this.assignedBot = assignedBot; }
     public String getFailureReason() { return failureReason; }
     public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
+
+    public int getAttempt() { return attempt; }
+    public void setAttempt(int attempt) { this.attempt = Math.max(0, attempt); }
+    public String getLastOwner() { return lastOwner == null ? "" : lastOwner; }
+    public void setLastOwner(String lastOwner) { this.lastOwner = lastOwner == null ? "" : lastOwner; }
+    public String getStatusReason() { return statusReason == null ? "" : statusReason; }
+    public void setStatusReason(String statusReason) { this.statusReason = statusReason == null ? "" : statusReason; }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }
 

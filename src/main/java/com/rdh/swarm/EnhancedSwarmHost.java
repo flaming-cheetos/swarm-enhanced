@@ -419,6 +419,8 @@ public class EnhancedSwarmHost extends Thread {
             }
 
             // Set to ACTIVE and send assignment
+            next.setAttempt(next.getAttempt() + 1);
+            next.setStatusReason("active");
             next.setStatus(BotTask.Status.ACTIVE);
             String payload = String.format("task assign %s|%s|%s|%d|%s",
                 next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(), next.getAssignedBot() == null ? "" : next.getAssignedBot());

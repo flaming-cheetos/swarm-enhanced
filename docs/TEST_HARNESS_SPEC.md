@@ -526,7 +526,7 @@ not the product behavior of a real client.
 | H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
 | H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
-| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Product may still fail until leases land. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. No automated live file yet. |
+| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Step 1 startup recovery and ownership/attempt persistence landed 2026-11-12; `./gradlew.bat h5RecoveryTest` is part of `check`. Live H5 still unrun; leases/fencing pending. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
 | H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
 | H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
@@ -550,11 +550,12 @@ npm --prefix tools/harness run harness:live -- `
 H4–H6 and H8–H12 have no automated live scenario in 0.2.0; they remain the
 user's manual final gate. H7 is live-only and has no stub scenario at all.
 
-H5 is expected to expose the current restart bug until leases/restart recovery
-land. The simulated H5 asserts the intended no-stranded-ACTIVE contract; it is
-not evidence that the product fix exists. It is a gate, not a reason to weaken
-the assertion. The implementation plan is tracked in
-`docs/H5_LEASE_RESTART_PLAN.md`.
+H5 Step 1 startup recovery landed on 2026-11-12: `TaskQueue.load()` requeues
+persisted `ACTIVE` rows with owner/attempt/reason, and
+`TaskQueueRecoveryTest` is part of the Gradle `check` task. The simulated H5
+still only asserts the stub contract, and live H5 has not been run; lease
+expiry and stale-completion fencing remain open. The implementation plan is
+tracked in `docs/H5_LEASE_RESTART_PLAN.md`; do not weaken the assertion.
 
 H11 needs a third Prism instance live. The stub uses a second simulated worker
 to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not
