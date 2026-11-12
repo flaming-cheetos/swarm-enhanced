@@ -1,0 +1,6 @@
+{"at":"2026-11-12T07:04:24.957Z","scenario":"H1","step":0,"action":"taskClearDone","as":"cleared","status":"ok","finishedAt":"2026-11-12T07:04:24.971Z"}
+{"at":"2026-11-12T07:04:24.972Z","scenario":"H1","step":1,"action":"taskAdd","as":"added","status":"ok","finishedAt":"2026-11-12T07:04:24.986Z"}
+{"at":"2026-11-12T07:04:24.986Z","scenario":"H1","step":2,"action":"waitForTask","as":"task","status":"ok","finishedAt":"2026-11-12T07:04:42.135Z"}
+{"at":"2026-11-12T07:04:42.135Z","scenario":"H1","step":3,"action":"logs","as":"taskLogs","status":"ok","finishedAt":"2026-11-12T07:04:42.135Z"}
+{"at":"2026-11-12T07:04:42.135Z","scenario":"H1","step":4,"action":"state","as":"state","status":"ok","finishedAt":"2026-11-12T07:04:42.150Z"}
+{"at":"2026-11-12T07:04:42.150Z","scenario":"H1","step":5,"action":"screenshot","as":"screenshot","status":"ok","finishedAt":"2026-11-12T07:04:42.237Z"}
