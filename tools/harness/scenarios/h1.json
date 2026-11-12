@@ -6,7 +6,7 @@
   "steps": [
     { "action": "taskClearDone", "as": "cleared" },
     { "action": "taskAdd", "item": "oak_log", "qty": 1, "type": "GATHER", "bot": "any", "as": "added" },
-    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 10, "as": "task" },
+    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 60, "as": "task" },
     { "action": "logs", "as": "taskLogs" },
     { "action": "state", "as": "state" },
     { "action": "screenshot", "as": "screenshot", "file": "h1-screenshot.png" }

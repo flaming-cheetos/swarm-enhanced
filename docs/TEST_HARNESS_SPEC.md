@@ -1,8 +1,8 @@
 # Enhanced Swarm Test Harness — 0.2.0 Spec
 
-Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; H4–H6 and H8–H12 are simulated, live gate pending**
+Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; live H0/H0b/H1–H3 pass; H4–H6 and H8–H12 are simulated, manual gates pending**
 Direction: **menu-aware HarnessBridge; external MCP fork rejected**
-Target build: `0.1.0+44f292f` (`fix/phantom-task-types`)
+Target build: `0.1.0+e62b2f9` (`fix/phantom-task-types`)
 Last updated: 2026-11-12
 
 This document is the contract for the harness, not the harness itself. Nothing
@@ -193,16 +193,16 @@ task cancel/pause/resume, WebSocket state/logs, stale-state detection, and a
 deliberate broken field. H1 means gather; H0b means the read-only truth
 precondition. H4–H6 and H8–H12 are **simulated contract scenarios**: their
 triggers are reproduced by the stubs and their evidence is labelled
-`SIMULATED`. H7 is live-only. Live H0/H0b and H2 passed on 2026-11-12. The
-live panel state was initially invalid JSON (`"type":GATHER"`);
-`SwarmWebServer` now emits `"type":"GATHER"` and the repaired state parses.
-H1 and H3 then reached the worker but failed with `orphaned-task`: the
-BotBrain IDLE orphan guard ran before `handleIdle()` could resolve a newly
-assigned task. The guard is removed; the stub suite, self-test, and Gradle build
-are green. H1/H3 still need one relaunch with the rebuilt jar. H2 passes live
-with terminal `CANCELLED`; its panel log is `■ jamal task cancelled: cancelled
-by user`, while the `HALT` anchor appears in the worker log. Live H4–H12 remain
-manual gates.
+`SIMULATED`. H7 is live-only. Live H0/H0b/H1/H2/H3 passed on 2026-11-12
+against `0.1.0+e62b2f9`. The live panel state was initially invalid JSON
+(`"type":GATHER"`); `SwarmWebServer` now emits `"type":"GATHER"` and the
+repaired state parses. H1/H3 then exposed the BotBrain IDLE orphan guard
+failing a newly assigned task before `handleIdle()` could plan it; the guard is
+removed. The fixture takes about 20 seconds for a gather, so H1/H3 terminal
+waits are 60 seconds; the assertions still require `COMPLETE` and the
+completion log. H2 passes with terminal `CANCELLED`; its panel log is
+`■ jamal task cancelled: cancelled by user`, while the `HALT` anchor appears in
+the worker log. Live H4–H12 remain manual gates.
 
 The bridge runs on the client thread and should avoid mixins; it reads the
 current screen/menu and calls their real click/key paths. If a vanilla method
@@ -522,9 +522,9 @@ not the product behavior of a real client.
 |---|---|---|---|
 | H0 | PASS | no | **PASS live** 2026-11-12; `harness:live -- --scenario H0` |
 | H0b | PASS | no | **PASS live** 2026-11-12; `harness:live -- --scenario H0b` |
-| H1 | PASS | no | **Pending relaunch** with the rebuilt BotBrain; `harness:live -- --scenario H1` |
-| H2 | PASS | no | **PASS live** 2026-11-12; `harness:live -- --scenario H2` |
-| H3 | PASS | no | **Pending relaunch** with the rebuilt BotBrain; `harness:live -- --scenario H3` |
+| H1 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H1` |
+| H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
+| H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
 | H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Product may still fail until leases land. No automated live file yet. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
@@ -650,9 +650,9 @@ host-assigned roles, and persistent deaths. 0.3.0 is kits and enchantments.
 9. **Scorecard** — one command, one summary, pass/fail counts.
 
 Status: steps 1–6 have a green stub contract suite (H4–H6/H8–H12 simulated).
-Live H0, H0b, and H2 pass; H1/H3 await a relaunch with the rebuilt BotBrain.
-The H4–H6/H8–H12 manual gates remain pending. H7 is live-only and has no stub
-scenario. Step 9 (scorecard) is not implemented.
+Live H0, H0b, H1, H2, and H3 pass on `0.1.0+e62b2f9`. The H4–H6/H8–H12 manual
+gates remain pending. H7 is live-only and has no stub scenario. Step 9
+(scorecard) is not implemented.
 
 Do not start 0.3.0 auto-enchant until this list is green or explicitly waived.
 
@@ -679,9 +679,8 @@ Confirmed 2026-11-11:
 The read-only bridge (health, state, screen, menu, screenshot) is implemented.
 The runner has the bridge adapter, panel adapter, and stub-only simulation
 controls. H0/H0b/H1–H6/H8/H9/H10–H12 are stub-verified; H4–H12 are explicitly
-simulated. Live H0, H0b, and H2 pass. The next step is H1/H3 after the clients
-are relaunched with the rebuilt BotBrain, followed by the manual
-H4–H6/H8–H12 gates. H7 remains live-only.
+simulated. Live H0, H0b, H1, H2, and H3 pass on `0.1.0+e62b2f9`. The next step
+is the manual H4–H6/H8–H12 gates. H7 remains live-only.
 
 ## 17. Bottom line on “fully test without my input”
 

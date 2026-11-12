@@ -11,7 +11,7 @@
     { "action": "waitForBot", "name": "${BOT}", "halted": true, "timeoutSec": 10, "as": "pausedBot" },
     { "action": "logs", "as": "pausedLogs" },
     { "action": "taskResume", "bot": "${BOT}", "as": "resume" },
-    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 10, "as": "task" },
+    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 60, "as": "task" },
     { "action": "logs", "as": "resumedLogs" },
     { "action": "state", "as": "state" }
   ],

@@ -49,10 +49,10 @@ npm run harness:live -- `
   --bot-queue C:\path\to\bot\.minecraft\meteor-client\enhanced-swarm\task-queue.json
 ```
 
-Live status 2026-11-12: H0/H0b/H2 PASS at build `44f292f`; H1/H3 are pending a
-relaunch with the rebuilt BotBrain. Evidence is under
-`test-runs/live-h0-h0b-44f292f`, `test-runs/live-h2-44f292f`, and the failed
-H1/H3 attempt under `test-runs/live-h1-h3-44f292f`.
+Live status 2026-11-12: H0/H0b/H1/H2/H3 PASS at build `e62b2f9`. Evidence is
+under `test-runs/live-all-e62b2f9`; the earlier H1/H3 failure is preserved under
+`test-runs/live-h1-h3-44f292f`. The fixture needs about 20 seconds for a
+gather, so H1/H3 terminal waits are 60 seconds.
 
 H4-H6 and H8-H12 must **not** be passed to `harness:live` yet: their simulation
 controls do not exist on the real bridge/panel. H7 has no stub scenario. Use
