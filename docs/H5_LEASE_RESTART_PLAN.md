@@ -1,8 +1,8 @@
 # H5 Lease/Restart Plan
 
-Status: **PLAN — Steps 1–3 implemented; Step 4 open; no H5 live result claimed**
+Status: **Steps 1–3 implemented; Step 4 live gate PASSED on `0.1.0+8e2eed6`; panel/log lease visibility and full protocol matrix remain open**
 Date: 2026-11-12
-Build under test: `0.1.0+e62b2f9`
+Builds under test: H1 `0.1.0+e62b2f9`; H5 Step 4 `0.1.0+8e2eed6`
 Harness status: H1 three consecutive live runs PASS under
 `test-runs/h1-3x-e62b2f9/run1..run3`.
 
@@ -87,8 +87,8 @@ AssertionError: a superseded token renewed the lease
   at LeaseLifecycleTest.renewalExtendsOnlyCurrentLease(LeaseLifecycleTest.java:73)
 ```
 
-Step 2 panel/log fields remain open. Step 3 is complete; Step 4 (live H5)
-remains open.
+Step 2 panel/log fields remain open. Step 3 is complete; Step 4 passed live
+on `0.1.0+8e2eed6` (see below).
 
 ## Step 3 status — DONE (2026-11-12)
 
@@ -136,8 +136,8 @@ AssertionError: superseded token completed the re-leased task
 ```
 
 `TaskQueue.java` was restored byte-for-byte, then the three probes passed
-again. Step 3 panel/log fields remain open. Step 4 (live H5) is still open; no
-live H5 was run.
+again. Step 3 panel/log fields remain open. Step 4 passed live on
+`0.1.0+8e2eed6`; the pre-H5 `e62b2f9` baseline failed as expected.
 
 ## 1. Problem
 
@@ -175,7 +175,8 @@ worker back online. That is contract evidence only, not product evidence.
 (`tools/harness/scenarios/h5.json`, `tools/harness/panel-stub.mjs`)
 
 Steps 1–3 implement the persisted queue, lease, fencing, and reconnect sides
-of that contract. The live H5 restart remains Step 4 and is still unrun.
+of that contract. Step 4 exercised that contract live on `0.1.0+8e2eed6`;
+the `0.1.0+e62b2f9` baseline failed because that artifact predates H5.
 
 ## 2. Desired invariants
 
@@ -200,7 +201,7 @@ of that contract. The live H5 restart remains Step 4 and is still unrun.
 Steps 1–3 have landed `attempt`, `lastOwner`, `statusReason`, `leaseToken`,
 and `leaseExpiresAt` on `BotTask` and in `task-queue.json`. The token/attempt
 protocol, fenced progress/terminal handling, and reconnect reset now exist.
-Step 4 is the remaining live gate.
+Step 4 is the live gate and passed on `0.1.0+8e2eed6`.
 
 Relevant lease fields:
 
@@ -388,7 +389,7 @@ the assertion.
 - [x] Verify the probe fails before the recovery hook and passes after it.
 - [x] Run stub suite, self-test, and full build. H1 evidence remains unchanged.
 - [ ] Panel/log visibility (deliberately left to a later step).
-- [ ] Stage a new jar for live H5 (not requested in this Step 1 pass).
+- [x] Stage a new jar for live H5 (done for Step 4 on `8e2eed6`).
 
 ### Step 2 — Claim, heartbeat, expiry — DONE 2026-11-12
 
@@ -402,7 +403,7 @@ the assertion.
 - [x] Verify the lease test fails when the token-equality check is removed and
   passes after restoring it.
 - [ ] Panel/log lease fields (left open).
-- [ ] Stage a new jar for live H5 (not requested in this pass).
+- [x] Stage a new jar for live H5 (done for Step 4 on `8e2eed6`).
 
 ### Step 3 — Fencing and reconnect handshake — DONE 2026-11-12
 
@@ -420,7 +421,37 @@ the assertion.
 - [ ] Protocol compatibility matrix for every old/new combination beyond the
   legacy token fallback (left open).
 
-### Step 4 — H5 live gate
+### Step 4 — H5 live gate — PASS 2026-11-12 on `0.1.0+8e2eed6`
+
+**Verdict:** PASS on the H5 build; the pre-H5 `0.1.0+e62b2f9` baseline
+FAILED as expected. Evidence: `test-runs/h5-step4-lease-restart/`
+(`attempt1-baseline/AUDIT.md`, `attempt2-h5/AUDIT.md`, `REPORT.md`).
+
+| # | Gate assertion | Live verdict | Decisive evidence |
+|---|---|---|---|
+| 1 | Clear terminal tasks; add `oak_log x2` to `jamal` | **PASS** | panel log `Task added: oak_log x2 -> jamal` at 02:07:25; `attempt2-h5/active-panel-state.json` |
+| 2 | Wait for `ACTIVE`; record task id/attempt | **PASS** | `attempt2-h5/task-queue-active.json`: task `2b7aa4f5…`, attempt 1, lease present |
+| 3 | Restart host while `ACTIVE` | **PASS** | `task-queue-before-kill.json` ACTIVE; host killed 08:07:46Z |
+| 4 | After startup: no `ACTIVE`; `PENDING`/`FAILED` with reason | **PASS** | `task-queue-post-restart.json`: `PENDING`, attempt 2, `statusReason: host-restart`, owner/lease cleared; panel has no ACTIVE row |
+| 5 | Reconnect worker; claim new attempt; complete once | **PASS** | `host-complete.log:396` new worker; final queue attempt 3; `host-complete.log:398` completion |
+| 6 | Exactly one completion; no duplicate/stranded row | **PASS** | one COMPLETE row; one worker `TASK: complete` (`worker-complete.log:417`); one host completion line |
+| 7 | Preserve the bundle | **PASS** | per-attempt logs, queue/panel JSON, hashes, raw originals |
+
+**Baseline failure:** `attempt1-baseline` shows the same task still `ACTIVE`
+after host restart, with no reason/attempt fields and no accepted completion.
+That is the failure H5 fixes, not a product pass.
+
+**Build limitation:** the installed `e62b2f9` artifact does not contain
+`recoverActiveAfterHostRestart`, `claimNextForBot`, or `finishIfLeaseMatches`.
+The successful gate therefore used the already-built H5 jar from `8e2eed6`
+deployed to both instances; no source fix was needed. Do not describe this as
+an e62b2f9 pass.
+
+**Open after Step 4:** panel JSON still omits `attempt`, `statusReason`,
+`lastOwner`, and lease fields; the queue is the source of truth for those.
+The completed row also still reports progress `0/2` / `collected: 0`, a
+pre-existing progress-reporting gap. The full old/new protocol matrix remains
+open.
 
 1. Clear terminal tasks; add `oak_log x2` assigned to `jamal`.
 2. Wait for `ACTIVE` and record the task id/attempt.
@@ -435,9 +466,9 @@ the assertion.
 
 - H5 stub suite remains green; self-test remains 14/14.
 - No restored `ACTIVE` task survives host startup.
-- H5 live produces `PENDING` or explicit `FAILED`, never stranded `ACTIVE`.
+- H5 live produced `PENDING` with `host-restart` on `8e2eed6`, never a stranded `ACTIVE`; the e62b2f9 baseline failed with a stranded `ACTIVE`.
 - One terminal completion per task; stale attempts cannot complete.
-- Panel state and logs name the recovery reason and attempt.
+- Task queue and logs name the recovery reason and attempt; panel lease/reason fields remain open.
 - `gradlew build` green; H1 three-run gate remains green.
 - Docs/spec updated with the actual log anchors and live evidence path.
 
@@ -464,6 +495,7 @@ the assertion.
 - `tools/harness/panel-stub.mjs` — `hostRestart`/requeue simulation.
 - `docs/TEST_HARNESS_SPEC.md` — H5 gate and acceptance criteria.
 
-Steps 1–3 are implemented and tested. Step 4 (the live H5 gate), panel/log
-lease visibility, and the full old/new protocol matrix remain open; no H5 live
-result is claimed.
+Steps 1–4 are implemented and tested. Step 4 passed live on `0.1.0+8e2eed6`;
+the e62b2f9 baseline failed as expected. Panel/log lease visibility, the
+completed-row progress counter, and the full old/new protocol matrix remain
+open.

@@ -1,6 +1,6 @@
 # Enhanced Swarm Test Harness — 0.2.0 Spec
 
-Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; live H0/H0b/H1–H3 pass; H4–H6 and H8–H12 are simulated, manual gates pending**
+Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; live H0/H0b/H1–H3 pass on e62b2f9; live H5 passes on `0.1.0+8e2eed6` (e62b2f9 baseline fails as expected); H4/H6/H8–H12 are simulated, manual gates pending**
 Direction: **menu-aware HarnessBridge; external MCP fork rejected**
 Target build: `0.1.0+e62b2f9` (`fix/phantom-task-types`)
 Last updated: 2026-11-12
@@ -194,7 +194,9 @@ deliberate broken field. H1 means gather; H0b means the read-only truth
 precondition. H4–H6 and H8–H12 are **simulated contract scenarios**: their
 triggers are reproduced by the stubs and their evidence is labelled
 `SIMULATED`. H7 is live-only. Live H0/H0b/H1/H2/H3 passed on 2026-11-12
-against `0.1.0+e62b2f9`. The live panel state was initially invalid JSON
+against `0.1.0+e62b2f9`; live H5 passed on `0.1.0+8e2eed6` after the
+`0.1.0+e62b2f9` baseline reproduced the stranded-ACTIVE failure. The live
+panel state was initially invalid JSON
 (`"type":GATHER"`); `SwarmWebServer` now emits `"type":"GATHER"` and the
 repaired state parses. H1/H3 then exposed the BotBrain IDLE orphan guard
 failing a newly assigned task before `handleIdle()` could plan it; the guard is
@@ -202,7 +204,8 @@ removed. The fixture takes about 20 seconds for a gather, so H1/H3 terminal
 waits are 60 seconds; the assertions still require `COMPLETE` and the
 completion log. H2 passes with terminal `CANCELLED`; its panel log is
 `■ jamal task cancelled: cancelled by user`, while the `HALT` anchor appears in
-the worker log. Live H4–H12 remain manual gates.
+the worker log. Live H4/H6/H8–H12 remain manual gates; live H5 passed on
+`0.1.0+8e2eed6` and is recorded in `test-runs/h5-step4-lease-restart/`.
 
 The bridge runs on the client thread and should avoid mixins; it reads the
 current screen/menu and calls their real click/key paths. If a vanilla method
@@ -526,7 +529,7 @@ not the product behavior of a real client.
 | H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
 | H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
-| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Steps 1–3 (recovery, lease lifecycle, fencing/reconnect) landed 2026-11-12; `h5RecoveryTest`, `h5LeaseTest`, and `h5FencingTest` are part of `check`. Live H5 is Step 4 and still unrun. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
+| H5 | PASS | yes | **PASS live** 2026-11-12 on `0.1.0+8e2eed6`; pre-H5 `0.1.0+e62b2f9` baseline FAIL (stranded ACTIVE). Task `2b7aa4f5…`: ACTIVE attempt 1 → restart → PENDING attempt 2 `host-restart` → reconnect COMPLETE attempt 3, exactly one completion. Evidence: `test-runs/h5-step4-lease-restart/`. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
 | H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
 | H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
@@ -559,8 +562,13 @@ A new connection requeues the old assignment, sends `task reset`, and the next
 dispatch claims a fresh token; a re-leased task completes once.
 `TaskQueueRecoveryTest`, `LeaseLifecycleTest`, and `FencingReconnectTest` are
 part of the Gradle `check` task. The simulated H5 still only asserts the stub
-contract, and live H5 (Step 4) has not been run. The implementation plan is
-tracked in `docs/H5_LEASE_RESTART_PLAN.md`; do not weaken the assertion.
+contract. Live H5 (Step 4) passed on `0.1.0+8e2eed6`: the host restart
+converted the ACTIVE row to PENDING attempt 2 with `statusReason:
+host-restart`, then the reconnected worker completed attempt 3 exactly once.
+The `0.1.0+e62b2f9` baseline failed with the row still ACTIVE. Evidence is in
+`test-runs/h5-step4-lease-restart/`; the implementation plan is tracked in
+`docs/H5_LEASE_RESTART_PLAN.md`. Panel lease/reason fields and the full
+protocol matrix remain open; do not weaken the assertion.
 
 H11 needs a third Prism instance live. The stub uses a second simulated worker
 to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not
@@ -627,8 +635,9 @@ The harness is ready when:
    not a live pass.
 1. `H0`, `H1`, `H2`, `H3`, `H4`, `H6`, `H8`, `H9` pass against a real host and
    worker.
-2. `H5` passes after the lease/restart fix; before that it fails with a clear
-   `PRODUCT` verdict, not a timeout.
+2. `H5` passed live on `0.1.0+8e2eed6`; the `0.1.0+e62b2f9` pre-H5 baseline
+   failed with the row still `ACTIVE` after restart, a clear `PRODUCT`
+   verdict rather than a timeout.
 3. `H1` passes three consecutive runs, not one lucky run.
 4. Every failure bundle contains `summary.md`, `events.jsonl`, `state.jsonl`,
    both log windows, and at least one screenshot.
@@ -657,9 +666,10 @@ host-assigned roles, and persistent deaths. 0.3.0 is kits and enchantments.
 9. **Scorecard** — one command, one summary, pass/fail counts.
 
 Status: steps 1–6 have a green stub contract suite (H4–H6/H8–H12 simulated).
-Live H0, H0b, H1, H2, and H3 pass on `0.1.0+e62b2f9`. The H4–H6/H8–H12 manual
-gates remain pending. H7 is live-only and has no stub scenario. Step 9
-(scorecard) is not implemented.
+Live H0, H0b, H1, H2, and H3 pass on `0.1.0+e62b2f9`; live H5 passes on
+`0.1.0+8e2eed6` (e62b2f9 baseline fails with a stranded ACTIVE row). The
+remaining H4/H6/H8–H12 manual gates are pending. H7 is live-only and has no
+stub scenario. Step 9 (scorecard) is not implemented.
 
 Do not start 0.3.0 auto-enchant until this list is green or explicitly waived.
 

@@ -1,0 +1,22 @@
+{
+  "tasks": [
+    {
+      "id": "2b7aa4f5-4f32-43df-b163-0fc13a63c60d",
+      "type": "GATHER",
+      "priority": 0,
+      "item": "oak_log",
+      "targetQuantity": 2,
+      "collected": 0,
+      "status": "COMPLETE",
+      "assignedBot": "jamal",
+      "attempt": 3,
+      "lastOwner": "jamal",
+      "statusReason": "completed",
+      "leaseToken": "",
+      "leaseExpiresAt": 0
+    }
+  ],
+  "nicknames": {
+    "jamal": ""
+  }
+}

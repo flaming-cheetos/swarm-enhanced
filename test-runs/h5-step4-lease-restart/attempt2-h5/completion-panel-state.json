@@ -1,0 +1,67 @@
+{
+  "capturedAt": "2026-11-12T08:09:46.894Z",
+  "state": {
+    "type": "state",
+    "modVersion": "0.1.0+8e2eed6",
+    "buildCommit": "8e2eed6",
+    "hostName": "chris",
+    "dimension": "minecraft:overworld",
+    "connected": 1,
+    "bots": [
+      {
+        "username": "jamal",
+        "nickname": "",
+        "online": true,
+        "health": 20,
+        "food": 20,
+        "x": -525,
+        "y": 87,
+        "z": 622,
+        "task": "Idle — no task",
+        "progress": "0/0",
+        "eta": "",
+        "tier": "WOOD",
+        "state": "RETURNING_TO_BASE",
+        "halted": false
+      }
+    ],
+    "tasks": [
+      {
+        "id": "2b7aa4f5-4f32-43df-b163-0fc13a63c60d",
+        "type": "GATHER",
+        "item": "oak_log",
+        "quantity": 2,
+        "progress": "0/2",
+        "status": "COMPLETE",
+        "reason": "",
+        "bot": "jamal"
+      }
+    ]
+  },
+  "logs": [
+    {
+      "type": "log",
+      "time": "02:09:33",
+      "level": "INFO",
+      "msg": "🔗 localhost:27567 connected"
+    },
+    {
+      "type": "log",
+      "time": "02:09:33",
+      "level": "INFO",
+      "msg": "REQUEST_CONFIG from jamal"
+    },
+    {
+      "type": "log",
+      "time": "02:09:33",
+      "level": "INFO",
+      "msg": "Pushed deposit config to jamal"
+    },
+    {
+      "type": "log",
+      "time": "02:09:45",
+      "level": "INFO",
+      "msg": "✓ jamal completed: oak_log x2"
+    }
+  ]
+}

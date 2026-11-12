@@ -1,0 +1,25 @@
+{
+  "capturedAt": "2026-11-12T08:06:41.756Z",
+  "state": {
+    "type": "state",
+    "modVersion": "0.1.0+8e2eed6",
+    "buildCommit": "8e2eed6",
+    "hostName": "chris",
+    "dimension": "minecraft:overworld",
+    "connected": 0,
+    "bots": [],
+    "tasks": [
+      {
+        "id": "64e1fd2f-0c39-4976-ad2f-96ed65890880",
+        "type": "GATHER",
+        "item": "oak_log",
+        "quantity": 2,
+        "progress": "0/2",
+        "status": "PENDING",
+        "reason": "",
+        "bot": ""
+      }
+    ]
+  },
+  "logs": []
+}
