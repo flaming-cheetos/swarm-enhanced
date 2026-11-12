@@ -1,0 +1,25 @@
+{
+  "id": "H3",
+  "title": "Pause then resume",
+  "priority": "P0",
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 1, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "taskPause", "bot": "${BOT}", "as": "pause" },
+    { "action": "waitForBot", "name": "${BOT}", "halted": true, "timeoutSec": 10, "as": "pausedBot" },
+    { "action": "logs", "as": "pausedLogs" },
+    { "action": "taskResume", "bot": "${BOT}", "as": "resume" },
+    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 10, "as": "task" },
+    { "action": "logs", "as": "resumedLogs" },
+    { "action": "state", "as": "state" }
+  ],
+  "assert": [
+    { "path": "task.status", "equals": "COMPLETE" },
+    { "path": "pausedBot.halted", "equals": true },
+    { "path": "pausedLogs", "contains": "HALT: paused" },
+    { "path": "resumedLogs", "contains": "HALT: resumed" },
+    { "path": "state.inGame", "equals": true }
+  ]
+}

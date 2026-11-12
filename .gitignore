@@ -39,3 +39,4 @@ logs/
 
 # jars
 *.jar
+test-runs/

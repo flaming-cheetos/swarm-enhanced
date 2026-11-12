@@ -1,0 +1,15 @@
+{
+  "name": "enhanced-swarm-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node contract runner for the Enhanced Swarm HarnessBridge",
+  "engines": {
+    "node": ">=25"
+  },
+  "scripts": {
+    "harness:stub": "node run-stub.mjs",
+    "harness:selftest": "node selftest.mjs",
+    "harness:live": "node run.mjs --mode live"
+  }
+}
