@@ -522,11 +522,11 @@ not the product behavior of a real client.
 |---|---|---|---|
 | H0 | PASS | no | **PASS live** 2026-11-12; `harness:live -- --scenario H0` |
 | H0b | PASS | no | **PASS live** 2026-11-12; `harness:live -- --scenario H0b` |
-| H1 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H1` |
+| H1 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; three consecutive passes in `test-runs/h1-3x-e62b2f9/run1..run3`; `harness:live -- --scenario H1` |
 | H2 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H2` |
 | H3 | PASS | no | **PASS live** 2026-11-12 on e62b2f9; `harness:live -- --scenario H3` |
 | H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
-| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Product may still fail until leases land. No automated live file yet. |
+| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Product may still fail until leases land. Plan: `docs/H5_LEASE_RESTART_PLAN.md`. No automated live file yet. |
 | H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
 | H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
 | H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
@@ -553,7 +553,8 @@ user's manual final gate. H7 is live-only and has no stub scenario at all.
 H5 is expected to expose the current restart bug until leases/restart recovery
 land. The simulated H5 asserts the intended no-stranded-ACTIVE contract; it is
 not evidence that the product fix exists. It is a gate, not a reason to weaken
-the assertion.
+the assertion. The implementation plan is tracked in
+`docs/H5_LEASE_RESTART_PLAN.md`.
 
 H11 needs a third Prism instance live. The stub uses a second simulated worker
 to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not
