@@ -193,8 +193,12 @@ task cancel/pause/resume, WebSocket state/logs, stale-state detection, and a
 deliberate broken field. H1 means gather; H0b means the read-only truth
 precondition. H4–H6 and H8–H12 are **simulated contract scenarios**: their
 triggers are reproduced by the stubs and their evidence is labelled
-`SIMULATED`. H7 is live-only. Live-client H0/H0b/H1–H3 remains unrun until the
-two Prism instances are relaunched; live H4–H12 remain manual gates.
+`SIMULATED`. H7 is live-only. Live H0/H0b passed against the running host
+bridge on 2026-11-12. H1–H3 could not start because the live panel `/ws` state
+was invalid JSON: task types were serialized as `"type":GATHER"` instead of
+`"type":"GATHER"`. `SwarmWebServer` is fixed and the Gradle build passes, but
+the running clients must be relaunched with the rebuilt jar before H1–H3. Live
+H4–H12 remain manual gates.
 
 The bridge runs on the client thread and should avoid mixins; it reads the
 current screen/menu and calls their real click/key paths. If a vanilla method

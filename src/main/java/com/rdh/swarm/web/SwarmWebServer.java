@@ -306,7 +306,7 @@ public class SwarmWebServer {
                 BotTask task = tasks.get(i);
                 sb.append("{");
                 sb.append("\"id\":\"").append(task.getId()).append("\",");
-                sb.append("\"type\":").append(task.getType().name()).append("\",");
+                sb.append("\"type\":\"").append(task.getType().name()).append("\",");
                 sb.append("\"item\":\"").append(esc(task.getItemName())).append("\",");
                 sb.append("\"quantity\":").append(task.getTargetQuantity()).append(",");
                 sb.append("\"progress\":\"").append(esc(task.getProgressString())).append("\",");
