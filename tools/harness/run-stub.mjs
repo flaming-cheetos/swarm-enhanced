@@ -17,7 +17,7 @@ try {
     panelToken: panel.token,
     bot: 'StubBot',
     outDir: args.out,
-    scenarioIds: ['H0', 'H0b', 'H1', 'H2', 'H3']
+    scenarioIds: ['H0', 'H0b', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H8', 'H9', 'H10', 'H11', 'H12']
   });
 
   console.log(`stub bridge: ${bridge.baseUrl}`);
@@ -26,7 +26,8 @@ try {
   console.log(`status: ${result.status}`);
 
   for (const scenario of result.results ?? []) {
-    console.log(`${scenario.id}: ${scenario.status}${scenario.error ? ` — ${scenario.error}` : ''}`);
+    const label = scenario.simulated ? ' (simulated)' : '';
+    console.log(`${scenario.id}: ${scenario.status}${label}${scenario.error ? ` — ${scenario.error}` : ''}`);
   }
 
   process.exitCode = result.ok ? 0 : 1;

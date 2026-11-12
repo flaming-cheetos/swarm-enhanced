@@ -1,0 +1,42 @@
+{
+  "id": "H9",
+  "title": "Panel task and state truth (simulated)",
+  "priority": "P0",
+  "simulated": true,
+  "simulation": {
+    "trigger": "panel WebSocket state becomes stale and offline while a task is ACTIVE",
+    "liveGate": "In the browser, add a task, watch cards/logs update within 2s, then confirm a stale/offline feed is not displayed as live."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 2, "type": "GATHER", "bot": "any", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelState", "as": "liveState" },
+    { "action": "panelTruth", "as": "liveTruth" },
+    { "action": "logs", "as": "liveLogs" },
+    { "action": "panelSimulate", "name": "stale", "as": "stale" },
+    { "action": "panelState", "as": "staleState" },
+    { "action": "panelTruth", "as": "staleTruth" },
+    { "action": "panelSimulate", "name": "refresh", "as": "refresh" },
+    { "action": "panelTruth", "as": "recoveredTruth" },
+    { "action": "logs", "as": "recoveredLogs" }
+  ],
+  "assert": [
+    { "path": "liveState.tasks.0.status", "equals": "ACTIVE" },
+    { "path": "liveTruth.fresh", "equals": true },
+    { "path": "liveTruth.onlineBots", "equals": 1 },
+    { "path": "liveTruth.liveActiveTaskCount", "equals": 1 },
+    { "path": "liveLogs", "contains": "TASK: active" },
+    { "path": "staleState.bots.0.online", "equals": false },
+    { "path": "staleTruth.fresh", "equals": false },
+    { "path": "staleTruth.onlineBots", "equals": 0 },
+    { "path": "staleTruth.state.tasks.0.status", "equals": "ACTIVE" },
+    { "path": "staleTruth.liveActiveTaskCount", "equals": 0 },
+    { "path": "recoveredTruth.fresh", "equals": true },
+    { "path": "recoveredTruth.onlineBots", "equals": 1 },
+    { "path": "recoveredLogs", "containsInOrder": ["PANEL: state is stale", "PANEL: state refreshed"] }
+  ]
+}

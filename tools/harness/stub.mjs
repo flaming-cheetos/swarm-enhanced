@@ -12,7 +12,12 @@ export async function startStub({
   allowActions = true,
   corrupt = null
 } = {}) {
-  const menu = makeMenu();
+  let menu = makeMenu();
+  const simulation = {
+    inventoryFull: false,
+    menuMismatch: false,
+    dead: false
+  };
   let actionInFlight = false;
 
   const server = http.createServer(async (request, response) => {
@@ -31,9 +36,9 @@ export async function startStub({
       if (request.method === 'GET') {
         switch (pathname) {
           case '/harness/health':
-            return sendJson(response, 200, health());
+            return sendJson(response, 200, health(simulation));
           case '/harness/state':
-            return sendJson(response, 200, state(menu, corrupt));
+            return sendJson(response, 200, state(menu, corrupt, simulation));
           case '/harness/screen':
             return sendJson(response, 200, screen(menu));
           case '/harness/menu':
@@ -45,6 +50,12 @@ export async function startStub({
               error: 'unknown harness endpoint'
             });
         }
+      }
+
+      if (request.method === 'POST' && pathname === '/harness/simulate') {
+        const body = await readJsonBody(request);
+        const result = handleSimulation(body);
+        return sendJson(response, 200, { ok: true, ...result });
       }
 
       if (request.method === 'POST' && pathname === '/harness/screenshot') {
@@ -91,7 +102,7 @@ export async function startStub({
             });
           }
 
-          const before = snapshot(menu);
+          const before = snapshot(menu, simulation);
           const target = menu.slots[slot];
           let changed = false;
           if (target.item) {
@@ -107,7 +118,7 @@ export async function startStub({
           }
 
           await delay(75);
-          const after = snapshot(menu);
+          const after = snapshot(menu, simulation);
           return sendJson(response, 200, {
             ok: true,
             result: {
@@ -156,8 +167,45 @@ export async function startStub({
     port: address.port,
     baseUrl: `http://127.0.0.1:${address.port}`,
     token: STUB_TOKEN,
+    simulate: (action, args = {}) => handleSimulation({ action, ...args }),
     close: () => new Promise((resolve) => server.close(resolve))
   };
+
+  function handleSimulation(body) {
+    const action = String(body.action ?? '');
+    switch (action) {
+      case 'reset':
+        menu = makeMenu();
+        simulation.inventoryFull = false;
+        simulation.menuMismatch = false;
+        simulation.dead = false;
+        break;
+      case 'inventoryFull':
+        simulation.inventoryFull = true;
+        fillInventory(menu);
+        break;
+      case 'menuMismatch':
+        simulation.menuMismatch = true;
+        menu.class = 'net.minecraft.world.inventory.CraftingMenu';
+        menu.title = 'Crafting';
+        menu.containerId = 2;
+        menu.stateId = 2;
+        break;
+      case 'death':
+        simulation.dead = true;
+        break;
+      case 'respawn':
+        simulation.dead = false;
+        break;
+      default:
+        throw new Error(`unknown bridge simulation action: ${action}`);
+    }
+    return {
+      action,
+      simulation: { ...simulation },
+      state: state(menu, corrupt, simulation)
+    };
+  }
 }
 
 function makeMenu() {
@@ -181,30 +229,39 @@ function makeMenu() {
   };
 }
 
+function fillInventory(menu) {
+  for (const slot of menu.slots) {
+    if (slot.playerSlot) slot.item = item('minecraft:oak_log', 64);
+  }
+}
+
 function item(id, count) {
   return {
     id,
     count,
-    name: id === 'minecraft:chest' ? 'Chest' : 'Item',
+    name: id === 'minecraft:chest' ? 'Chest' : 'Oak Log',
     damage: 0,
     components: '{}'
   };
 }
 
-function health() {
+function health(simulation) {
   return {
     ok: true,
     inGame: true,
     screenOpen: true,
     menuOpen: true,
+    dead: simulation.dead,
     version: 'stub'
   };
 }
 
-function state(menu, corrupt) {
+function state(menu, corrupt, simulation) {
   const result = {
     ok: true,
     inGame: true,
+    dead: simulation.dead,
+    inventoryFull: simulation.inventoryFull,
     screen: {
       open: true,
       class: 'net.minecraft.client.gui.screens.inventory.ContainerScreen',
@@ -218,14 +275,14 @@ function state(menu, corrupt) {
     player: {
       name: 'stub-player',
       uuid: '00000000-0000-0000-0000-000000000001',
-      health: 20,
+      health: simulation.dead ? 0 : 20,
       food: 20,
       x: 0,
       y: 64,
       z: 0,
       dimension: 'minecraft:overworld'
     },
-    inventory: inventory(menu)
+    inventory: inventory(menu, simulation.inventoryFull)
   };
   if (corrupt === 'state.player') delete result.player;
   return result;
@@ -268,20 +325,20 @@ function menuSnapshot(menu) {
   };
 }
 
-function inventory(menu) {
+function inventory(menu, full) {
   return menu.slots
     .filter((slot) => slot.playerSlot)
     .map((slot, index) => ({
       index: slot.index,
       selected: index === 0,
-      item: slot.item
+      item: full ? item('minecraft:oak_log', 64) : slot.item
     }));
 }
 
-function snapshot(menu) {
+function snapshot(menu, simulation) {
   return {
     menu: structuredClone(menuSnapshot(menu)),
-    inventory: structuredClone(inventory(menu))
+    inventory: structuredClone(inventory(menu, simulation.inventoryFull))
   };
 }
 

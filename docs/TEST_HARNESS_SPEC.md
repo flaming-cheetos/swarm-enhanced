@@ -1,6 +1,6 @@
 # Enhanced Swarm Test Harness — 0.2.0 Spec
 
-Status: **APPROVED (decisions 1–6, 2026-11-11) — read-only bridge, guarded click, and H0/H0b/H1–H3 runner stubs verified**
+Status: **APPROVED (decisions 1–6, 2026-11-11) — H0/H0b/H1–H6/H8–H12 stub suite verified; H4–H6 and H8–H12 are simulated, live gate pending**
 Direction: **menu-aware HarnessBridge; external MCP fork rejected**
 Target build: `0.1.0+031cd73` (`fix/phantom-task-types`)
 Last updated: 2026-11-12
@@ -56,6 +56,8 @@ a staged world.
 - wait for task state, logs, timeouts, and terminal states;
 - run H1 (gather), H2 (cancel), H3 (pause/resume), H9 (panel truth) once the
   world has the required tree and the clients are connected;
+- run simulated H4–H6 and H8–H12 contract scenarios with the stubs and no
+  Minecraft clients; these are labelled `SIMULATED`, never live results;
 - capture logs, state, queue files, screenshots, and the contact sheet;
 - repeat a scenario and compare results.
 
@@ -184,12 +186,15 @@ jar. Verified live on 2026-11-11: guard-off returns 403 without state change,
 a single QUICK_MOVE click moves exactly one stack, and concurrent actions are
 rejected with 409 `action-in-flight`.
 
-Runner status: `tools/harness` now has the bridge adapter and the panel
-adapter. H0, H0b, H1, H2 and H3 are implemented and stub-verified, including
-the 403/409 bridge paths, task cancel/pause/resume, WebSocket state/logs, and
-a deliberate broken field. H1 means gather; H0b means the read-only truth
-precondition. Live-client H0/H0b/H1–H3 remains unrun until the two Prism
-instances are relaunched.
+Runner status: `tools/harness` has the bridge adapter, the panel adapter, and
+deterministic stub-only simulation controls. H0, H0b, H1–H6, H8, H9 and
+H10–H12 are implemented and stub-verified, including the 403/409 bridge paths,
+task cancel/pause/resume, WebSocket state/logs, stale-state detection, and a
+deliberate broken field. H1 means gather; H0b means the read-only truth
+precondition. H4–H6 and H8–H12 are **simulated contract scenarios**: their
+triggers are reproduced by the stubs and their evidence is labelled
+`SIMULATED`. H7 is live-only. Live-client H0/H0b/H1–H3 remains unrun until the
+two Prism instances are relaunched; live H4–H12 remain manual gates.
 
 The bridge runs on the client thread and should avoid mixins; it reads the
 current screen/menu and calls their real click/key paths. If a vanilla method
@@ -360,6 +365,7 @@ Required files:
 | `scenario.json` | Exact scenario and resolved variables |
 | `events.jsonl` | Normalized event stream |
 | `state.jsonl` | Panel snapshots with receive time |
+| `simulation.json` | Simulation label and simulated-scenario metadata when applicable |
 | `host.log` | Host log window, filtered to the run |
 | `bot.log` | Bot log window, filtered to the run |
 | `task-queue.host.json` | Queue snapshot at failure/end |
@@ -384,6 +390,12 @@ Must answer in one screen:
 8. Whether a task was left `ACTIVE`.
 
 No token. No anarchy coordinates. Screenshots are local-test-world only.
+
+A stub run writes `simulation.json`, sets `simulation.simulated=true` in
+`run.json`, and marks each H4–H6/H8–H12 result with `simulated: true`. `summary.md`
+labels those scenarios `[SIMULATED]` and says they are not live client proof.
+A live run that selects a simulated scenario fails explicitly; it does not
+silently label the stub as live.
 
 ## 9. Scenario format
 
@@ -430,6 +442,9 @@ JSON, no YAML dependency. One example:
 Supported actions:
 
 - `http` — POST to a panel endpoint.
+- `panelSimulate` — stub-only deterministic panel trigger.
+- `bridgeSimulate` — stub-only deterministic bridge fixture change.
+- `panelTruth` — derived freshness/online/claim view of the received `/ws` state.
 - `waitFor` — event, task state, or panel state.
 - `sleep` — bounded, explicit.
 - `screenshot` — label and optional burst.
@@ -439,7 +454,8 @@ Supported actions:
 Supported assertions:
 
 - task terminal state and reason;
-- exact/regex event present or absent;
+- exact/regex event present or absent, including explicit log order;
+- exact collection lengths (`lengthEquals`) and minimums (`lengthMin`);
 - no task left `ACTIVE`;
 - `TASK: complete` evidence value;
 - `TASK: retry` then terminal state;
@@ -483,11 +499,52 @@ This is the harness's own gate, not the whole game test plan.
 H0b is the runner-only read-only truth precondition. It is not a product
 scenario and does not replace H1 (gather).
 
-H5 is expected to expose the current restart bug until leases/restart recovery
-land. It is a gate, not a reason to weaken the assertion.
+### Execution status and live gates
 
-H11 needs a third Prism instance. If unavailable, mark `ENV` and skip; do not
-fake a second worker.
+`harness:stub` runs all 13 implemented scenarios in one continuous run. The
+simulated ones prove the harness contract and the expected evidence shape,
+not the product behavior of a real client.
+
+| ID | Stub status | Simulated? | Live gate |
+|---|---|---|---|
+| H0 | PASS | no | `harness:live -- --scenario H0` |
+| H0b | PASS | no | `harness:live -- --scenario H0b` |
+| H1 | PASS | no | `harness:live -- --scenario H1` |
+| H2 | PASS | no | `harness:live -- --scenario H2` |
+| H3 | PASS | no | `harness:live -- --scenario H3` |
+| H4 | PASS | yes | Stop the worker ≥5s while ACTIVE; confirm reconnect/requeue. No automated live file yet. |
+| H5 | PASS | yes | Restart the host with ACTIVE; no stranded ACTIVE. Product may still fail until leases land. No automated live file yet. |
+| H6 | PASS | yes | Fill inventory and gather; confirm drops skipped, retry, explicit failure. No automated live file yet. |
+| H7 | not implemented | n/a | Unreachable target/no-progress live gate. Not in the stub suite. |
+| H8 | PASS | yes | Open crafting table and deposit; confirm menu-mismatch refusal. No automated live file yet. |
+| H9 | PASS | yes | Browser task/state/log freshness and stale/offline display. No automated live browser file yet. |
+| H10 | PASS | yes | Kill the worker; death, cross-dim refusal, explicit task failure. No automated live file yet. |
+| H11 | PASS | yes | Third Prism client if available; one claim/completion. Do not fake it live. |
+| H12 | PASS | yes | SMELT fuel and BUILD unproven completion; explicit limitation/failure. No automated live file yet. |
+
+The live-capable rows use the canonical command from `tools/harness/README.md`:
+
+```powershell
+npm --prefix tools/harness run harness:live -- `
+  --base-url http://127.0.0.1:8899 `
+  --token-file <harness-token> `
+  --panel-url http://127.0.0.1:8888 `
+  --panel-token-file <panel-token> `
+  --bot <worker> `
+  --scenario H0,H0b,H1,H2,H3
+```
+
+H4–H6 and H8–H12 have no automated live scenario in 0.2.0; they remain the
+user's manual final gate. H7 is live-only and has no stub scenario at all.
+
+H5 is expected to expose the current restart bug until leases/restart recovery
+land. The simulated H5 asserts the intended no-stranded-ACTIVE contract; it is
+not evidence that the product fix exists. It is a gate, not a reason to weaken
+the assertion.
+
+H11 needs a third Prism instance live. The stub uses a second simulated worker
+to prove single-claim bookkeeping; live remains `ENV` if unavailable. Do not
+fake a second worker live.
 
 ## 11. Debugging without video
 
@@ -545,6 +602,9 @@ No verdict without evidence. “I think it worked” is not a result.
 
 The harness is ready when:
 
+0. The all-scenario stub suite is green: H0, H0b, H1–H6, H8, H9 and H10–H12.
+   H4–H6/H8–H12 results are labelled `SIMULATED`; this is contract evidence,
+   not a live pass.
 1. `H0`, `H1`, `H2`, `H3`, `H4`, `H6`, `H8`, `H9` pass against a real host and
    worker.
 2. `H5` passes after the lease/restart fix; before that it fails with a clear
@@ -576,6 +636,10 @@ host-assigned roles, and persistent deaths. 0.3.0 is kits and enchantments.
 8. **Protocol rig** — fake host/worker, CI self-test.
 9. **Scorecard** — one command, one summary, pass/fail counts.
 
+Status: steps 1–6 have a green stub contract suite (H4–H6/H8–H12 simulated);
+live H0–H3 and the H4–H6/H8–H12 manual gates are still pending. H7 is live-only
+and has no stub scenario. Step 9 (scorecard) is not implemented.
+
 Do not start 0.3.0 auto-enchant until this list is green or explicitly waived.
 
 ## 16. Decisions confirmed
@@ -599,9 +663,10 @@ Confirmed 2026-11-11:
    only; no movement, no task logic, no arbitrary commands.
 
 The read-only bridge (health, state, screen, menu, screenshot) is implemented.
-The runner has the bridge adapter and panel adapter. H0/H0b/H1/H2/H3 are
-stub-verified. The next step is live-client H0/H0b/H1–H3 once the clients are
-relaunched, followed by H4 and the remaining live scenarios.
+The runner has the bridge adapter, panel adapter, and stub-only simulation
+controls. H0/H0b/H1–H6/H8/H9/H10–H12 are stub-verified; H4–H12 are explicitly
+simulated. The next step is live-client H0/H0b/H1–H3 once the clients are
+relaunched, followed by the manual H4–H6/H8–H12 gates. H7 remains live-only.
 
 ## 17. Bottom line on “fully test without my input”
 

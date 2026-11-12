@@ -1,0 +1,41 @@
+{
+  "id": "H10",
+  "title": "Death and recovery (simulated)",
+  "priority": "P1",
+  "simulated": true,
+  "simulation": {
+    "trigger": "worker death followed by a cross-dimension recovery refusal",
+    "liveGate": "Kill the worker in the fixture world, confirm the death/cross-dimension refusal logs, and verify any active task fails explicitly instead of disappearing."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "bridgeSimulate", "name": "reset", "as": "bridgeReset" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 2, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelSimulate", "name": "death", "args": { "bot": "${BOT}" }, "as": "death" },
+    { "action": "waitForTask", "item": "oak_log", "status": "FAILED", "timeoutSec": 10, "as": "task" },
+    { "action": "logs", "as": "deathLogs" },
+    { "action": "panelState", "as": "deadPanel" },
+    { "action": "bridgeSimulate", "name": "death", "as": "bridgeDeath" },
+    { "action": "state", "as": "deadState" },
+    { "action": "panelSimulate", "name": "respawn", "args": { "bot": "${BOT}" }, "as": "respawn" },
+    { "action": "panelState", "as": "recoveredPanel" },
+    { "action": "bridgeSimulate", "name": "respawn", "as": "bridgeRespawn" },
+    { "action": "state", "as": "recoveredState" }
+  ],
+  "assert": [
+    { "path": "task.status", "equals": "FAILED" },
+    { "path": "task.reason", "equals": "death" },
+    { "path": "deadPanel.bots.0.health", "equals": 0 },
+    { "path": "deadState.player.health", "equals": 0 },
+    { "path": "deathLogs", "contains": "Death recorded" },
+    { "path": "deathLogs", "contains": "refusing cross-dimension recovery" },
+    { "path": "deathLogs", "contains": "TASK: failed" },
+    { "path": "recoveredPanel.bots.0.health", "equals": 20 },
+    { "path": "recoveredState.player.health", "equals": 20 },
+    { "path": "recoveredPanel.tasks.0.status", "equals": "FAILED" }
+  ]
+}

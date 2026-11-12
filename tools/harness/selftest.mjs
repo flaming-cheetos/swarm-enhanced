@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { BridgeAdapter } from './bridge.mjs';
+import { PanelAdapter } from './panel.mjs';
 import { startPanelStub } from './panel-stub.mjs';
 import { startStub } from './stub.mjs';
 import {
@@ -27,6 +28,7 @@ await checkCorruptField();
 await checkScenarioDrift();
 await checkActionsDisabled();
 await checkConcurrency();
+await checkSimulatedNegatives();
 await checkNormal('restored');
 
 const ok = checks.every((check) => check.pass);
@@ -70,9 +72,9 @@ async function checkNormal(label) {
       panelToken: panel.token,
       bot: 'StubBot',
       outDir,
-      scenarioIds: ['H0', 'H0b', 'H1', 'H2', 'H3']
+      scenarioIds: ['H0', 'H0b', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H8', 'H9', 'H10', 'H11', 'H12']
     });
-    const expected = ['h0', 'h0b', 'h1', 'h2', 'h3'];
+    const expected = ['h0', 'h0b', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'h8', 'h9', 'h10', 'h11', 'h12'];
     const files = await Promise.all(
       expected.flatMap((id) => [
         exists(path.join(outDir, `${id}.json`)),
@@ -84,17 +86,19 @@ async function checkNormal(label) {
       exists(path.join(outDir, 'h0-screenshot.png')),
       exists(path.join(outDir, 'h0b-screenshot.png')),
       exists(path.join(outDir, 'h1-screenshot.png')),
+      exists(path.join(outDir, 'h8-screenshot.png')),
       exists(path.join(outDir, 'screens', 'h0b-screenshot.png'))
     ]);
     check(
       `${label} harness suite`,
       result.ok &&
-        result.results?.length === 5 &&
+        result.results?.length === 13 &&
         result.results.every((scenario) => scenario.status === 'PASS') &&
+        result.results.filter((scenario) => scenario.simulated).length === 8 &&
         files.every(Boolean) &&
         screenshots.every(Boolean),
       result.ok
-        ? `H0/H0b/H1/H2/H3 PASS; evidence files=${files.every(Boolean)} screenshots=${screenshots.every(Boolean)}`
+        ? `H0/H0b/H1-H6/H8-H12 PASS; simulated=8; evidence files=${files.every(Boolean)} screenshots=${screenshots.every(Boolean)}`
         : `failed: ${result.results?.map((r) => `${r.id}: ${r.error}`).join('; ')}`,
       startedAt
     );
@@ -209,6 +213,74 @@ async function checkConcurrency() {
       startedAt
     );
   } finally {
+    await bridge.close();
+  }
+}
+
+async function checkSimulatedNegatives() {
+  const cases = [
+    { id: 'H4', path: 'task.status', equals: 'ACTIVE', label: 'reconnect requeue' },
+    { id: 'H5', path: 'afterRestart.tasks.0.status', equals: 'ACTIVE', label: 'restart no-stranded-active' },
+    { id: 'H6', path: 'task.status', equals: 'COMPLETE', label: 'full-inventory failure' },
+    { id: 'H8', path: 'panel.deposit.status', equals: 'COMPLETE', label: 'menu-mismatch refusal' },
+    { id: 'H9', path: 'staleTruth.fresh', equals: true, label: 'stale-state detection' },
+    { id: 'H10', path: 'task.status', equals: 'COMPLETE', label: 'death explicit failure' },
+    { id: 'H11', path: 'claimTruth.claimCount', equals: 2, label: 'single-claim count' },
+    { id: 'H12', path: 'state.tasks.0.status', equals: 'COMPLETE', label: 'known-limitation failure' }
+  ];
+
+  for (const entry of cases) {
+    const startedAt = new Date().toISOString();
+    const [scenario] = await loadScenarios(undefined, [entry.id]);
+    const normalOut = path.join(RUN_ROOT, `negative-${entry.id}-normal`);
+    const wrongOut = path.join(RUN_ROOT, `negative-${entry.id}-wrong`);
+    const normal = await runSimulatedScenario(scenario, normalOut);
+    const wrong = structuredClone(scenario);
+    wrong.assert.push({ path: entry.path, equals: entry.equals });
+    const failed = await runSimulatedScenario(wrong, wrongOut);
+    await fs.writeFile(
+      path.join(RUN_ROOT, `negative-${entry.id}.json`),
+      JSON.stringify({ scenario: entry, normal, failed }, null, 2),
+      'utf8'
+    );
+    const caught = (failed.error ?? '').includes(entry.path);
+    check(
+      `negative ${entry.id} ${entry.label}`,
+      normal.status === 'PASS' && failed.status === 'FAIL' && caught,
+      normal.status !== 'PASS'
+        ? `normal run unexpectedly failed: ${normal.error}`
+        : failed.status !== 'FAIL'
+          ? 'corrupted assertion unexpectedly passed'
+          : caught
+            ? `caught ${entry.path}: ${failed.error}`
+            : `failed without naming ${entry.path}: ${failed.error}`,
+      startedAt
+    );
+  }
+}
+
+async function runSimulatedScenario(scenario, outDir) {
+  const bridge = await startStub({ allowActions: true });
+  const panelStub = await startPanelStub();
+  const panel = new PanelAdapter({
+    baseUrl: panelStub.baseUrl,
+    token: panelStub.token
+  });
+  const bridgeAdapter = new BridgeAdapter({
+    baseUrl: bridge.baseUrl,
+    token: bridge.token
+  });
+  try {
+    await panel.connect();
+    return await runScenario(
+      scenario,
+      { bridge: bridgeAdapter, panel, mode: 'stub' },
+      outDir,
+      { BOT: 'StubBot' }
+    );
+  } finally {
+    await panel.close();
+    await panelStub.close();
     await bridge.close();
   }
 }

@@ -1,0 +1,31 @@
+{
+  "id": "H6",
+  "title": "Full inventory and unproven completion (simulated)",
+  "priority": "P0",
+  "simulated": true,
+  "simulation": {
+    "trigger": "full player inventory plus an unproven gather completion",
+    "liveGate": "Fill the worker inventory, run a gather task with no drop space, and confirm DROPS: skipped, TASK: retry, then FAILED reason=unproven-completion."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "bridgeSimulate", "name": "reset", "as": "bridgeReset" },
+    { "action": "bridgeSimulate", "name": "inventoryFull", "as": "inventoryFull" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 1, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelSimulate", "name": "retryThenFail", "args": { "bot": "${BOT}" }, "as": "retry" },
+    { "action": "waitForTask", "item": "oak_log", "status": "FAILED", "timeoutSec": 10, "as": "task" },
+    { "action": "logs", "as": "failureLogs" },
+    { "action": "state", "as": "state" }
+  ],
+  "assert": [
+    { "path": "task.status", "equals": "FAILED" },
+    { "path": "task.reason", "equals": "unproven-completion" },
+    { "path": "state.inventoryFull", "equals": true },
+    { "path": "state.inventory", "lengthEquals": 36 },
+    { "path": "failureLogs", "containsInOrder": ["DROPS: skipped (inventory full)", "TASK: retry", "TASK: failed"] }
+  ]
+}

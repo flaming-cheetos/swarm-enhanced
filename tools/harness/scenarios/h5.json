@@ -1,0 +1,31 @@
+{
+  "id": "H5",
+  "title": "Host restart with an ACTIVE task (simulated)",
+  "priority": "P0",
+  "simulated": true,
+  "simulation": {
+    "trigger": "host process restart while a task is ACTIVE",
+    "liveGate": "Restart the host with an ACTIVE task and confirm the queue has no stranded ACTIVE row; the task must be PENDING or explicitly FAILED."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 2, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelSimulate", "name": "hostRestart", "as": "restart" },
+    { "action": "waitForTask", "item": "oak_log", "status": "PENDING", "timeoutSec": 10, "as": "task" },
+    { "action": "panelState", "as": "afterRestart" },
+    { "action": "logs", "as": "restartLogs" },
+    { "action": "panelSimulate", "name": "hostRecover", "as": "recover" },
+    { "action": "panelState", "as": "afterRecover" }
+  ],
+  "assert": [
+    { "path": "task.status", "equals": "PENDING" },
+    { "path": "afterRestart.tasks.0.status", "equals": "PENDING" },
+    { "path": "afterRestart.bots.0.online", "equals": false },
+    { "path": "afterRecover.bots.0.online", "equals": true },
+    { "path": "restartLogs", "containsInOrder": ["Requeued 1 active task(s)", "Host restart"] }
+  ]
+}

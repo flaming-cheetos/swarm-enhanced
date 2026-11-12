@@ -26,6 +26,8 @@ const PANEL_ACTIONS = new Set([
   'taskPause',
   'taskResume',
   'panelAction',
+  'panelSimulate',
+  'panelTruth',
   'waitForTask',
   'waitForBot',
   'logs',
@@ -48,9 +50,17 @@ export async function loadScenarios(dir = DEFAULT_SCENARIO_DIR, scenarioIds = nu
     scenarios.push(scenario);
   }
 
-  const selected = scenarioIds
-    ? scenarios.filter((scenario) => scenarioIds.includes(scenario.id))
-    : scenarios;
+  let selected;
+  if (scenarioIds) {
+    const byId = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
+    selected = scenarioIds.map((id) => {
+      const scenario = byId.get(id);
+      if (!scenario) throw new Error(`scenario not found: ${id}`);
+      return scenario;
+    });
+  } else {
+    selected = scenarios;
+  }
 
   if (selected.length === 0) {
     throw new Error(`no scenarios selected from ${dir}`);
@@ -79,6 +89,12 @@ export async function runHarness({
   await fs.mkdir(path.join(resolvedOut, 'screens'), { recursive: true });
 
   const scenarios = await loadScenarios(scenarioDir, scenarioIds);
+  const simulated = scenarios.some((scenario) => scenario.simulated === true);
+  if (simulated && mode !== 'stub') {
+    throw new Error(
+      'simulated scenarios require --mode stub; live H4-H6/H8-H12 remain a manual gate'
+    );
+  }
   const requiresPanel = scenarios.some(scenarioRequiresPanel);
   const bridge = new BridgeAdapter({ baseUrl, token });
   let panel = null;
@@ -128,7 +144,7 @@ export async function runHarness({
     for (const scenario of scenarios) {
       const result = await runScenario(
         scenario,
-        { bridge, panel },
+        { bridge, panel, mode },
         resolvedOut,
         variables
       );
@@ -167,9 +183,16 @@ export async function runHarness({
       outDir: resolvedOut,
       probe,
       artifacts,
+      simulation: {
+        simulated,
+        label: simulated
+          ? 'SIMULATED — stub contract only; not a live Minecraft result'
+          : 'LIVE'
+      },
       results: results.map((result) => ({
         id: result.id,
         title: result.title,
+        simulated: result.simulated,
         status: result.status,
         error: result.error ?? null,
         assertions: result.assertions,
@@ -184,6 +207,20 @@ export async function runHarness({
 
     await writeEvidence(resolvedOut, 'run.json', run);
     await writeEvidence(resolvedOut, 'result.json', run);
+    if (simulated) {
+      await writeEvidence(resolvedOut, 'simulation.json', {
+        simulated: true,
+        mode,
+        label: run.simulation.label,
+        scenarios: results
+          .filter((result) => result.simulated)
+          .map((result) => ({
+            id: result.id,
+            title: result.title,
+            simulation: result.simulation ?? null
+          }))
+      });
+    }
     await writeEvidence(
       resolvedOut,
       'scenarios.json',
@@ -214,12 +251,17 @@ export async function runScenario(scenario, context, outDir, variables = {}) {
   const startedAt = new Date().toISOString();
   const captures = {};
   const assertions = [];
+  const simulated = scenario.simulated === true;
+  const simulation = scenario.simulation ?? null;
   const events = [];
   const stateSnapshots = [];
   let status = 'PASS';
   let errorText = null;
 
   try {
+    if (simulated && context.mode !== 'stub') {
+      throw new Error('simulated scenario requires stub mode; live variant is a manual gate');
+    }
     for (const [index, sourceStep] of scenario.steps.entries()) {
       const step = resolveTemplates(sourceStep, variables);
       const name = step.as ?? step.action;
@@ -276,6 +318,8 @@ export async function runScenario(scenario, context, outDir, variables = {}) {
     id: scenario.id,
     title: scenario.title ?? scenario.id,
     priority: scenario.priority ?? null,
+    simulated,
+    simulation,
     status,
     error: errorText,
     startedAt,
@@ -342,6 +386,14 @@ async function executeStep(step, context, outDir, scenario) {
       return requirePanel(context).taskResume(step.bot);
     case 'panelAction':
       return requirePanel(context).action(step.name);
+    case 'bridgeSimulate':
+      requireStub(context);
+      return context.bridge.simulate(step.name, step.args ?? {});
+    case 'panelSimulate':
+      requireStub(context);
+      return requirePanel(context).simulate(step.name, step.args ?? {});
+    case 'panelTruth':
+      return requirePanel(context).panelTruth();
     case 'waitForTask':
       return requirePanel(context).waitForTask({
         item: step.item,
@@ -382,6 +434,12 @@ function requirePanel(context) {
   return context.panel;
 }
 
+function requireStub(context) {
+  if (context.mode !== 'stub') {
+    throw new Error('simulation actions require stub mode');
+  }
+}
+
 function scenarioRequiresPanel(scenario) {
   return (
     (scenario.requires ?? []).includes('panel') ||
@@ -390,7 +448,7 @@ function scenarioRequiresPanel(scenario) {
 }
 
 function isStateAction(action) {
-  return action === 'state' || action === 'panelState';
+  return action === 'state' || action === 'panelState' || action === 'panelTruth';
 }
 
 function timeoutMs(timeoutSec) {
@@ -415,6 +473,23 @@ function evaluateAssertion(assertion, captures) {
   } else if (Object.hasOwn(assertion, 'lengthMin')) {
     expected = `length >= ${assertion.lengthMin}`;
     pass = (Array.isArray(actual) || typeof actual === 'string') && actual.length >= assertion.lengthMin;
+  } else if (Object.hasOwn(assertion, 'lengthEquals')) {
+    expected = `length == ${assertion.lengthEquals}`;
+    pass = (Array.isArray(actual) || typeof actual === 'string') && actual.length === assertion.lengthEquals;
+  } else if (Object.hasOwn(assertion, 'containsInOrder')) {
+    const needles = Array.isArray(assertion.containsInOrder) ? assertion.containsInOrder : [];
+    const haystack = JSON.stringify(actual);
+    let cursor = 0;
+    pass = needles.length > 0;
+    for (const needle of needles) {
+      const index = haystack.indexOf(String(needle), cursor);
+      if (index < 0) {
+        pass = false;
+        break;
+      }
+      cursor = index + String(needle).length;
+    }
+    expected = `contains in order ${JSON.stringify(needles)}`;
   } else if (Object.hasOwn(assertion, 'type')) {
     expected = assertion.type;
     pass = assertion.type === 'array' ? Array.isArray(actual) : typeof actual === assertion.type;
@@ -538,6 +613,7 @@ function renderSummary(run, results) {
     '',
     `- Mode: ${run.mode}`,
     `- Status: ${run.status}`,
+    `- Simulation: ${run.simulation?.label ?? 'LIVE'}`,
     `- Bridge: ${run.baseUrl}`,
     ...(run.panelBaseUrl ? [`- Panel: ${run.panelBaseUrl}`] : []),
     `- Started: ${run.startedAt}`,
@@ -553,7 +629,11 @@ function renderSummary(run, results) {
 
   lines.push('## Scenarios', '');
   for (const result of results) {
-    lines.push(`### ${result.id} — ${result.status}`, '', result.title, '');
+    const label = result.simulated ? ' [SIMULATED]' : '';
+    lines.push(`### ${result.id} — ${result.status}${label}`, '', result.title, '');
+    if (result.simulated) {
+      lines.push('Simulation: stub contract only; this is not live client proof.', '');
+    }
     if (result.error) lines.push(`First divergence: ${result.error}`, '');
     if (result.assertions?.length) {
       lines.push('Assertions:');

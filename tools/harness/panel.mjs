@@ -30,6 +30,7 @@ export class PanelAdapter {
     this.timeoutMs = timeoutMs;
     this.ws = null;
     this.state = null;
+    this.stateReceivedAt = null;
     this.logs = [];
     this.waiters = new Set();
     this.closed = false;
@@ -151,6 +152,42 @@ export class PanelAdapter {
     return this.post(`/api/action/${name}`, {});
   }
 
+  async simulate(action, args = {}) {
+    return this.post('/api/simulate', { action, ...args });
+  }
+
+  async panelTruth() {
+    if (!this.state) {
+      throw new PanelContractError('panel state is not available');
+    }
+    const receivedAt = this.stateReceivedAt ?? Date.now();
+    const updatedAt = Date.parse(this.state.updatedAt ?? '');
+    const stateAgeMs = Number.isFinite(updatedAt)
+      ? Math.max(0, Date.now() - updatedAt)
+      : Math.max(0, Date.now() - receivedAt);
+    const bots = Array.isArray(this.state.bots) ? this.state.bots : [];
+    const tasks = Array.isArray(this.state.tasks) ? this.state.tasks : [];
+    const onlineBots = bots.filter((bot) => bot && bot.online === true).length;
+    const activeTaskCount = tasks.filter(
+      (task) => String(task?.status ?? '').toUpperCase() === 'ACTIVE'
+    ).length;
+    const fresh = this.state.stale !== true && stateAgeMs <= 2000;
+
+    return {
+      state: this.state,
+      fresh,
+      stateAgeMs,
+      receivedAt: new Date(receivedAt).toISOString(),
+      onlineBots,
+      liveBots: fresh ? onlineBots : 0,
+      activeTaskCount,
+      liveActiveTaskCount: fresh && onlineBots > 0 ? activeTaskCount : 0,
+      claimCount: Number(this.state.claimCount ?? 0),
+      completionCount: Number(this.state.completionCount ?? 0),
+      rejectedClaims: Number(this.state.rejectedClaims ?? 0)
+    };
+  }
+
   async waitForState(predicate, timeoutMs = this.timeoutMs, label = 'panel state') {
     if (this.state && predicate(this.state)) return this.state;
 
@@ -238,6 +275,7 @@ export class PanelAdapter {
 
     if (message.type === 'state') {
       this.state = message;
+      this.stateReceivedAt = Date.now();
       this.notifyWaiters();
       return;
     }

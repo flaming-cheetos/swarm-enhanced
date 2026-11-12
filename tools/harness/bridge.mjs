@@ -68,6 +68,29 @@ export class BridgeAdapter {
     return response.buffer;
   }
 
+  async simulate(action, args = {}) {
+    const response = await this.request('/harness/simulate', {
+      method: 'POST',
+      body: { action, ...args }
+    });
+    let body;
+    try {
+      body = JSON.parse(response.buffer.toString('utf8'));
+    } catch {
+      throw new BridgeContractError(
+        `simulate returned non-JSON body (HTTP ${response.status})`,
+        { status: response.status, body: response.buffer.toString('utf8') }
+      );
+    }
+    if (response.status !== 200 || body?.ok !== true) {
+      throw new BridgeContractError(
+        `simulate returned HTTP ${response.status} without ok=true`,
+        { status: response.status, body }
+      );
+    }
+    return body;
+  }
+
   async menuClick(slot) {
     if (!Number.isInteger(slot) || slot < 0) {
       throw new BridgeContractError('menuClick slot must be a non-negative integer');
