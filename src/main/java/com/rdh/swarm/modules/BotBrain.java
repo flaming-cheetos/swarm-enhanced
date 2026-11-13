@@ -1273,6 +1273,29 @@ public class BotBrain extends Module {
         return true;
     }
 
+    /**
+     * Close a task on stock the base already holds. The count gate compares inventory plus
+     * this run's deposits, and nothing is in either, so it would keep refusing the
+     * completion and replan the shortfall every tick; the outcome here is the stored
+     * count, which is stated in the log line and in the task's reason.
+     */
+    private void completeFromStock(BotTask task, String itemId, long stored) {
+        task.addCollected(task.getTargetQuantity() - task.getCollectedQuantity());
+        task.setStatus(BotTask.Status.COMPLETE);
+        task.setStatusReason("already-in-stock");
+        ChatUtils.infoPrefix("BotBrain",
+            "TASK: complete %s evidence=already-in-stock (%d %s in base storage; nothing gathered or moved)",
+            task.getId(), stored, itemId);
+        try { sendTaskProgress(task); } catch (Exception ignored) {}
+        try { sendTaskComplete(task); } catch (Exception ignored) {}
+        stopGatheringCommand();
+        if (currentTask == task) currentTask = null;
+        executionPlan = null;
+        planStep = 0;
+        completionTaskId = null;
+        completionAttempts = 0;
+    }
+
     private void failTaskWithReason(BotTask task, String reason) {
         if (task == null) return;
         task.setStatus(BotTask.Status.FAILED);
@@ -1607,10 +1630,7 @@ public class BotBrain extends Module {
                     // That is the phantom this gate exists to stop. Close it on the stock.
                     if (!taskAlreadyWithdrew && deficit > 0 && a >= deficit
                         && currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
-                        ChatUtils.infoPrefix("BotBrain",
-                            "TASK: already-in-stock %s %d/%d %s in base storage; nothing to gather",
-                            currentTask.getId(), a, currentTask.getTargetQuantity(), itemId);
-                        finishTaskWithEvidence(currentTask, "already-in-stock", true);
+                        completeFromStock(currentTask, itemId, a);
                         return;
                     }
                     if (inFlight) {
