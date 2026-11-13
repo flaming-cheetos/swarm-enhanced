@@ -787,3 +787,26 @@ trusted, and any gate that counts them is measuring the index against itself.
 
 **Also found:** `/api/task/cancel` and `/api/task/remove` are no-ops for PENDING rows, so
 a queue cannot be emptied once queued; only terminal rows can be cleared.
+
+## Deposit chests: why a fifth chest vanished (2026-11-14)
+
+Adding a chest through `deposit set` or the panel wrote it to `depositConfig` and then
+called `pushDepositConfigAll()`. That function starts with `adoptRegistryChests()`, which
+compares the deposit list against the **registry** and, when they differ, deletes the whole
+`all` category and rebuilds it from the registry alone. With four registry chests, the
+fifth chest was removed about a second after it was added, before the push went out. The
+worker was never at fault: `addLocalChest` appends with no cap.
+
+Fixed in `c43343d`: `setDepositChest()` registers the position in `BaseRegistry` (reusing
+an existing entry's id and updating its category), so the config and the registry agree
+before reconciliation runs. `/api/chest/add` and `/api/chest/remove` do both halves in one
+action, `/api/debug/deposit` prints the two lists side by side, and MCP exposes `chest_add`,
+`chest_remove`, `deposit_config`.
+
+Proven live on jar `0.1.0+c43343d`: add at `-549,91,603` -> config 5 / registry 5 /
+worker `CHEST: list replaced n=5 gen=116`, and it survived a forced `deposit_push`;
+remove -> config 4 / registry 4 / worker `n=4 gen=117`.
+
+**Lesson worth keeping:** the registry is the single source of truth for chests, so every
+path that adds one must write it. Any future "add chest" feature that only touches the
+deposit config will be erased by the next push.
