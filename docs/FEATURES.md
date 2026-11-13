@@ -853,3 +853,25 @@ an existing record at the twin's coordinates updated that record and left the re
 record in place, so dirt stayed at 4404. A twin reading now always consumes the other half's
 record and writes at the opened half — one record per double chest, at whichever half was
 last opened.
+
+## Base-protection guard, verified live (2026-11-14 16:36, jar 0.1.0+2eedb9e)
+
+Forced with the one-shot `stagefail` hook (worker exec verb) plus a resource with zero stock
+so the bot had to gather: `birch_log`, bot standing 8 blocks from the anchor at -545,90,602.
+
+```
+STAGING: waypoint for 'birch_log' -> none
+STAGE: origin -545 90 602 band=16
+STAGE: gave up reason=no-candidate after=0
+STAGE: refusing to mine 8 blocks from base (need 80) — task stalled instead of digging the base
+tick state=STUCK planStep=0 planSize=1 task=birch_log
+```
+
+Board: `GATHER birch_log 1 -> FAILED | stuck`. `#mine minecraft:birch_log` was never
+dispatched — zero occurrences in the bot log after the refusal. Before this change every one
+of those give-up paths returned "staged" and the mine command went out at the base.
+
+Note the give-up came from `no-candidate` rather than the forced flag: the 64-sample search
+found no reachable floor with headroom in band 16 around that anchor, which is its own
+finding — staging from inside a built-up base is likely to fail, and until now that failure
+meant mining the base.
