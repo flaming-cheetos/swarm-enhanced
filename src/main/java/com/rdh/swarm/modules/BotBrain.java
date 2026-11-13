@@ -1601,6 +1601,18 @@ public class BotBrain extends Module {
                     java.util.UUID taskKey = currentTask != null ? currentTask.getId() : null;
                     boolean taskAlreadyWithdrew = taskKey != null && taskKey.equals(withdrawTaskId)
                         && itemId.equals(withdrawTaskItem);
+                    // A gather task whose target the base already holds in full was being
+                    // satisfied by withdrawing the stock and depositing it straight back:
+                    // net zero movement, yet the task printed COMPLETE with a ledger entry.
+                    // That is the phantom this gate exists to stop. Close it on the stock.
+                    if (!taskAlreadyWithdrew && deficit > 0 && a >= deficit
+                        && currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
+                        ChatUtils.infoPrefix("BotBrain",
+                            "TASK: already-in-stock %s %d/%d %s in base storage; nothing to gather",
+                            currentTask.getId(), a, currentTask.getTargetQuantity(), itemId);
+                        finishTaskWithEvidence(currentTask, "already-in-stock", true);
+                        return;
+                    }
                     if (inFlight) {
                         // A withdrawal for this step is already out; wait for the transfer
                         // rather than asking again or mining over the top of it.
