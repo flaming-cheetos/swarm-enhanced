@@ -647,6 +647,25 @@ keep-list items reported `failed`, so the gate retried forever.
 `DEPOSIT: nothing to deposit (keep-list items only)` and counts as complete rather than
 retrying. `deposit` with no chest still fails loudly.
 
+## Two honesty bugs found by running tasks (2026-11-13, fixed)
+
+Running real work surfaced two completions that were theatre, both fixed:
+
+1. **Withdraw-and-return counts as gathering.** A `gather 64 oak_log` task found 64
+   oak_log already in the chests, withdrew them, counted the withdrawal as gathering,
+   deposited them back into the same chest and printed `COMPLETE` with a ledger entry.
+   Net movement: zero. A gather whose target the base already covers now closes with
+   `evidence=already-in-stock` and never withdraws the stock.
+2. **A requeued task was never re-dispatched.** Every dispatch trigger was an event, so
+   after a lease expiry the task sat `PENDING` while the bot idled, with no failure to
+   explain it. The maintenance sweep now hands pending work to workers that report
+   themselves idle.
+
+**Live after the fix:** `gather oak_log 64` (stocked) -> `COMPLETE evidence=already-in-stock`,
+nothing moved; `gather andesite 200` (56 short) -> mined, deposited, `DEPOSIT: complete
+moved=215`, `ledger += 200 minecraft:andesite landed in chests`, `COMPLETE
+evidence=verified-empty`.
+
 ## Status table
 
 | Feature | Status | Where it lives |
