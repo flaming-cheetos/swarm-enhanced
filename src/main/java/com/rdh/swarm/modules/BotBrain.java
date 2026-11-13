@@ -555,6 +555,7 @@ public class BotBrain extends Module {
      * That is the hang Gate A exists to catch. Watch the count itself, not the command.
      */
     private static final long GATHER_STALL_MS = 45_000L;
+    private long gatherApproachUntil = 0L;
     private String gatherStallTaskId = "";
     private String gatherStallItem = "";
     private int gatherStallCount = -1;
@@ -1750,6 +1751,7 @@ public class BotBrain extends Module {
 
                 // Send mine command once. First try a goal that ends on the block.
                 if (!ensureStagedAwayFromBase()) return;
+                if (System.currentTimeMillis() < gatherApproachUntil) return;
                 if (!mineBlock.equals(currentlyMining)) {
                     String cmd = "#mine minecraft:" + mineBlock;
 
@@ -1953,6 +1955,7 @@ public class BotBrain extends Module {
             } catch (Exception ignored) {}
 
                 if (!ensureStagedAwayFromBase()) return;
+                if (System.currentTimeMillis() < gatherApproachUntil) return;
                 if (!mineBlock.equals(currentlyMining)) {
                 String cmd = "#mine minecraft:" + mineBlock;
                 
@@ -5393,6 +5396,9 @@ public class BotBrain extends Module {
                     approach.getX(), approach.getY(), approach.getZ(), blockId);
                 if (canSendBaritone()) {
                     sendBaritoneChat("#goto " + approach.getX() + " " + (approach.getY() + 1) + " " + approach.getZ());
+                    // Hold off the mine until the bot is actually next to the block; re-issuing
+                    // it after three seconds cancelled the walk it had just been sent on.
+                    gatherApproachUntil = now + 15_000L;
                 }
             } else {
                 ChatUtils.warningPrefix("BotBrain",
