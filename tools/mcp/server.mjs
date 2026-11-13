@@ -593,6 +593,24 @@ const TOOLS = [
     handler: () => panel('POST', '/api/action/deposit_push', {}),
   },
   {
+    name: 'chest_add',
+    description: 'Add a deposit chest by coordinates. Writes the registry as well as the deposit config, because the config is reconciled from the registry on every push.',
+    inputSchema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, category: { type: 'string' } }, required: ['x', 'y', 'z'] },
+    handler: (a) => panel('POST', '/api/chest/add', { x: a.x, y: a.y, z: a.z, category: a.category || 'all' }),
+  },
+  {
+    name: 'chest_remove',
+    description: 'Remove a deposit chest by coordinates, from the deposit config and the registry both.',
+    inputSchema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['x', 'y', 'z'] },
+    handler: (a) => panel('POST', '/api/chest/remove', { x: a.x, y: a.y, z: a.z }),
+  },
+  {
+    name: 'deposit_config',
+    description: 'The host deposit config and the registry storage entries side by side: they must agree, or a push erases the difference.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => panel('POST', '/api/debug/deposit', {}),
+  },
+  {
     name: 'scan_chests',
     description: 'Ask a bot to scan known chests and refresh the storage index. Takes ~40 s for 4 chests.',
     inputSchema: { type: 'object', properties: {} },

@@ -469,6 +469,15 @@ public class SwarmWebServer {
                     + ",\"tasks\":" + gson.toJson(tasks) + "}";
             }
 
+            if ("/api/debug/deposit".equals(path)) {
+                // What the host believes the deposit config is, and which storage entries
+                // the registry holds: the two must agree or a push will erase the difference.
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                return mod.host.depositConfigJson();
+            }
+
             if ("/api/debug/chest".equals(path)) {
                 // B1 chest_delta backend: read a registry chest by id, synchronously.
                 if (mod == null || !mod.isHost() || mod.host == null) {
@@ -835,6 +844,37 @@ public class SwarmWebServer {
                     int seeded = host.adoptRegistryChests();
                     host.pushDepositConfigAll();
                     logInfo("Deposit Push: chest list sent to all workers (seeded " + seeded + " from registry)");
+                }
+                case "/api/chest/add" -> {
+                    // One operator action: config + registry + push. Adding only to the
+                    // config left adoption to erase the chest on the next push.
+                    String xs = extractJson(body, "x");
+                    String ys = extractJson(body, "y");
+                    String zs = extractJson(body, "z");
+                    String cat = extractJson(body, "category");
+                    try {
+                        int x = Integer.parseInt(xs.trim());
+                        int y = Integer.parseInt(ys.trim());
+                        int z = Integer.parseInt(zs.trim());
+                        host.setDepositChest(cat == null || cat.isBlank() ? "all" : cat, x, y, z);
+                        logInfo("Chest added: " + x + "," + y + "," + z + " category=" + cat + " -> " + host.depositConfigJson());
+                    } catch (Exception e) {
+                        logWarn("Chest add needs x,y,z ints (category optional)");
+                    }
+                }
+                case "/api/chest/remove" -> {
+                    String xs = extractJson(body, "x");
+                    String ys = extractJson(body, "y");
+                    String zs = extractJson(body, "z");
+                    try {
+                        int x = Integer.parseInt(xs.trim());
+                        int y = Integer.parseInt(ys.trim());
+                        int z = Integer.parseInt(zs.trim());
+                        boolean removed = host.removeDepositChest(x, y, z);
+                        logInfo("Chest remove " + x + "," + y + "," + z + " -> " + removed + " " + host.depositConfigJson());
+                    } catch (Exception e) {
+                        logWarn("Chest remove needs x,y,z ints");
+                    }
                 }
                 case "/api/command" -> {
                     String target = extractJson(body, "target");

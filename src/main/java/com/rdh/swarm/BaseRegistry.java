@@ -112,6 +112,20 @@ public class BaseRegistry {
         return id == null ? null : entries.get(id);
     }
 
+    public synchronized boolean remove(String id) {
+        if (id == null || entries.remove(id) == null) return false;
+        save();
+        return true;
+    }
+
+    /** The entry at a position, whatever its id, so a chest is never registered twice. */
+    public synchronized Entry byPosition(int x, int y, int z) {
+        for (Entry e : entries.values()) {
+            if (e != null && e.x == x && e.y == y && e.z == z) return e;
+        }
+        return null;
+    }
+
     public synchronized List<Entry> all() { return new ArrayList<>(entries.values()); }
 
     public synchronized List<Entry> storage() {

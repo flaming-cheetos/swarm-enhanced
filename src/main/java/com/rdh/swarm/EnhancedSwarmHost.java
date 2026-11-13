@@ -162,12 +162,102 @@ public class EnhancedSwarmHost extends Thread {
         boolean added = depositConfig.addChest(server, category, x, y, z);
         String dimension = currentDimension();
         if (added) {
+            // The registry is what pushDepositConfigAll() reconciles against, so a chest
+            // that only exists in the deposit config is erased by the next push. Register
+            // it here, otherwise adding a fifth chest silently leaves the worker with four.
+            registerChestPosition(category, x, y, z);
             ChatUtils.infoPrefix("Swarm", "CHEST: add %s %d %d %d %s", dimension, x, y, z, category);
             ChatUtils.infoPrefix("Swarm", "Linked %s chest at %d,%d,%d (server: %s)", category, x, y, z, server);
             pushDepositConfigAll();
         } else {
             ChatUtils.infoPrefix("Swarm", "CHEST: duplicate ignored %s %d %d %d %s", dimension, x, y, z, category);
         }
+    }
+
+    /**
+     * Put an operator-added chest in the registry so it survives reconciliation. Without
+     * this the deposit list and the registry disagree, adoption rewrites the list from the
+     * registry, and the chest the operator just added disappears from the worker.
+     */
+    private void registerChestPosition(String category, int x, int y, int z) {
+        try {
+            BaseRegistry.Entry existing = baseRegistry.byPosition(x, y, z);
+            if (existing != null) {
+                if (category != null && !category.isBlank()) existing.category = category;
+                baseRegistry.save();
+                return;
+            }
+            BaseRegistry.Entry e = new BaseRegistry.Entry();
+            e.id = "chest-auto-" + x + "_" + y + "_" + z;
+            e.kind = "chest";
+            e.x = x; e.y = y; e.z = z;
+            e.category = category == null || category.isBlank() ? "all" : category;
+            e.source = "operator deposit add (" + currentDimension() + ")";
+            baseRegistry.add(e);
+            baseRegistry.save();
+            ChatUtils.infoPrefix("Swarm", "REGISTRY: registered %s at %d,%d,%d", e.id, x, y, z);
+        } catch (Exception ex) {
+            ChatUtils.warningPrefix("Swarm", "REGISTRY: could not register chest: %s", ex.getMessage());
+        }
+    }
+
+    /** Remove a chest from both the deposit config and the registry. */
+    public boolean removeDepositChest(int x, int y, int z) {
+        boolean removed = false;
+        try {
+            String server = getCurrentServer();
+            java.util.Map<String, java.util.List<int[]>> chests = depositConfig.getChests(server);
+            for (var entry : chests.entrySet()) {
+                java.util.List<int[]> list = entry.getValue();
+                for (int[] p : new ArrayList<>(list)) {
+                    if (p != null && p.length >= 3 && p[0] == x && p[1] == y && p[2] == z) {
+                        depositConfig.removeChest(server, entry.getKey(), list.indexOf(p) + 1);
+                        removed = true;
+                        break;
+                    }
+                }
+            }
+            BaseRegistry.Entry e = baseRegistry.byPosition(x, y, z);
+            if (e != null && e.isStorage()) {
+                baseRegistry.remove(e.id);
+                removed = true;
+            }
+            if (removed) pushDepositConfigAll();
+        } catch (Exception ex) {
+            ChatUtils.warningPrefix("Swarm", "Could not remove chest at %d,%d,%d: %s", x, y, z, ex.getMessage());
+        }
+        return removed;
+    }
+
+    /** What the host believes the deposit config is, for operator checks. */
+    public String depositConfigJson() {
+        String server = getCurrentServer();
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"ok\":true,\"server\":\"").append(server).append("\",\"generation\":")
+          .append(depositConfig.getGeneration(server)).append(",\"chests\":{");
+        boolean firstCat = true;
+        for (var entry : depositConfig.getChests(server).entrySet()) {
+            if (!firstCat) sb.append(',');
+            firstCat = false;
+            sb.append('"').append(entry.getKey()).append("\":[");
+            boolean first = true;
+            for (int[] p : entry.getValue()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append('[').append(p[0]).append(',').append(p[1]).append(',').append(p[2]).append(']');
+            }
+            sb.append(']');
+        }
+        sb.append("},\"registry_storage\":[");
+        boolean first = true;
+        for (BaseRegistry.Entry e : baseRegistry.storage()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append("{\"id\":\"").append(e.id).append("\",\"pos\":[").append(e.x).append(',')
+              .append(e.y).append(',').append(e.z).append("]}");
+        }
+        sb.append("]}");
+        return sb.toString();
     }
 
     public void setBaseAnchor(int x, int y, int z) {
