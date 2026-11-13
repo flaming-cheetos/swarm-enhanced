@@ -543,7 +543,56 @@ public class EnhancedSwarmHost extends Thread {
         }
     }
 
+    /**
+     * The base registry is where this base's chests actually live; the deposit config is
+     * the per-server format workers get pushed. Nothing ever copied one into the other, so
+     * a worker holding a full inventory answered "No deposit chest for category: ores"
+     * while the host had four chests in its registry. Seed the push config from the
+     * registry whenever this server has none.
+     */
+    public int adoptRegistryChests() {
+        int added = 0;
+        try {
+            String server = getCurrentServer();
+            List<int[]> want = new ArrayList<>();
+            for (BaseRegistry.Entry e : baseRegistry.storage()) {
+                if (e.isStorage()) want.add(new int[]{e.x, e.y, e.z});
+            }
+            if (want.isEmpty()) return 0;
+            java.util.Map<String, List<int[]>> existing = depositConfig.getChests(server);
+            List<int[]> have = existing == null ? null : existing.get("all");
+            if (samePositions(have, want)) return 0;
+            // The registry is measured truth about this base. A stale or hand-typed
+            // entry that no longer names a chest made one dead target poison every run,
+            // so replace the list wholesale instead of appending to it.
+            depositConfig.removeChest(server, "all");
+            for (int[] p : want) {
+                if (depositConfig.addChest(server, "all", p[0], p[1], p[2])) added++;
+            }
+            if (added > 0) {
+                depositConfig.save();
+                ChatUtils.infoPrefix("Swarm", "REGISTRY: reconciled %d deposit chest(s) for %s", added, server);
+            }
+        } catch (Exception e) {
+            ChatUtils.warningPrefix("Swarm", "REGISTRY: could not seed deposit chests: %s", e.getMessage());
+        }
+        return added;
+    }
+
+    private static boolean samePositions(List<int[]> a, List<int[]> b) {
+        if (a == null || b == null || a.size() != b.size()) return false;
+        for (int[] p : a) {
+            boolean found = false;
+            for (int[] q : b) {
+                if (q[0] == p[0] && q[1] == p[1] && q[2] == p[2]) { found = true; break; }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
     public void pushDepositConfigAll() {
+        adoptRegistryChests();
         String server = getCurrentServer();
         Map<String, List<int[]>> chests = depositConfig.getChests(server);
         int generation = depositConfig.getGeneration(server);

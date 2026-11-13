@@ -142,6 +142,10 @@ public class EnhancedSwarmConnection extends Thread {
                                     try {
                                     var depositConfig = host.getDepositConfig();
                                     String server = host.getCurrentServer();
+                                    // The registry is the source of truth for this base's
+                                    // chests; without this the push below sends nothing and
+                                    // the worker has no category to deposit into.
+                                    host.adoptRegistryChests();
                                     java.util.Map<String, java.util.List<int[]>> chests = depositConfig.getChests(server);
 
                                     int pushed = 0;

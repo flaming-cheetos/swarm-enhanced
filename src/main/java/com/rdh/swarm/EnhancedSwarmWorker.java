@@ -765,6 +765,13 @@ public class EnhancedSwarmWorker extends Thread {
                 // deposit <category>
                 String category = args.trim().toLowerCase();
                 List<int[]> list = depositChests.get(category);
+                // A base with one general pile registers it as "all"; accept a category
+                // request against it instead of answering "No deposit chest for category".
+                if ((list == null || list.isEmpty())
+                    && depositChests.get("all") != null && !depositChests.get("all").isEmpty()) {
+                    category = "all";
+                    list = depositChests.get("all");
+                }
                 if (list != null && !list.isEmpty()) {
                     if (!startDeposit("api", category)) {
                         ChatUtils.warningPrefix("Swarm", "Already depositing");

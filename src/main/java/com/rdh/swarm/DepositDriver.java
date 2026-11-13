@@ -246,7 +246,14 @@ public final class DepositDriver {
         Set<String> seen = new LinkedHashSet<>();
         List<String> categories = new ArrayList<>();
         if (onlyCategory != null) {
+            List<int[]> forCategory = depositChestsSnapshot().get(onlyCategory);
             categories.add(onlyCategory);
+            // A base with one general pile registers it as "all". A category request
+            // that only looks under its own key finds no target and refuses the whole
+            // deposit even though the base has chests, so fall back to the general pile.
+            if ((forCategory == null || forCategory.isEmpty()) && depositChestsSnapshot().containsKey("all")) {
+                categories.add("all");
+            }
         } else {
             for (String key : depositChestsSnapshot().keySet()) {
                 if (key != null && !key.equalsIgnoreCase("all")) categories.add(key.toLowerCase());
@@ -256,8 +263,10 @@ public final class DepositDriver {
         }
 
         for (String category : categories) {
+            // Skipping a category that merely lacks a chest would leave an empty
+            // target set for the real request; the loop below then reports no-target.
             List<int[]> positions = depositChestsSnapshot().get(category);
-            if (positions == null) continue;
+            if (positions == null || positions.isEmpty()) continue;
             for (int[] p : new ArrayList<>(positions)) {
                 if (p == null || p.length < 3) continue;
                 String key = dimension + "|" + category.toLowerCase() + "|" + p[0] + "|" + p[1] + "|" + p[2];
@@ -585,6 +594,18 @@ public final class DepositDriver {
     }
 
     private void failTarget(String reason) {
+        if ("no-target".equals(reason) && !ownedMenu) {
+            // A chest list can name a block the world no longer has. One dead entry must
+            // not fail a run that already reached the other chests, so skip it and go on.
+            if (target != null) {
+                ChatUtils.warningPrefix("BotBrain", "DEPOSIT: skipped chest=%s %d %d %d (not a container)",
+                    target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ());
+            }
+            target = null;
+            Minecraft skipped = mcSupplier.get();
+            if (skipped != null) selectNext(skipped); else finish();
+            return;
+        }
         if ("timeout".equals(reason)) {
             long nowMs = System.currentTimeMillis();
             Minecraft d = mcSupplier.get();
@@ -619,6 +640,13 @@ public final class DepositDriver {
     private void finish() {
         active = false;
         requested = false;
+        if (!succeeded && (failure == null || failure.isEmpty()) && runDelta().isEmpty() && totalSteps == 0) {
+            // Reaching every chest and moving nothing is not an error: the inventory held
+            // only keep-list items. Reporting it as failed made the task gate retry a
+            // deposit that has nothing to do, forever.
+            succeeded = true;
+            ChatUtils.infoPrefix("BotBrain", "DEPOSIT: nothing to deposit (keep-list items only)");
+        }
         phase = succeeded ? Phase.DONE : Phase.FAILED;
         if (!succeeded) {
             if (failure == null || failure.isEmpty()) failure = "no-op";

@@ -585,6 +585,12 @@ const TOOLS = [
     handler: () => panel('POST', '/api/action/deposit_self', {}),
   },
   {
+    name: 'deposit_push',
+    description: 'Re-push the base chest list to every worker, seeding it from the registry first when the push config is empty.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => panel('POST', '/api/action/deposit_push', {}),
+  },
+  {
     name: 'scan_chests',
     description: 'Ask a bot to scan known chests and refresh the storage index. Takes ~40 s for 4 chests.',
     inputSchema: { type: 'object', properties: {} },

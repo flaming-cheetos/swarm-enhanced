@@ -822,6 +822,13 @@ public class SwarmWebServer {
                     host.sendAll("swarm:all scan");
                     logInfo("Scan Chests: requested a storage scan from all workers");
                 }
+                case "/api/action/deposit_push" -> {
+                    // Re-push the chest list to every worker after the registry changed or a
+                    // worker joined without receiving the connect-time push.
+                    int seeded = host.adoptRegistryChests();
+                    host.pushDepositConfigAll();
+                    logInfo("Deposit Push: chest list sent to all workers (seeded " + seeded + " from registry)");
+                }
                 case "/api/command" -> {
                     String target = extractJson(body, "target");
                     String cmd = extractJson(body, "cmd");
