@@ -5369,10 +5369,25 @@ public class BotBrain extends Module {
             }
             gatherStallReissues = 1;
             gatherStallSince = now;
-            ChatUtils.warningPrefix("BotBrain",
-                "GATHER: %s stuck at %d/%d for %ds; stopping Baritone and re-issuing the mine",
-                itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000);
-            if (canSendBaritone()) sendBaritoneChat("#stop");
+            // The block is there; Baritone just is not going to it. Re-issuing the same
+            // mine command produced a second identical stall, so walk to the block first
+            // and let the normal path re-issue the mine on arrival.
+            BlockPos approach = blockId == null ? null
+                : findBreakTarget(blockId, 64);
+            if (approach != null) {
+                ChatUtils.warningPrefix("BotBrain",
+                    "GATHER: %s stuck at %d/%d for %ds; walking to %d %d %d to reach %s",
+                    itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000,
+                    approach.getX(), approach.getY(), approach.getZ(), blockId);
+                if (canSendBaritone()) {
+                    sendBaritoneChat("#goto " + approach.getX() + " " + (approach.getY() + 1) + " " + approach.getZ());
+                }
+            } else {
+                ChatUtils.warningPrefix("BotBrain",
+                    "GATHER: %s stuck at %d/%d for %ds; stopping Baritone and re-issuing the mine",
+                    itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000);
+                if (canSendBaritone()) sendBaritoneChat("#stop");
+            }
             currentlyMining = null;
             mineCommandSent = false;
             return;
