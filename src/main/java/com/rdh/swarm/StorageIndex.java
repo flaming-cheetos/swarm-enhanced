@@ -114,6 +114,12 @@ public class StorageIndex {
                         o.addProperty("usedSlots", chest.usedSlots);
                         o.addProperty("totalSlots", chest.totalSlots);
                         o.addProperty("fullness", chest.fullness);
+                        o.addProperty("doubleChest", chest.doubleChest);
+                        if (chest.twin != null && chest.twin.length >= 3) {
+                            JsonArray t = new JsonArray();
+                            t.add(chest.twin[0]); t.add(chest.twin[1]); t.add(chest.twin[2]);
+                            o.add("twin", t);
+                        }
                         JsonObject counts = new JsonObject();
                         for (var e : chest.counts.entrySet()) counts.addProperty(e.getKey(), e.getValue());
                         o.add("counts", counts);
@@ -152,6 +158,11 @@ public class StorageIndex {
                             r.usedSlots = o.has("usedSlots") ? o.get("usedSlots").getAsInt() : 0;
                             r.totalSlots = o.has("totalSlots") ? o.get("totalSlots").getAsInt() : 0;
                             r.fullness = o.has("fullness") ? o.get("fullness").getAsDouble() : 0.0;
+                            r.doubleChest = o.has("doubleChest") && o.get("doubleChest").getAsBoolean();
+                            if (o.has("twin") && o.getAsJsonArray("twin").size() >= 3) {
+                                var tw = o.getAsJsonArray("twin");
+                                r.twin = new int[]{tw.get(0).getAsInt(), tw.get(1).getAsInt(), tw.get(2).getAsInt()};
+                            }
                             if (o.has("counts")) {
                                 JsonObject counts = o.getAsJsonObject("counts");
                                 for (var ce : counts.entrySet()) {
@@ -210,31 +221,11 @@ public class StorageIndex {
         // the record that already represents the container; if it names a twin, drop the
         // twin's own record so the two halves never add up twice.
         if (twin != null && twin.length >= 3) {
+            // A twin reading always consumes the other half's record and then writes this
+            // one: exactly one record per double chest, at whichever half was last opened.
+            // Folding into an existing record instead left the reading's own record behind
+            // and the halves kept summing.
             String twinKey = chestKey(twin[0], twin[1], twin[2]);
-            for (var cEntry : serverMap.entrySet()) {
-                ChestRecord canonical = cEntry.getValue().get(twinKey);
-                if (canonical != null) {
-                    // twin was the canonical record; fold this reading into it instead.
-                    canonical.counts.clear();
-                    if (counts != null) {
-                        for (Map.Entry<String, Long> e2 : counts.entrySet()) {
-                            if (e2.getKey() != null && e2.getValue() != null && e2.getValue() > 0L) {
-                                canonical.counts.put(e2.getKey(), e2.getValue());
-                            }
-                        }
-                    }
-                    canonical.usedSlots = usedSlots;
-                    canonical.totalSlots = totalSlots;
-                    canonical.fullness = totalSlots > 0 ? (double) usedSlots / (double) totalSlots : 0.0;
-                    canonical.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
-                    canonical.status = ChestStatus.FRESH;
-                    if (canonical.twin == null) canonical.twin = new int[]{x, y, z};
-                    save();
-                    return;
-                }
-            }
-            // No canonical record yet: this reading becomes it, and the twin's own record
-            // (if one exists) is dropped so the halves cannot be summed twice.
             for (var cEntry : serverMap.entrySet()) {
                 cEntry.getValue().remove(twinKey);
             }
@@ -254,6 +245,7 @@ public class StorageIndex {
                     r.totalSlots = totalSlots;
                     r.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
                     r.status = ChestStatus.FRESH;
+                    for (var c2 : serverMap.entrySet()) c2.getValue().remove(key);
                     save();
                     return;
                 }
