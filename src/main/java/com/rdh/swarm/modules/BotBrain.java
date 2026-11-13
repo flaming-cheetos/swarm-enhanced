@@ -555,6 +555,7 @@ public class BotBrain extends Module {
      * That is the hang Gate A exists to catch. Watch the count itself, not the command.
      */
     private static final long GATHER_STALL_MS = 45_000L;
+    private static final int GATHER_MAX_REISSUES = 4;
     private long gatherApproachUntil = 0L;
     private String gatherStallTaskId = "";
     private String gatherStallItem = "";
@@ -5363,61 +5364,62 @@ public class BotBrain extends Module {
             return;
         }
         if (now - gatherStallSince < GATHER_STALL_MS) return;
-        if (gatherStallReissues == 0) {
-            // Distinguish "Baritone lost the thread" from "this terrain has none of that
-            // block". The second case cannot be fixed by waiting or by asking again, so
-            // say so immediately instead of spending two stall windows on it.
-            String blockId = currentlyMining;
-            if (blockId != null && mc.level != null && findBreakTarget(blockId, 64) == null) {
-                ChatUtils.warningPrefix("BotBrain",
-                    "GATHER: no %s within 64 blocks for %s (%d/%d in hand); failing with a reason instead of stalling",
-                    blockId, itemId, have, task.getTargetQuantity());
-                if (canSendBaritone()) sendBaritoneChat("#stop");
-                currentlyMining = null;
-                mineCommandSent = false;
-                gatherStallItem = "";
-                gatherStallCount = -1;
-                gatherStallSince = 0;
-                gatherStallReissues = 0;
-                failTaskWithReason(task, "no-target-nearby");
-                return;
-            }
-            gatherStallReissues = 1;
-            gatherStallSince = now;
-            // The block is there; Baritone just is not going to it. Re-issuing the same
-            // mine command produced a second identical stall, so walk to the block first
-            // and let the normal path re-issue the mine on arrival.
-            BlockPos approach = blockId == null ? null
-                : findBreakTarget(blockId, 64);
-            if (approach != null) {
-                ChatUtils.warningPrefix("BotBrain",
-                    "GATHER: %s stuck at %d/%d for %ds; walking to %d %d %d to reach %s",
-                    itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000,
-                    approach.getX(), approach.getY(), approach.getZ(), blockId);
-                if (canSendBaritone()) {
-                    sendBaritoneChat("#goto " + approach.getX() + " " + (approach.getY() + 1) + " " + approach.getZ());
-                    // Hold off the mine until the bot is actually next to the block; re-issuing
-                    // it after three seconds cancelled the walk it had just been sent on.
-                    gatherApproachUntil = now + 15_000L;
-                }
-            } else {
-                ChatUtils.warningPrefix("BotBrain",
-                    "GATHER: %s stuck at %d/%d for %ds; stopping Baritone and re-issuing the mine",
-                    itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000);
-                if (canSendBaritone()) sendBaritoneChat("#stop");
+        String blockId = currentlyMining;
+        BlockPos approach = (blockId != null && mc.level != null) ? findBreakTarget(blockId, 64) : null;
+        // Distinguish "Baritone lost the thread" from "this terrain has none of that
+        // block". The second case cannot be fixed by waiting or by asking again, so say
+        // so immediately instead of spending several stall windows on it.
+        if (approach == null && gatherStallReissues == 0) {
+            ChatUtils.warningPrefix("BotBrain",
+                "GATHER: no %s within 64 blocks for %s (%d/%d in hand); failing with a reason instead of stalling",
+                blockId, itemId, have, task.getTargetQuantity());
+            if (canSendBaritone()) sendBaritoneChat("#stop");
+            currentlyMining = null;
+            mineCommandSent = false;
+            gatherStallItem = "";
+            gatherStallCount = -1;
+            gatherStallSince = 0;
+            gatherStallReissues = 0;
+            failTaskWithReason(task, "no-target-nearby");
+            return;
+        }
+        // A single transient path failure is normal while mining out a large deficit; a
+        // fixed task is worth several attempts before it is declared dead.
+        if (gatherStallReissues >= GATHER_MAX_REISSUES) {
+            ChatUtils.warningPrefix("BotBrain",
+                "GATHER: %s made no progress for %ds across %d attempts; failing the task instead of idling",
+                itemId, ((GATHER_STALL_MS / 1000) * (GATHER_MAX_REISSUES + 1)), GATHER_MAX_REISSUES);
+            gatherStallItem = "";
+            gatherStallCount = -1;
+            gatherStallSince = 0;
+            gatherStallReissues = 0;
+            failTaskWithReason(task, "no-progress");
+            return;
+        }
+        gatherStallReissues++;
+        gatherStallSince = now;
+        if (approach != null && gatherStallReissues % 2 == 1) {
+            ChatUtils.warningPrefix("BotBrain",
+                "GATHER: %s stuck at %d/%d for %ds; walking to %d %d %d to reach %s (attempt %d)",
+                itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000,
+                approach.getX(), approach.getY(), approach.getZ(), blockId, gatherStallReissues);
+            if (canSendBaritone()) {
+                sendBaritoneChat("#goto " + approach.getX() + " " + (approach.getY() + 1) + " " + approach.getZ());
+                // Hold off the mine until the bot is actually next to the block; re-issuing
+                // it after three seconds cancelled the walk it had just been sent on.
+                gatherApproachUntil = now + 15_000L;
             }
             currentlyMining = null;
             mineCommandSent = false;
             return;
         }
         ChatUtils.warningPrefix("BotBrain",
-            "GATHER: %s made no progress for %ds after a re-issue; failing the task instead of idling",
-            itemId, (GATHER_STALL_MS / 1000) * 2);
-        gatherStallItem = "";
-        gatherStallCount = -1;
-        gatherStallSince = 0;
-        gatherStallReissues = 0;
-        failTaskWithReason(task, "no-progress");
+            "GATHER: %s stuck at %d/%d for %ds; stopping Baritone and re-issuing the mine (attempt %d)",
+            itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000, gatherStallReissues);
+        if (canSendBaritone()) sendBaritoneChat("#stop");
+        currentlyMining = null;
+        mineCommandSent = false;
+        gatherApproachUntil = 0L;
     }
 
     private void armBreakWatch(String blockId) {
