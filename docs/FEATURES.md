@@ -623,6 +623,30 @@ readiness from a new pid plus a fresh `Initializing Enhanced Swarm`/join line ra
 `/api/debug/health`. `mc_command` refuses anything off its safe list (`/item replace` was
 rejected), which is why the chest test used the real deposit path.
 
+## The task loop actually completes (2026-11-13)
+
+A queued task now runs to a verified end on the live test server:
+
+```
+task_add jamal minecraft:cobblestone 32
+  -> bot mines, deposits, host ledger records the evidence
+TASK: ledger de521082 += 32 minecraft:cobblestone landed in chests
+TASK: complete de521082 evidence=verified-empty      (progress 32/32)
+storage cobblestone 1646 -> 1678, chest-main 519 -> 551
+```
+
+Six defects blocked that before today, all fixed and deployed: the deposit chest list
+was never seeded from the base registry (workers answered "No deposit chest for
+category"); a stale hand-typed chest coordinate shadowed a real one and failed whole
+runs; a category request did not fall back to the base's general `all` pile; a chest
+left open made every later chest fail the menu guard; the open interaction was tried
+once so one lost packet aborted the run; and a run that reached every chest with only
+keep-list items reported `failed`, so the gate retried forever.
+
+**Honest limit:** a deposit with nothing movable is now reported as
+`DEPOSIT: nothing to deposit (keep-list items only)` and counts as complete rather than
+retrying. `deposit` with no chest still fails loudly.
+
 ## Status table
 
 | Feature | Status | Where it lives |
