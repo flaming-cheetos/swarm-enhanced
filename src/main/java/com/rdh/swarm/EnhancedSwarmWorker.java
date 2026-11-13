@@ -266,12 +266,52 @@ public class EnhancedSwarmWorker extends Thread {
         } catch (IOException ignored) {}
     }
 
+    /** Send the contents of a chest we just opened, so the host replaces its record. */
+    private void publishMeasuredChest(int x, int y, int z, int used, int total, CharSequence slotsJson) {
+        try {
+            StringBuilder container = new StringBuilder("{");
+            java.util.LinkedHashMap<String, Long> counts = new java.util.LinkedHashMap<>();
+            String json = slotsJson == null ? "" : slotsJson.toString();
+            // slotsJson is [{slot:..,item:"id",count:..},...]; fold it into per-item totals.
+            for (String part : json.split("\\},\\{")) {
+                String id = between(part, "\"item\":\"", "\"");
+                String cnt = between(part, "\"count\":", ",");
+                if (cnt.endsWith("}")) cnt = cnt.substring(0, cnt.length() - 1);
+                if (id == null || id.isEmpty()) continue;
+                long n;
+                try { n = Long.parseLong(cnt.trim()); } catch (Exception e) { continue; }
+                counts.merge(id, n, Long::sum);
+            }
+            boolean first = true;
+            for (var e : counts.entrySet()) {
+                if (!first) container.append(',');
+                first = false;
+                container.append('"').append(e.getKey()).append("\":").append(e.getValue());
+            }
+            container.append('}');
+            String msg = "CHEST_DELTA:measured:" + x + ":" + y + ":" + z + "|{\"counts\":{},"
+                + "\"container\":" + container + ",\"absolute\":true,"
+                + "\"usedSlots\":" + used + ",\"totalSlots\":" + total + ","
+                + "\"lastScan\":" + System.currentTimeMillis() + "}";
+            sendProtocol(msg);
+        } catch (Exception ignored) {}
+    }
+
+    private static String between(String s, String start, String end) {
+        if (s == null) return null;
+        int i = s.indexOf(start);
+        if (i < 0) return null;
+        i += start.length();
+        int j = s.indexOf(end, i);
+        return j < 0 ? null : s.substring(i, j);
+    }
+
     private void applyLocalDelta(Map<String, Long> delta) {
         if (delta == null || delta.isEmpty()) return;
         try {
             var brain = meteordevelopment.meteorclient.systems.modules.Modules.get()
                 .get(com.rdh.swarm.modules.BotBrain.class);
-            if (brain != null) brain.mergeLocalStorageCounts(delta);
+            if (brain != null) brain.invalidateStorageCounts(delta.keySet());
         } catch (Exception ignored) {}
     }
 
@@ -1717,6 +1757,10 @@ public class EnhancedSwarmWorker extends Thread {
                 }
             } catch (Exception ignored) {}
             closeContainerAndWait();
+            // Opening a chest is a measurement of it, so publish what the menu said. The
+            // host index is a record of measurements, never a running total, and this is
+            // the path that keeps it honest outside a deposit.
+            publishMeasuredChest(x, y, z, used, total, slots);
             sb.append(',').append(jq("usedSlots")).append(':').append(used);
             sb.append(',').append(jq("totalSlots")).append(':').append(total);
             sb.append(',').append(jq("slots")).append(":[").append(slots).append(']');

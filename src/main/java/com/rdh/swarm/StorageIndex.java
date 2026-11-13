@@ -166,6 +166,48 @@ public class StorageIndex {
     }
 
     // Return total count of an item across all categories/chests for a server
+    /**
+     * Replace a chest's contents with what was actually read out of it. This is the only
+     * way a chest enters the index: the old additive path took a published delta and added
+     * it to whatever the index already believed, so one re-published delta was counted
+     * twice and the index drifted above the chests (1591 indexed in a container holding
+     * 724). A measurement can be re-taken and stays true; an accumulator cannot.
+     */
+    public synchronized void setChestContents(String server, String category, int x, int y, int z,
+                                              Map<String, Long> counts,
+                                              int usedSlots, int totalSlots, long lastScan) {
+        server = normalize(server);
+        category = normalize(category);
+        Map<String, Map<String, ChestRecord>> serverMap =
+            index.computeIfAbsent(server, k -> new ConcurrentHashMap<>());
+        String key = chestKey(x, y, z);
+        // Keep whatever category this chest already belongs to, so a measurement taken from
+        // an operator probe does not reshuffle the index. Then drop any other copy of the
+        // same coordinates: one chest is one container, and summing two categories is how
+        // a single chest got counted twice.
+        for (var cEntry : serverMap.entrySet()) {
+            if (cEntry.getValue().containsKey(key)) { category = cEntry.getKey(); break; }
+        }
+        for (var cEntry : serverMap.entrySet()) {
+            if (!cEntry.getKey().equals(category)) cEntry.getValue().remove(key);
+        }
+        ChestRecord rec = new ChestRecord();
+        rec.x = x; rec.y = y; rec.z = z; rec.category = category;
+        if (counts != null) {
+            for (Map.Entry<String, Long> e : counts.entrySet()) {
+                Long v = e.getValue();
+                if (e.getKey() != null && v != null && v > 0L) rec.counts.put(e.getKey(), v);
+            }
+        }
+        rec.usedSlots = usedSlots;
+        rec.totalSlots = totalSlots;
+        rec.fullness = totalSlots > 0 ? (double) usedSlots / (double) totalSlots : 0.0;
+        rec.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
+        rec.status = ChestStatus.FRESH;
+        serverMap.computeIfAbsent(category, k -> new ConcurrentHashMap<>()).put(key, rec);
+        save();
+    }
+
     public synchronized long getTotal(String server, String itemId) {
         server = normalize(server);
         long total = 0L;

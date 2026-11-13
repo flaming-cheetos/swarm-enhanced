@@ -556,6 +556,8 @@ public class BotBrain extends Module {
      */
     private static final long GATHER_STALL_MS = 45_000L;
     private static final int GATHER_MAX_REISSUES = 4;
+    /** A stock completion must rest on a base reading no older than this. */
+    private static final long STOCK_EVIDENCE_MAX_AGE_MS = 30_000L;
     private long gatherApproachUntil = 0L;
     private double gatherStallLastX = Double.NaN;
     private double gatherStallLastY = Double.NaN;
@@ -772,13 +774,24 @@ public class BotBrain extends Module {
     /** When the storage cache was last filled; -0 means never. Used by the debug snapshot. */
     private volatile long lastStorageCacheAt = 0L;
 
-    /** Reflect a completed chest transfer in the local storage cache immediately. */
-    public void mergeLocalStorageCounts(Map<String, Long> delta) {
-        if (delta == null || delta.isEmpty()) return;
+    /**
+     * Forget what the cache believed about these items. Adding a deposit delta to the
+     * cached figure made the bot believe the base held more than the chests did (2807 and
+     * 3800 claimed against 1940 real), which is how a task completed on stock that was not
+     * there. Dropping the entry makes the planner ask the host again instead.
+     */
+    public void invalidateStorageCounts(java.util.Collection<String> itemIds) {
+        if (itemIds == null || itemIds.isEmpty()) return;
         synchronized (this) {
-            Map<String, Long> merged = new HashMap<>(lastStorageCache == null ? Collections.emptyMap() : lastStorageCache);
-            for (var e : delta.entrySet()) merged.merge(e.getKey(), e.getValue(), Long::sum);
-            lastStorageCache = merged;
+            Map<String, Long> counts = new HashMap<>(lastStorageCache == null ? Collections.emptyMap() : lastStorageCache);
+            boolean changed = false;
+            for (String id : itemIds) {
+                if (id == null) continue;
+                String norm = com.rdh.swarm.StorageIndex.normalizeId(id);
+                if (counts.remove(norm) != null) changed = true;
+                if (counts.remove(id) != null) changed = true;
+            }
+            if (changed) lastStorageCache = counts;
         }
     }
     /**
@@ -1651,6 +1664,21 @@ public class BotBrain extends Module {
                     // That is the phantom this gate exists to stop. Close it on the stock.
                     if (!taskAlreadyWithdrew && deficit > 0 && a >= deficit
                         && currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
+                        // Completing on stock is a claim about the base, so it needs a reading
+                        // of the base taken now: a stale cache or a query still in flight
+                        // cannot back a COMPLETE.
+                        long cacheAge = lastStorageCacheAt == 0L ? Long.MAX_VALUE
+                            : System.currentTimeMillis() - lastStorageCacheAt;
+                        if (storageQueryPending || cacheAge > STOCK_EVIDENCE_MAX_AGE_MS) {
+                            storageQueryPending = true;
+                            if (nowMs - lastPerTaskWithdrawLog > 10_000L) {
+                                lastPerTaskWithdrawLog = nowMs;
+                                ChatUtils.infoPrefix("BotBrain",
+                                    "Stock evidence for %s is %s; re-reading the base before completing",
+                                    itemId, cacheAge == Long.MAX_VALUE ? "never taken" : (cacheAge / 1000) + "s old");
+                            }
+                            return;
+                        }
                         completeFromStock(currentTask, itemId, a);
                         return;
                     }

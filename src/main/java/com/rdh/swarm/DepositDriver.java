@@ -95,6 +95,10 @@ public final class DepositDriver {
     private String failure = "";
     private String targetFailure = "";
     private final Map<String, Long> targetDelta = new LinkedHashMap<>();
+    /** The chest's measured contents, read from the open menu just before closing it. */
+    private final Map<String, Long> containerSnapshot = new LinkedHashMap<>();
+    private int containerUsedSlots = 0;
+    private int containerTotalSlots = 0;
 
     public DepositDriver(Supplier<Minecraft> mcSupplier,
                          Consumer<String> protocol,
@@ -543,6 +547,8 @@ public final class DepositDriver {
     private void tickClosing(Minecraft mc, long now) {
         if (ownedMenu && !closeSent) {
             closeSent = true;
+            // Measure before the menu goes away; after close the contents are gone.
+            snapshotContainer(mc);
             try {
                 if (mc.player.containerMenu == menu) {
                 // Clearing only the screen left the server (and containerMenu)
@@ -573,7 +579,7 @@ public final class DepositDriver {
             String reasonFailed = targetFailure;
             failure = reasonFailed;
             targetFailure = "";
-            if (targetMoved > 0) publishDelta(target, targetDelta);
+            publishChest(target);
             ChatUtils.warningPrefix("BotBrain", "DEPOSIT: refused reason=%s", reasonFailed);
             target = null;
             selectNext(mc);
@@ -584,11 +590,13 @@ public final class DepositDriver {
             targetMoved, targetStacks, targetDelta);
         if (targetMoved > 0) {
             succeeded = true;
-            publishDelta(target, targetDelta);
         } else {
             ChatUtils.infoPrefix("BotBrain", "DEPOSIT: no-op chest=%s %d %d %d",
                 target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ());
         }
+        // Publish the measured contents even for a no-op: an empty reading is still a
+        // reading, and it is what stops an old inflated count from surviving.
+        publishChest(target);
         target = null;
         selectNext(mc);
     }
@@ -674,24 +682,65 @@ public final class DepositDriver {
         }
     }
 
-    private void publishDelta(Target target, Map<String, Long> delta) {
-        if (delta == null || delta.isEmpty()) return;
-        synchronized (runDelta) {
-            delta.forEach((id, n) -> runDelta.merge(id, n, Long::sum));
+    /**
+     * Read the container's real contents out of the menu that is still open. This is a
+     * measurement, taken immediately before the chest is closed, and it is what the host
+     * index is built from.
+     */
+    private void snapshotContainer(Minecraft mc) {
+        containerSnapshot.clear();
+        containerUsedSlots = 0;
+        containerTotalSlots = 0;
+        if (menu == null || mc == null || mc.player == null) return;
+        var playerInv = mc.player.getInventory();
+        int containerSlots = 0;
+        for (Slot slot : menu.slots) {
+            if (slot == null) continue;
+            if (slot.container == playerInv) continue;
+            containerSlots++;
+            ItemStack stack = slot.getItem();
+            if (stack == null || stack.isEmpty()) continue;
+            containerUsedSlots++;
+            String id = itemId(stack);
+            if (!id.isEmpty()) containerSnapshot.merge(id, (long) stack.getCount(), Long::sum);
         }
+        containerTotalSlots = containerSlots;
+    }
+
+    /**
+     * Publish what the chest holds, not what we think it gained. The payload carries the
+     * measured contents so a receiver can replace its record; the transfer delta rides
+     * along only as run bookkeeping.
+     */
+    private void publishChest(Target target) {
+        if (target == null) return;
+        if (!targetDelta.isEmpty()) {
+            synchronized (runDelta) {
+                targetDelta.forEach((id, n) -> runDelta.merge(id, n, Long::sum));
+            }
+        }
+        if (containerSnapshot.isEmpty() && containerTotalSlots == 0) return;
         JsonObject counts = new JsonObject();
-        for (Map.Entry<String, Long> entry : delta.entrySet()) {
+        for (Map.Entry<String, Long> entry : targetDelta.entrySet()) {
             counts.addProperty(entry.getKey(), entry.getValue());
+        }
+        JsonObject container = new JsonObject();
+        for (Map.Entry<String, Long> entry : containerSnapshot.entrySet()) {
+            container.addProperty(entry.getKey(), entry.getValue());
         }
         JsonObject root = new JsonObject();
         root.add("counts", counts);
+        root.add("container", container);
+        root.addProperty("absolute", true);
+        root.addProperty("usedSlots", containerUsedSlots);
+        root.addProperty("totalSlots", containerTotalSlots);
         root.addProperty("lastScan", System.currentTimeMillis());
         try {
             if (protocol != null) {
                 protocol.accept("CHEST_DELTA:" + target.category + ":" + target.pos.getX() + ":"
                     + target.pos.getY() + ":" + target.pos.getZ() + "|" + root);
             }
-            if (localDelta != null) localDelta.accept(new LinkedHashMap<>(delta));
+            if (localDelta != null) localDelta.accept(new LinkedHashMap<>(containerSnapshot));
         } catch (Exception ignored) {
         }
     }

@@ -420,7 +420,24 @@ public class EnhancedSwarmConnection extends Thread {
                                             }
                                         }
                                         long when = o.has("lastScan") ? o.get("lastScan").getAsLong() : System.currentTimeMillis();
-                                        host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
+                                        boolean absolute = o.has("absolute") && o.get("absolute").getAsBoolean()
+                                            && o.has("container");
+                                        if (absolute) {
+                                            // The worker opened the chest and read it: replace the record
+                                            // with that measurement instead of adding a delta to it.
+                                            Map<String, Long> contents = new LinkedHashMap<>();
+                                            for (var entry : o.getAsJsonObject("container").entrySet()) {
+                                                try { contents.put(entry.getKey(), entry.getValue().getAsLong()); } catch (Exception ignored) {}
+                                            }
+                                            int used = o.has("usedSlots") ? o.get("usedSlots").getAsInt() : 0;
+                                            int total = o.has("totalSlots") ? o.get("totalSlots").getAsInt() : 0;
+                                            host.getStorageIndex().setChestContents(host.getCurrentServer(), category, x, y, z, contents, used, total, when);
+                                            System.out.println(String.format(
+                                                "[CHEST MEASURED] %s %d,%d,%d slots=%d/%d contents=%s",
+                                                category, x, y, z, used, total, contents));
+                                        } else {
+                                            host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
+                                        }
                                     }
                                 }
                             } catch (Exception ignored) {}
