@@ -161,3 +161,20 @@ Gate B. They are not rejected and not deleted.
 
 - `2026-11-13` — Phase 0 added; M1/M2/M9 re-scored from live evidence; Gate A2 added;
   v2 backlog section created from rdh's "defer, do not cut" call.
+
+## Gate A status, 2026-11-13 evening
+
+**No verdict: not passed.** The failing shift is not a dispatcher problem any more - it
+is an accounting problem. Five tasks completed on `already-in-stock` citing 2807-3800
+dirt in base storage while the chests held 1940.
+
+Order of work from here:
+
+1. Make the storage index a measurement: rescan the chest on deposit completion (and
+   before any `already-in-stock` completion) instead of adding a published delta, so a
+   1591 answer cannot survive a 724 chest.
+2. Re-read the four containers immediately before a task may complete as
+   `already-in-stock`, and fail the evidence check (not the task) when they disagree.
+3. Fix `/api/task/cancel|remove` for PENDING rows so a shift starts from an empty board.
+4. Then run the 30-minute Gate A shift again with real deficits; do not count
+   `already-in-stock` as proof of the loop until step 1 is in.

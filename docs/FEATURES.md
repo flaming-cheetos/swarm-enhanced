@@ -753,3 +753,37 @@ counted **once**, not twice, and 832 = 768 + 64 is exactly what the opened chest
 The old 690 was a snapshot taken before the final deposit landed, not a counting bug.
 Before this endpoint existed the index was unobservable from outside, which is why the
 gap survived two sessions of speculation.
+
+## Gate A, 2026-11-13: what the last shift proved and what still blocks it
+
+**Fixed and proven live (jar +cb67009, both instances, identical md5).**
+
+- **Baritone commands now run on the client thread.** The worker sent chat straight from
+  its socket thread, so Baritone built world state off-thread and threw
+  `IllegalStateException: BlockStateInterface must be constructed on the main thread`.
+  Every `#mine` was accepted (`Mining [granite]`) and broke nothing, while the task sat at
+  the stock figure. This was the root cause behind every "stalled gather" this session,
+  and it is why granite/andesite appeared unreachable. All worker chat is marshalled with
+  `mc.execute`; after the fix dirt gathers mine continuously.
+- **Gather watchdog is per task and tolerates travel.** It previously carried its state
+  into the next task of the same item (second task failed without any attempt), and it
+  treated a flat item count as a stall even while the bot was walking to the next pocket.
+  It now resets on task id, alternates walking to the block and re-issuing the mine up to
+  four times, and counts movement as progress.
+
+**Verdict: Gate A is NOT passed.** In the longest shift (6 dirt arcs, brain on, T0
+09:25:11) every task reached a terminal state in four minutes with 0 deaths and 0 crashes,
+but five of the six completed with `evidence=already-in-stock` citing **2807 then 3800
+dirt in base storage** while the four containers, opened live, held **1940** dirt total.
+Real movement for the run was 993 items. A COMPLETE backed by an index figure the chests
+do not support is exactly the failure the gate exists to catch, so the run is void.
+
+**Open defect (the blocker).** The host storage index drifts upward relative to the live
+containers: it reported chest `-550,91,601 = 1591` dirt and that container opened to 724.
+Deposit deltas are published per transfer and added by `applyChestDelta`, so a delta that
+is re-published for the same chest is counted twice. Until the index is a measurement
+(live rescan) rather than a running total, `already-in-stock` completions cannot be
+trusted, and any gate that counts them is measuring the index against itself.
+
+**Also found:** `/api/task/cancel` and `/api/task/remove` are no-ops for PENDING rows, so
+a queue cannot be emptied once queued; only terminal rows can be cleared.
