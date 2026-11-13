@@ -1294,6 +1294,9 @@ public class BotBrain extends Module {
         planStep = 0;
         completionTaskId = null;
         completionAttempts = 0;
+        // Leaving the state on GATHERING with no currentTask crashed the next tick in
+        // handleGathering (NPE on getTargetItem). Completing a task means idle.
+        setState(BrainState.IDLE);
     }
 
     private void failTaskWithReason(BotTask task, String reason) {
@@ -1963,6 +1966,12 @@ public class BotBrain extends Module {
         }
 
         // FALLBACK: existing gather behavior for GATHER-type tasks or when no resolver data
+        if (currentTask == null) {
+            // A task can be closed from under this state (already-in-stock, stock-out).
+            // Gathering with no task is idle, not a null dereference on the render thread.
+            setState(BrainState.IDLE);
+            return;
+        }
         BotTask step = getCurrentStep();
         Item target = step != null ? step.getTargetItem() : currentTask.getTargetItem();
         int needed = step != null ? step.getRemaining() : currentTask.getRemaining();
