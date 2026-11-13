@@ -57,16 +57,49 @@ public class TaskQueue {
         queue.clear();
     }
 
+    /**
+     * Remove a row by id, whatever its status. Rebuilding the queue instead of calling
+     * {@code queue.remove(row)} keeps this correct regardless of how BotTask compares
+     * itself: the old call silently did nothing for PENDING rows, so a board could not be
+     * emptied before a shift.
+     */
     public synchronized boolean removeById(UUID id) {
         if (id == null) return false;
-        for (BotTask t : new ArrayList<>(queue)) {
-            if (t != null && id.equals(t.getId())) {
-                queue.remove(t);
-                save();
-                return true;
-            }
+        List<BotTask> keep = new ArrayList<>();
+        boolean found = false;
+        while (!queue.isEmpty()) {
+            BotTask t = queue.poll();
+            if (t == null) continue;
+            if (id.equals(t.getId())) found = true; else keep.add(t);
         }
-        return false;
+        for (BotTask t : keep) queue.add(t);
+        if (found) save();
+        return found;
+    }
+
+    /** Empty the board. A shift needs a known starting point, not leftover rows. */
+    public synchronized int clearAll() {
+        int n = queue.size();
+        queue.clear();
+        save();
+        emit("TASK: cleared " + n + " row(s)");
+        return n;
+    }
+
+    /** Terminal rows only (COMPLETE/FAILED/CANCELLED), for a tidy board mid-run. */
+    public synchronized int clearTerminal() {
+        List<BotTask> keep = new ArrayList<>();
+        int dropped = 0;
+        while (!queue.isEmpty()) {
+            BotTask t = queue.poll();
+            if (t == null) continue;
+            BotTask.Status st = t.getStatus();
+            if (st == BotTask.Status.COMPLETE || st == BotTask.Status.FAILED || st == BotTask.Status.CANCELLED) dropped++;
+            else keep.add(t);
+        }
+        for (BotTask t : keep) queue.add(t);
+        if (dropped > 0) save();
+        return dropped;
     }
 
     /**
@@ -86,7 +119,7 @@ public class TaskQueue {
         task.setLeaseExpiresAt(0L);
         task.setLastLeaseToken("");
         task.setLeaseLapsedAt(0L);
-        queue.remove(task);
+        removeById(id);
         save();
         emit("TASK: cancelled " + id + (owner == null || owner.isEmpty() ? "" : " owner=" + owner));
         return owner;

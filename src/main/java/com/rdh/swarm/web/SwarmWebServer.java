@@ -699,12 +699,19 @@ public class SwarmWebServer {
                     if (host.getTaskQueue() != null) host.getTaskQueue().clearCompleted();
                     logInfo("Cleared completed tasks");
                 }
+                case "/api/task/clear" -> {
+                    // A shift needs a known starting board; before this there was no way to
+                    // drop a PENDING row, so leftovers rode into the next run.
+                    int dropped = host.getTaskQueue() != null ? host.getTaskQueue().clearAll() : 0;
+                    logInfo("Cleared whole board: " + dropped + " row(s)");
+                }
                 case "/api/task/remove" -> {
                     String id = extractJson(body, "id");
                     try {
                         java.util.UUID uuid = java.util.UUID.fromString(id);
-                        host.getTaskQueue().removeById(uuid);
-                        logInfo("Task removed: " + id);
+                        boolean removed = host.getTaskQueue() != null && host.getTaskQueue().removeById(uuid);
+                        if (removed) logInfo("Task removed: " + id);
+                        else logWarn("Task not on the board (nothing removed): " + id);
                     } catch (Exception e) {
                         logWarn("Invalid task id: " + id);
                     }
