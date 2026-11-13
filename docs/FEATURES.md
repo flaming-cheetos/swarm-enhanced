@@ -831,3 +831,25 @@ to dig:
   and the task goes `STUCK`
 
 Committed as `e9d0c00`-era work; not yet live on the running clients.
+
+## Double chests: measured, not inferred (verified 2026-11-14 15:40, jar 0.1.0+1b4b079)
+
+Live before/after on the test base, all three storage containers opened by the bot:
+
+| reading | dirt total | records |
+|---|---|---|
+| before | 4404 | `-550,91,601`=576, `-550,91,602`=576, `-549,91,601`=1178, `-549,91,602`=1178, `-549,91,598`=896 |
+| after | 2650 | `-550,91,601`=576, `-549,91,601`=1178, `-549,91,598`=896 |
+
+2650 = 576 + 1178 + 896, and `per chest` lists exactly three containers. The deposit list and
+registry settled at 9 entries and the worker logged `CHEST: list replaced n=9 gen=148`.
+
+Each record now persists `twin` and `doubleChest`, so the collapse survives a restart
+(`-550,91,601 twin [-550,91,602]`, `-549,91,601 twin [-549,91,602]`, `-549,91,598 twin
+[-549,91,599]` — the last one was never in the deposit list, so nothing to prune there).
+
+The first version of this fix was wrong and the live check caught it: folding a reading into
+an existing record at the twin's coordinates updated that record and left the reading's own
+record in place, so dirt stayed at 4404. A twin reading now always consumes the other half's
+record and writes at the opened half — one record per double chest, at whichever half was
+last opened.
