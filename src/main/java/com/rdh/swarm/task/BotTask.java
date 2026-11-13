@@ -37,6 +37,11 @@ public class BotTask {
     private String leaseToken;
     private long leaseExpiresAt;
     private long lastHeartbeatAt;
+    // Token the expiring sweep took away, plus when it lapsed. Kept so a worker
+    // that was still working can re-attach inside the grace window instead of
+    // having every later report rejected as stale.
+    private String lastLeaseToken = "";
+    private long leaseLapsedAt;
 
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
@@ -100,6 +105,10 @@ public class BotTask {
     public void setLeaseExpiresAt(long leaseExpiresAt) { this.leaseExpiresAt = Math.max(0L, leaseExpiresAt); }
     public long getLastHeartbeatAt() { return lastHeartbeatAt; }
     public void setLastHeartbeatAt(long lastHeartbeatAt) { this.lastHeartbeatAt = Math.max(0L, lastHeartbeatAt); }
+    public String getLastLeaseToken() { return lastLeaseToken == null ? "" : lastLeaseToken; }
+    public void setLastLeaseToken(String lastLeaseToken) { this.lastLeaseToken = lastLeaseToken == null ? "" : lastLeaseToken; }
+    public long getLeaseLapsedAt() { return leaseLapsedAt; }
+    public void setLeaseLapsedAt(long leaseLapsedAt) { this.leaseLapsedAt = Math.max(0L, leaseLapsedAt); }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }
 

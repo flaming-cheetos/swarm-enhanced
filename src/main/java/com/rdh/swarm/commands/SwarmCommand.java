@@ -394,6 +394,14 @@ public class SwarmCommand extends Command {
             return SINGLE_SUCCESS;
         })));
 
+        // deposit self (deposit the host player's own inventory)
+        deposit.then(literal("self").executes(context -> {
+            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+            if (mod == null) { error("Swarm module not loaded"); return SINGLE_SUCCESS; }
+            if (!mod.depositSelf("command")) error("Self-deposit refused (see log)");
+            return SINGLE_SUCCESS;
+        }));
+
         // deposit push (push config to workers)
         deposit.then(literal("push").executes(context -> {
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);

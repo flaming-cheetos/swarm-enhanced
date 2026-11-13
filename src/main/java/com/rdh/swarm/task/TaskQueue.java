@@ -19,6 +19,11 @@ import net.minecraft.world.item.Items;
 
 public class TaskQueue {
 
+    /** How long a lapsed-but-still-working owner may re-attach after a sweep. */
+    public static final long LEASE_GRACE_MS = 60_000L;
+    /** Fallback lease length used when a caller re-attaches without a TTL. */
+    static final long LEASE_TTL_MS = 30_000L;
+
     private final Queue<BotTask> queue;
     private final java.util.Map<String, String> nicknames = new java.util.concurrent.ConcurrentHashMap<>();
     private final List<String> events = new ArrayList<>();
@@ -62,6 +67,29 @@ public class TaskQueue {
             }
         }
         return false;
+    }
+
+    /**
+     * Cancel a task by id. Marks it CANCELLED, clears the lease and drops the row,
+     * so the dispatcher can never hand it out again (the old /api/task/cancel only
+     * told the worker to stop, leaving an ACTIVE row the host kept re-dispatching).
+     * Returns the bot that owned it, so the caller can notify that worker.
+     */
+    public synchronized String cancelById(UUID id) {
+        if (id == null) return null;
+        BotTask task = findById(id);
+        if (task == null) return null;
+        String owner = task.getAssignedBot();
+        task.setStatus(BotTask.Status.CANCELLED);
+        task.setStatusReason("cancelled");
+        task.setLeaseToken("");
+        task.setLeaseExpiresAt(0L);
+        task.setLastLeaseToken("");
+        task.setLeaseLapsedAt(0L);
+        queue.remove(task);
+        save();
+        emit("TASK: cancelled " + id + (owner == null || owner.isEmpty() ? "" : " owner=" + owner));
+        return owner;
     }
 
     public synchronized List<BotTask> toList() {
@@ -135,6 +163,8 @@ public class TaskQueue {
                 jo.addProperty("leaseToken", t.getLeaseToken());
                 jo.addProperty("leaseExpiresAt", t.getLeaseExpiresAt());
                 jo.addProperty("lastHeartbeatAt", t.getLastHeartbeatAt());
+                jo.addProperty("lastLeaseToken", t.getLastLeaseToken());
+                jo.addProperty("leaseLapsedAt", t.getLeaseLapsedAt());
                 if (t.getFailureReason() != null) jo.addProperty("failureReason", t.getFailureReason());
                 tasks.add(jo);
             }
@@ -187,6 +217,8 @@ public class TaskQueue {
                         String leaseToken = jo.has("leaseToken") ? jo.get("leaseToken").getAsString() : "";
                         long leaseExpiresAt = jo.has("leaseExpiresAt") ? jo.get("leaseExpiresAt").getAsLong() : 0L;
                         long lastHeartbeatAt = jo.has("lastHeartbeatAt") ? jo.get("lastHeartbeatAt").getAsLong() : 0L;
+                        String lastLeaseToken = jo.has("lastLeaseToken") ? jo.get("lastLeaseToken").getAsString() : "";
+                        long leaseLapsedAt = jo.has("leaseLapsedAt") ? jo.get("leaseLapsedAt").getAsLong() : 0L;
 
                         Map<String, Object> data = new HashMap<>();
                         if (itemName != null && !itemName.isEmpty()) {
@@ -208,6 +240,8 @@ public class TaskQueue {
                         t.setLeaseToken(leaseToken);
                         t.setLeaseExpiresAt(leaseExpiresAt);
                         t.setLastHeartbeatAt(lastHeartbeatAt);
+                        t.setLastLeaseToken(lastLeaseToken);
+                        t.setLeaseLapsedAt(leaseLapsedAt);
                         if (jo.has("failureReason")) t.setFailureReason(jo.get("failureReason").getAsString());
                         if (t != null &&
                             t.getStatus() != BotTask.Status.COMPLETE &&
@@ -301,6 +335,10 @@ public class TaskQueue {
             task.setLeaseToken(UUID.randomUUID().toString());
             task.setLeaseExpiresAt(expiry);
             task.setLastHeartbeatAt(now);
+            // A fresh claim supersedes any lapsed lease, so the old token can
+            // never re-attach to this row afterwards.
+            task.setLastLeaseToken("");
+            task.setLeaseLapsedAt(0L);
             task.setAttempt(task.getAttempt() + 1);
             task.setStatusReason("leased");
             task.setStatus(BotTask.Status.ACTIVE);
@@ -345,6 +383,8 @@ public class TaskQueue {
             if (!task.getLeaseToken().isEmpty() && task.getLeaseExpiresAt() > now) continue;
 
             task.setLastOwner(task.getAssignedBot());
+            task.setLastLeaseToken(task.getLeaseToken());
+            task.setLeaseLapsedAt(now);
             task.setAssignedBot("");
             task.setLeaseToken("");
             task.setLeaseExpiresAt(0L);
@@ -367,7 +407,13 @@ public class TaskQueue {
                                                               int collected, long now, long ttlMs) {
         if (taskId == null || botName == null || botName.isEmpty() || collected < 0 || ttlMs <= 0) return false;
         BotTask task = findById(taskId);
-        if (!isCurrentLeaseHolder(task, botName, token)) return false;
+        if (!isCurrentLeaseHolder(task, botName, token)) {
+            // A worker that was still working when the expiry sweep took its
+            // lease is late, not stale: let its own token re-attach inside the
+            // grace window. A dead worker never reports, and a reclaimed row
+            // carries a different token, so both still lose the lease.
+            if (!reattachLapsedLease(task, botName, token, now, ttlMs)) return false;
+        }
         // Progress is also the heartbeat. Do not resurrect an already-lapsed lease.
         if (task.getLeaseExpiresAt() <= now) return false;
 
@@ -395,7 +441,8 @@ public class TaskQueue {
             && terminal != BotTask.Status.CANCELLED) return false;
 
         BotTask task = findById(taskId);
-        if (!isCurrentLeaseHolder(task, botName, token)) return false;
+        if (!isCurrentLeaseHolder(task, botName, token)
+            && !reattachLapsedLease(task, botName, token, System.currentTimeMillis(), 0L)) return false;
 
         task.setStatus(terminal);
         String cleanedReason = reason == null ? "" : reason.trim();
@@ -410,6 +457,35 @@ public class TaskQueue {
         task.setLeaseExpiresAt(0L);
         task.setLastHeartbeatAt(0L);
         save();
+        return true;
+    }
+
+    /**
+     * Re-attach a lease that lapsed while its owner was still working.
+     *
+     * Recognised only by the token the worker still holds, only while the row
+     * is PENDING because of an expiry, and only inside LEASE_GRACE_MS. A
+     * reconnect requeue or another worker's claim both replace the token, so
+     * those can never be re-attached this way.
+     */
+    private boolean reattachLapsedLease(BotTask task, String botName, String token, long now, long ttlMs) {
+        if (task == null || botName == null || botName.isEmpty()) return false;
+        if (token == null || token.isEmpty()) return false;
+        if (task.getStatus() != BotTask.Status.PENDING) return false;
+        if (!"lease-expired".equals(task.getStatusReason())) return false;
+        String lapsedToken = task.getLastLeaseToken();
+        if (lapsedToken.isEmpty() || !lapsedToken.equals(token)) return false;
+        long lapsedAt = task.getLeaseLapsedAt();
+        if (lapsedAt <= 0 || now - lapsedAt > LEASE_GRACE_MS) return false;
+
+        long effectiveTtl = ttlMs > 0 ? ttlMs : LEASE_TTL_MS;
+        task.setAssignedBot(botName);
+        task.setLeaseToken(token);
+        task.setLeaseExpiresAt(effectiveTtl > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + effectiveTtl);
+        task.setLastHeartbeatAt(now);
+        task.setStatus(BotTask.Status.ACTIVE);
+        task.setStatusReason("lease-re-attached");
+        emit("TASK: lease re-attached " + task.getId() + " by " + botName + " after " + (now - lapsedAt) + "ms lapsed");
         return true;
     }
 

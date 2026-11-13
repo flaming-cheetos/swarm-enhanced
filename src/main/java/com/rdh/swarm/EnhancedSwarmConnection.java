@@ -458,6 +458,63 @@ public class EnhancedSwarmConnection extends Thread {
                                     }
                                 }
                             } catch (Exception ignored) {}
+                        } else if (read.startsWith("WITHDRAW_RESULT:")) {
+                            // <itemId...>:x:y:z:moved — the id carries its own ':', so read the
+                            // last four tokens and join the rest back into the id.
+                            try {
+                                String body = read.substring("WITHDRAW_RESULT:".length());
+                                String[] f = body.split(":");
+                                if (f.length >= 5) {
+                                    int moved = Integer.parseInt(f[f.length - 1].trim());
+                                    int z = Integer.parseInt(f[f.length - 2].trim());
+                                    int y = Integer.parseInt(f[f.length - 3].trim());
+                                    int x = Integer.parseInt(f[f.length - 4].trim());
+                                    String itemId = String.join(":", java.util.Arrays.copyOfRange(f, 0, f.length - 4)).trim();
+                                    String norm = com.rdh.swarm.StorageIndex.normalizeId(itemId);
+                                    String server = host.getCurrentServer();
+                                    long before = host.getStorageIndex().getTotal(server, norm);
+                                    host.getStorageIndex().debit(server, x, y, z, norm, moved);
+                                    if (moved <= 0) {
+                                        // The chest gave us nothing, so its recorded count was
+                                        // stale. Without this the phantom stayed and every
+                                        // later query sent the bot back to an empty chest.
+                                        host.getStorageIndex().clear(server, x, y, z, norm);
+                                        System.out.println(String.format(
+                                            "[WITHDRAW STALE] item=%s chest=%d,%d,%d moved=0, cleared its index entry",
+                                            norm, x, y, z));
+                                    }
+                                    long after = host.getStorageIndex().getTotal(server, norm);
+                                    System.out.println(String.format(
+                                        "[WITHDRAW DONE] item=%s chest=%d,%d,%d moved=%d index %d -> %d",
+                                        norm, x, y, z, moved, before, after));
+                                    ChatUtils.infoPrefix("Swarm", "Withdraw confirmed: %d %s from %d,%d,%d (index now %d)",
+                                        moved, norm, x, y, z, after);
+                                }
+                            } catch (Exception ignored) {}
+                        } else if (read.startsWith("WITHDRAW_REFUSED:")) {
+                            // The chest could not be opened (another menu was up). Nothing
+                            // moved, so the index is untouched, but the refusal is logged so
+                            // a send with no matching [WITHDRAW DONE] is explainable.
+                            System.out.println("[WITHDRAW REFUSED] " + read.substring("WITHDRAW_REFUSED:".length()));
+                        } else if (read.startsWith("WORLD_PROBE:")) {
+                            try {
+                                String body = read.substring("WORLD_PROBE:".length());
+                                int bar = body.indexOf('|');
+                                String json = bar >= 0 ? body.substring(bar + 1) : body;
+                                host.acceptWorldProbe(workerName, json);
+                            } catch (Exception ignored) {}
+                        } else if (read.startsWith("DEBUG_STATE:")) {
+                            try {
+                                String body = read.substring("DEBUG_STATE:".length());
+                                int bar = body.indexOf('|');
+                                String nonce = bar >= 0 ? body.substring(0, bar) : "";
+                                String json = bar >= 0 ? body.substring(bar + 1) : body;
+                                host.acceptDebugState(workerName, json);
+                                if (host.getWebServer() != null) {
+                                    host.getWebServer().logInfo("Debug state from " + workerName
+                                        + " (nonce " + nonce + ", " + json.length() + " chars)");
+                                }
+                            } catch (Exception ignored) {}
                         } else if (read.startsWith("SCAN_COMPLETE:")) {
                             try {
                                 String body = read.substring("SCAN_COMPLETE:".length()).trim();
@@ -494,39 +551,57 @@ public class EnhancedSwarmConnection extends Thread {
                                     try {
                                         String norm = com.rdh.swarm.StorageIndex.normalizeId(itemId);
                                         long total = host.getStorageIndex().getTotal(server, norm);
-                                        if (!first) resp.append(":");
+                                        String breakdown = host.getStorageIndex().getBreakdown(server, norm);
+                                        if (!first) resp.append("#");
                                         first = false;
-                                        resp.append(itemId).append(":").append(total);
+                                        // id:total:x,y,z=count;... — the trailing field names the
+                                        // containers the total came from, so the planner's answer is
+                                        // attributable to a specific chest instead of a bare number.
+                                        resp.append(itemId).append(":").append(total).append(":").append(breakdown);
                                     } catch (Exception ignored) {}
                                 }
+                                // Visibility for the storage-query path: what was asked,
+                                // which server key was used and what came back.
+                                System.out.println(String.format(
+                                    "[STORAGE QUERY] server=%s req=%s -> %s",
+                                    server, body, resp.toString()));
                                 try { if (out != null) { out.writeUTF(resp.toString()); out.flush(); } } catch (Exception ignored) {}
                             } catch (Exception ignored) {}
                         } else if (read.startsWith("WITHDRAW_REQUEST:")) {
                             try {
-                                // FROM WORKER: WITHDRAW_REQUEST:<itemId>:<needed>:<category>
+                                // FROM WORKER: WITHDRAW_REQUEST:<itemId>|<needed>|<category>
+                                // '|' separates fields because the id is namespace-qualified:
+                                // the old "id:needed" form split on ':' truncated
+                                // "minecraft:raw_iron" to "minecraft", so the host looked up
+                                // minecraft:minecraft, found no chest and dispatched nothing.
                                 String body = read.substring("WITHDRAW_REQUEST:".length());
-                                String[] parts = body.split(":", 3);
-                                if (parts.length >= 2 && host != null) {
-                                    String itemId = parts[0];
-                                    int needed = 0;
-                                    try { needed = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
-                                    String category = parts.length > 2 ? parts[2] : "all";
-                                    String server = host.getCurrentServer();
-                                    // Normalize simple ids (e.g. "iron_ingot" -> "minecraft:iron_ingot")
-                                    if (itemId != null && !itemId.contains(":")) {
-                                        itemId = "minecraft:" + itemId;
+                                String[] f = body.split("\\|", 3);
+                                String itemId = null;
+                                int needed = 0;
+                                String category = "all";
+                                if (f.length >= 2) {
+                                    itemId = f[0].trim();
+                                    try { needed = Integer.parseInt(f[1].trim()); } catch (Exception ignored) {}
+                                    if (f.length > 2 && !f[2].trim().isEmpty()) category = f[2].trim();
+                                } else {
+                                    // legacy colon form; the id itself may contain ':'
+                                    String[] c = body.split(":");
+                                    int numIdx = c.length - 1;
+                                    for (int k = c.length - 1; k >= 1; k--) {
+                                        try { Integer.parseInt(c[k].trim()); numIdx = k; break; } catch (Exception ignored) {}
                                     }
-                                    // HARD DEBUG: dump requested id and all keys in storage index
-                                    try {
-                                        System.out.println("=== WITHDRAW DEBUG ===");
-                                        System.out.println("Requested: " + itemId);
-                                        System.out.println("Available items in index:");
-                                        for (String key : host.getStorageIndex().getAllItems(server)) {
-                                            System.out.println(" - " + key);
-                                        }
-                                        long totalAvail = host.getStorageIndex().getTotal(server, itemId);
-                                        System.out.println("Total available for " + itemId + ": " + totalAvail);
-                                    } catch (Exception ignored) {}
+                                    itemId = String.join(":", java.util.Arrays.copyOfRange(c, 0, numIdx)).trim();
+                                    try { needed = Integer.parseInt(c[numIdx].trim()); } catch (Exception ignored) {}
+                                    if (numIdx + 1 < c.length) category = c[numIdx + 1].trim();
+                                }
+                                // Normalize simple ids (e.g. "iron_ingot" -> "minecraft:iron_ingot")
+                                if (itemId != null && !itemId.isEmpty() && !itemId.contains(":")) {
+                                    itemId = "minecraft:" + itemId;
+                                }
+                                if (itemId != null && !itemId.isEmpty() && host != null) {
+                                    String server = host.getCurrentServer();
+                                    System.out.println(String.format("[WITHDRAW] req item=%s need=%d category=%s index_total=%d",
+                                        itemId, needed, category, host.getStorageIndex().getTotal(server, itemId)));
 
                                     List<StorageIndex.ChestRecord> chests = host.getStorageIndex().getChests(server, category);
                                     long now = System.currentTimeMillis();
@@ -570,6 +645,13 @@ public class EnhancedSwarmConnection extends Thread {
                                             }
                                         } catch (Exception ignored) {}
                                         remaining -= take;
+                                    }
+                                    if (needed > remaining) {
+                                        System.out.println(String.format("[WITHDRAW] dispatched %d/%d %s from index chests",
+                                            needed - remaining, needed, itemId));
+                                    } else {
+                                        System.out.println(String.format("[WITHDRAW] no index chest holds %s (considered=%d) — nothing dispatched",
+                                            itemId, chests.size()));
                                     }
                                     if (requestedRescan) {
                                         try { host.sendAll("swarm:all scan " + category); } catch (Exception ignored) {}

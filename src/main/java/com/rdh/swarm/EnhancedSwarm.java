@@ -792,6 +792,65 @@ public class EnhancedSwarm extends Module {
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (isWorker()) worker.tick();
+        if (selfDeposit != null) selfDeposit.tick();
+    }
+
+    /**
+     * Deposit the host player's own inventory. Nothing drove it before: the panel's
+     * deposit action is relayed to workers, so a stack and 14 iron ingots in the player's
+     * inventory were never eligible for anything. Uses the host's own chest list and the
+     * worker's keep rules so both inventories behave the same.
+     */
+    private DepositDriver selfDeposit;
+
+    public boolean depositSelf(String reason) {
+        if (!isHost() || host == null) {
+            ChatUtils.warningPrefix("Swarm", "Self-deposit needs this client to be the host");
+            return false;
+        }
+        if (mc.player == null) {
+            ChatUtils.warningPrefix("Swarm", "Self-deposit needs a player in a world");
+            return false;
+        }
+        Map<String, List<int[]>> chests = host.currentDepositChests();
+        if (chests == null || chests.isEmpty()) {
+            ChatUtils.warningPrefix("Swarm", "No deposit chest configured for this server");
+            return false;
+        }
+        if (selfDeposit == null) {
+            selfDeposit = new DepositDriver(
+                () -> mc, s -> { }, EnhancedSwarmWorker::shouldKeepStatic, d -> { }, () -> { });
+        }
+        EnhancedSwarmWorker.logDepositPlan(mc);
+        selfDeposit.useChests(chests);
+        selfDeposit.request(reason, null);
+        ChatUtils.infoPrefix("Swarm", "Self-deposit: starting over %d chest group(s)", chests.size());
+        return true;
+    }
+
+    /**
+     * Test fixture only. Asks the server for items with a vanilla /give so the player-side
+     * deposit path can be exercised without waiting for a survival stack to appear. It is
+     * not a survival feature, no task uses it, and the server's own permissions decide
+     * whether anything is actually given.
+     */
+    public boolean testGive(String item, int count) {
+        if (mc.player == null || mc.getConnection() == null) {
+            ChatUtils.warningPrefix("Swarm", "Test fixture: no player in a world");
+            return false;
+        }
+        String id = item.contains(":") ? item : "minecraft:" + item;
+        int n = Math.max(1, count);
+        // @s spares the client from resolving its own name.
+        mc.execute(() -> {
+            if (mc.getConnection() != null) {
+                mc.getConnection().sendCommand(String.format("give @s %s %d", id, n));
+            }
+        });
+        ChatUtils.warningPrefix("Swarm",
+            "TEST FIXTURE: /give @s %s %d — test setup for the player deposit path, not a survival path (needs op)",
+            id, n);
+        return true;
     }
 
     public enum Mode {

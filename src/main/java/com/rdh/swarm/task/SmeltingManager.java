@@ -81,15 +81,50 @@ public class SmeltingManager {
     }
 
     // Deposit ore into furnace input slot
+    private static boolean oreClickMovePending = false;
+    private static long lastOreMissLog = 0L;
+
     public static boolean depositOre(Item ore) {
         if (!isFurnaceOpen()) return false;
         AbstractFurnaceMenu handler =
             (AbstractFurnaceMenu) mc.player.containerMenu;
 
-        int slot = findItemInInventorySlots(handler, ore);
-        if (slot == -1) return false;
+        if (inputHasOre(ore)) { oreClickMovePending = false; return true; }
 
-        InvUtils.move().fromId(slot).toId(0);
+        int slot = findItemInInventorySlots(handler, ore);
+        if (slot == -1) {
+            if (System.currentTimeMillis() - lastOreMissLog > 1000L) {
+                lastOreMissLog = System.currentTimeMillis();
+                int free = 0;
+                StringBuilder held = new StringBuilder();
+                for (int i = 3; i < handler.slots.size(); i++) {
+                    net.minecraft.world.item.ItemStack s = handler.slots.get(i).getItem();
+                    if (s.isEmpty()) { free++; continue; }
+                    if (held.length() < 90) {
+                        held.append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(s.getItem()).getPath())
+                            .append('x').append(s.getCount()).append(' ');
+                    }
+                }
+                ChatUtils.infoPrefix("Smelting", "ORE: %s not in inventory (free=%d/%d input=%s held=[%s])",
+                    ore, free, handler.slots.size() - 3, handler.slots.get(0).getItem().getCount(), held.toString().trim());
+            }
+            return false;
+        }
+
+        if (!oreClickMovePending) {
+            // First attempt: quick-move through the menu's own path.
+            oreClickMovePending = true;
+            InvUtils.shiftClick().slotId(slot);
+        } else {
+            // Quick-move did not land. Pick the stack up onto the cursor and place
+            // it in the input slot; the caller verifies the slot each tick, so this
+            // only runs while the furnace is still empty.
+            oreClickMovePending = false;
+            InvUtils.click().slotId(slot);
+            InvUtils.click().slotId(0);
+        }
+        ChatUtils.infoPrefix("Smelting", "ORE: attempted insert from slot %d (input now %d)",
+            slot, handler.slots.get(0).getItem().getCount());
         return true;
     }
 
@@ -154,9 +189,32 @@ public class SmeltingManager {
      */
     public static FuelValue fuelValue(ItemStack stack, BlockPos furnacePos) {
         if (!isFuel(stack)) return new FuelValue(FuelState.ABSENT, 0, "not a fuel");
+
+        // Client-side truth first: a constant burn time is carried in the item's
+        // COOKING_FUEL component and needs no world at all (ResolvableInt.Constant
+        // is a plain int record — verified against minecraft-merged 26.3). Vanilla
+        // fuels such as coal and logs are constants, so a multiplayer client can
+        // read them straight off the stack instead of being blocked until a
+        // ServerLevel exists.
+        try {
+            CookingFuel component = stack.get(DataComponents.COOKING_FUEL);
+            if (component != null && component.burnTime() instanceof ResolvableInt.Constant constant) {
+                int constantTicks = constant.value();
+                if (constantTicks > 0) return new FuelValue(FuelState.RESOLVED, constantTicks, "constant");
+            }
+        } catch (Exception ignored) {
+        }
+
         try {
             LootContext context = buildFuelContext(furnacePos);
             if (context == null) {
+                // Multiplayer client: no ServerLevel, so the loot-context resolver
+                // cannot run. Fall back to published vanilla burn times so cooking
+                // is not blocked; every value is the item's furnace burn time in
+                // ticks (vanilla CookingFuel data). Anything unlisted is treated as
+                // a short generic fuel and the wait loop still watches real progress.
+                int estimated = estimatedBurnTicks(stack);
+                if (estimated > 0) return new FuelValue(FuelState.RESOLVED, estimated, "estimated");
                 return unresolvable(stack, "no server level (multiplayer client)");
             }
             int ticks = ResolvableInt.getFromItem(
@@ -173,6 +231,28 @@ public class SmeltingManager {
         } catch (Exception e) {
             return unresolvable(stack, e.getClass().getSimpleName() + ": " + e.getMessage());
         }
+    }
+
+    /** Vanilla furnace burn times in ticks, used only when the resolver has no ServerLevel. */
+    private static int estimatedBurnTicks(ItemStack stack) {
+        String id = itemId(stack);
+        int exact = switch (id) {
+            case "minecraft:coal", "minecraft:charcoal" -> 1600;
+            case "minecraft:coal_block" -> 16000;
+            case "minecraft:blaze_rod" -> 2400;
+            case "minecraft:lava_bucket" -> 20000;
+            case "minecraft:dried_kelp_block" -> 4001;
+            case "minecraft:stick" -> 100;
+            case "minecraft:bamboo" -> 50;
+            case "minecraft:kelp" -> 200;
+            default -> 0;
+        };
+        if (exact > 0) return exact;
+        String path = id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
+        if (path.endsWith("_log") || path.endsWith("_wood") || path.endsWith("_planks")
+            || path.startsWith("stripped_")) return 300;
+        if (path.endsWith("_sapling")) return 100;
+        return 200;
     }
 
     private static FuelValue unresolvable(ItemStack stack, String reason) {
@@ -339,7 +419,46 @@ public class SmeltingManager {
 
     public static void closeFurnace() {
         if (mc.player != null) {
+            // Clearing the screen alone leaves containerMenu on the appliance, so
+            // the server still thinks it is open and every later open/probe fails.
+            try {
+                if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+            } catch (Exception ignored) {
+            }
             mc.setScreenAndShow(null);
+        }
+    }
+
+    /**
+     * What an appliance actually holds.
+     *
+     * On a multiplayer client the block entity's slots are NOT synced: furnace,
+     * smoker and blast furnace contents only exist client-side while their menu is
+     * open (BaseContainerBlockEntity sends the contents with the screen). The one
+     * always-visible signal is the LIT blockstate. So the only truthful way to see
+     * inside is to open the appliance and read the menu slots — that is what this
+     * record is filled from, and what BotBrain's appliance probe uses.
+     */
+    public record ApplianceView(BlockPos pos, String inputId, int inputCount, String fuelId, int fuelCount,
+                                String outputId, int outputCount, boolean fuelUsable, boolean lit) {}
+
+    /** Reads the currently open appliance. Returns null when no furnace-type menu is open. */
+    public static ApplianceView readOpenAppliance(BlockPos pos) {
+        if (!isFurnaceOpen()) return null;
+        try {
+            AbstractFurnaceMenu handler = (AbstractFurnaceMenu) mc.player.containerMenu;
+            ItemStack in = handler.slots.get(0).getItem();
+            ItemStack fuel = handler.slots.get(1).getItem();
+            ItemStack out = handler.slots.get(2).getItem();
+            boolean lit = handler.getLitProgress() > 0;
+            boolean usable = isFuel(fuel) || lit;
+            return new ApplianceView(pos,
+                in.isEmpty() ? "empty" : itemId(in), in.getCount(),
+                fuel.isEmpty() ? "empty" : itemId(fuel), fuel.getCount(),
+                out.isEmpty() ? "empty" : itemId(out), out.getCount(),
+                usable, lit);
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -348,6 +467,23 @@ public class SmeltingManager {
         AbstractFurnaceMenu handler =
             (AbstractFurnaceMenu) mc.player.containerMenu;
         return !handler.slots.get(0).getItem().isEmpty();
+    }
+
+    /** Items currently sitting in the furnace input slot. */
+    public static int inputCount() {
+        if (!isFurnaceOpen()) return 0;
+        AbstractFurnaceMenu handler =
+            (AbstractFurnaceMenu) mc.player.containerMenu;
+        return handler.slots.get(0).getItem().getCount();
+    }
+
+    /** True when the furnace input slot holds at least one of {@code ore}. */
+    public static boolean inputHasOre(Item ore) {
+        if (!isFurnaceOpen()) return false;
+        AbstractFurnaceMenu handler =
+            (AbstractFurnaceMenu) mc.player.containerMenu;
+        net.minecraft.world.item.ItemStack in = handler.slots.get(0).getItem();
+        return in.is(ore) && in.getCount() > 0;
     }
 
     public static int getOutputCount() {

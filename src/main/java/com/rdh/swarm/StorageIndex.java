@@ -179,6 +179,68 @@ public class StorageIndex {
         return total;
     }
 
+    /**
+     * Apply a confirmed withdrawal: the chest at (x,y,z) loses {@code n} of the item.
+     * Without this the index kept reporting the pre-withdrawal figure, so a query
+     * after a successful transfer still said the ore was in the chest.
+     */
+    public synchronized void debit(String server, int x, int y, int z, String itemId, long n) {
+        if (n <= 0) return;
+        String norm = normalizeId(itemId);
+        server = normalize(server);
+        Map<String, Map<String, ChestRecord>> serverMap = index.get(server);
+        if (serverMap == null) return;
+        for (var cEntry : serverMap.entrySet()) {
+            for (ChestRecord r : cEntry.getValue().values()) {
+                if (r.x != x || r.y != y || r.z != z) continue;
+                long have = r.counts.getOrDefault(norm, 0L);
+                long left = Math.max(0L, have - n);
+                if (left == 0L) r.counts.remove(norm); else r.counts.put(norm, left);
+            }
+        }
+    }
+
+    /**
+     * Per-chest breakdown for an item, so a total is attributable to a container:
+     * {@code x,y,z=count;x,y,z=count}. Only chests that actually hold some are listed,
+     * which is what makes an aggregate number checkable against real chest contents.
+     */
+    /**
+     * Drop the item from one chest. Used when a withdrawal from it moved nothing:
+     * the count in that chest was stale, and leaving it made every later query say
+     * the ore was there, so the same empty chest was requested again and again.
+     */
+    public synchronized void clear(String server, int x, int y, int z, String itemId) {
+        String norm = normalizeId(itemId);
+        server = normalize(server);
+        Map<String, Map<String, ChestRecord>> serverMap = index.get(server);
+        if (serverMap == null) return;
+        for (var cEntry : serverMap.entrySet()) {
+            for (ChestRecord r : cEntry.getValue().values()) {
+                if (r.x != x || r.y != y || r.z != z) continue;
+                r.counts.remove(norm);
+            }
+        }
+    }
+
+    public synchronized String getBreakdown(String server, String itemId) {
+        String norm = normalizeId(itemId);
+        server = normalize(server);
+        StringBuilder sb = new StringBuilder();
+        Map<String, Map<String, ChestRecord>> serverMap = index.get(server);
+        if (serverMap == null) return "";
+        for (var cEntry : serverMap.entrySet()) {
+            for (ChestRecord r : cEntry.getValue().values()) {
+                long n = 0L;
+                try { n = r.counts.getOrDefault(norm, 0L); } catch (Exception ignored) {}
+                if (n <= 0L) continue;
+                if (sb.length() > 0) sb.append(';');
+                sb.append(r.x).append(',').append(r.y).append(',').append(r.z).append('=').append(n);
+            }
+        }
+        return sb.toString();
+    }
+
     // Return set of all item keys present in the index for a server
     public synchronized java.util.Set<String> getAllItems(String server) {
         server = normalize(server);

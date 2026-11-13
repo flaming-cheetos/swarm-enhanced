@@ -40,7 +40,9 @@ import java.util.function.Supplier;
 public final class DepositDriver {
     private enum Phase { IDLE, OPENING, VERIFYING, TRANSFERRING, CLOSING, DONE, FAILED }
 
-    private static final long OPEN_TIMEOUT_MS = 3_000L;
+    private static final long OPEN_TIMEOUT_MS = 5_000L;
+    private static final long OPEN_RETRY_MS = 400L;
+    private long lastOpenAttemptMs = 0L;
     private static final long VERIFY_TIMEOUT_MS = 1_000L;
     private static final long TRANSFER_TIMEOUT_MS = 30_000L;
     private static final long CLOSE_TIMEOUT_MS = 3_000L;
@@ -182,7 +184,7 @@ public final class DepositDriver {
         Minecraft mc = mcSupplier.get();
         if (ownedMenu && mc != null && mc.player != null && menu != null
             && mc.player.containerMenu == menu) {
-            try { mc.setScreenAndShow(null); } catch (Exception ignored) {}
+            try { mc.player.closeContainer(); mc.setScreenAndShow(null); } catch (Exception ignored) {}
         }
         ownedMenu = false;
         menu = null;
@@ -219,6 +221,9 @@ public final class DepositDriver {
     private void begin(Minecraft mc) {
         requested = false;
         active = true;
+        synchronized (runDelta) {
+            runDelta.clear();
+        }
         phase = Phase.IDLE;
         targets.clear();
         targetIndex = 0;
@@ -269,7 +274,18 @@ public final class DepositDriver {
         selectNext(mc);
     }
 
+    /**
+     * Chests supplied by the caller instead of the worker. The host player runs its own
+     * driver (nothing else deposits that inventory) and has no worker to ask.
+     */
+    private Map<String, List<int[]>> chestsOverride;
+
+    public void useChests(Map<String, List<int[]>> chests) {
+        this.chestsOverride = chests;
+    }
+
     private Map<String, List<int[]>> depositChestsSnapshot() {
+        if (chestsOverride != null && !chestsOverride.isEmpty()) return chestsOverride;
         try {
             var worker = currentWorker();
             if (worker != null) return worker.depositChests;
@@ -288,6 +304,8 @@ public final class DepositDriver {
         }
     }
 
+    private int menuClearWaits = 0;
+
     private void selectNext(Minecraft mc) {
         if (targetIndex >= targets.size()) {
             finish();
@@ -303,6 +321,7 @@ public final class DepositDriver {
         targetDelta.clear();
         gotoIssued = false;
         openAttempted = false;
+        lastOpenAttemptMs = 0L;
         closeSent = false;
         ownedMenu = false;
         menu = null;
@@ -314,10 +333,30 @@ public final class DepositDriver {
         ChatUtils.infoPrefix("BotBrain", "DEPOSIT: start chest=%s %d %d %d reason=%s",
             target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ(), reason);
 
+        // A previous target can leave its chest GUI on screen. The guard below
+        // then rejected every later target instantly ("failed … after=1 steps"),
+        // which is why a four-chest base never completed a deposit.
+        try {
+            if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                mc.player.closeContainer();
+                mc.setScreenAndShow(null);
+            }
+        } catch (Exception ignored) {}
+
         if (mc.player.containerMenu != mc.player.inventoryMenu) {
+            // The close is only observed on the next tick, so failing here rejected
+            // every chest in a base the moment one menu was still closing. Wait a
+            // few ticks for it to settle before giving up on the target.
+            if (menuClearWaits < 10) {
+                menuClearWaits++;
+                targetIndex--; // re-select this target on the next tick
+                return;
+            }
+            menuClearWaits = 0;
             failTarget("menu-mismatch");
             return;
         }
+        menuClearWaits = 0;
 
         BlockState state = mc.level.getBlockState(target.pos);
         if (!isContainerBlock(state)) {
@@ -374,8 +413,8 @@ public final class DepositDriver {
     }
 
     private void openTarget(Minecraft mc) {
-        if (openAttempted) return;
         openAttempted = true;
+        lastOpenAttemptMs = System.currentTimeMillis();
         try {
             mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES,
                 Vec3.atCenterOf(target.pos));
@@ -386,6 +425,13 @@ public final class DepositDriver {
     }
 
     private void tickOpening(Minecraft mc, long now) {
+        // One interaction packet is easy to lose — reach, a lid animation, a
+        // transient block. The driver used to try exactly once and then report
+        // "timeout", so a single missed click aborted the whole deposit. Retry
+        // on a short cadence inside the same deadline.
+        if (!openAttempted || now - lastOpenAttemptMs >= OPEN_RETRY_MS) {
+            openTarget(mc);
+        }
         if (now > phaseDeadline) {
             failTarget("timeout");
             return;
@@ -489,7 +535,13 @@ public final class DepositDriver {
         if (ownedMenu && !closeSent) {
             closeSent = true;
             try {
-                if (mc.player.containerMenu == menu) mc.setScreenAndShow(null);
+                if (mc.player.containerMenu == menu) {
+                // Clearing only the screen left the server (and containerMenu)
+                // still on the chest, so the close never confirmed and every
+                // deposit ended in "refused reason=timeout".
+                mc.player.closeContainer();
+                mc.setScreenAndShow(null);
+            }
             } catch (Exception ignored) {
             }
         }
@@ -533,6 +585,14 @@ public final class DepositDriver {
     }
 
     private void failTarget(String reason) {
+        if ("timeout".equals(reason)) {
+            long nowMs = System.currentTimeMillis();
+            Minecraft d = mcSupplier.get();
+            ChatUtils.infoPrefix("BotBrain", "DEPOSIT: timeout detail phase=%s gotoIn=%d phaseIn=%d dist=%s",
+                phase, gotoDeadline - nowMs, phaseDeadline - nowMs,
+                (d != null && d.player != null && standPos != null)
+                    ? String.format("%.2f", d.player.blockPosition().distSqr(standPos)) : "none");
+        }
         if (targetFailure.isEmpty()) targetFailure = reason;
         if (ownedMenu) {
             phase = Phase.CLOSING;
@@ -573,8 +633,24 @@ public final class DepositDriver {
         }
     }
 
+    /**
+     * Everything this whole run moved, summed across targets. The per-target delta only
+     * ever describes one chest, so a caller that needs "what did the deposit actually
+     * move" (the task-completion gate) had no honest source before this.
+     */
+    private final Map<String, Long> runDelta = new LinkedHashMap<>();
+
+    public Map<String, Long> runDelta() {
+        synchronized (runDelta) {
+            return new LinkedHashMap<>(runDelta);
+        }
+    }
+
     private void publishDelta(Target target, Map<String, Long> delta) {
         if (delta == null || delta.isEmpty()) return;
+        synchronized (runDelta) {
+            delta.forEach((id, n) -> runDelta.merge(id, n, Long::sum));
+        }
         JsonObject counts = new JsonObject();
         for (Map.Entry<String, Long> entry : delta.entrySet()) {
             counts.addProperty(entry.getKey(), entry.getValue());
@@ -646,8 +722,19 @@ public final class DepositDriver {
             || state.getBlock() instanceof EnderChestBlock;
     }
 
+    /**
+     * Storage containers accepted as a deposit target. The driver already
+     * treats barrels (and hoppers/dispensers) as valid container blocks, but
+     * the old check only accepted ChestMenu and ShulkerBoxMenu, so any
+     * barrel-based deposit chest failed with "menu-mismatch" and could never
+     * complete. Matching on the menu's simple name keeps this mapping-proof.
+     */
     private boolean isExpectedMenu(AbstractContainerMenu menu) {
-        return menu instanceof ChestMenu || menu instanceof ShulkerBoxMenu;
+        if (menu == null) return false;
+        if (menu instanceof ChestMenu || menu instanceof ShulkerBoxMenu) return true;
+        String name = menu.getClass().getSimpleName();
+        return name.equals("BarrelMenu") || name.equals("HopperMenu")
+            || name.equals("DispenserMenu") || name.equals("CrafterMenu");
     }
 
     private String menuName(AbstractContainerMenu menu) {
