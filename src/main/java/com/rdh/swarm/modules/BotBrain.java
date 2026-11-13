@@ -557,6 +557,9 @@ public class BotBrain extends Module {
     private static final long GATHER_STALL_MS = 45_000L;
     private static final int GATHER_MAX_REISSUES = 4;
     private long gatherApproachUntil = 0L;
+    private double gatherStallLastX = Double.NaN;
+    private double gatherStallLastY = Double.NaN;
+    private double gatherStallLastZ = Double.NaN;
     private String gatherStallTaskId = "";
     private String gatherStallItem = "";
     private int gatherStallCount = -1;
@@ -5364,6 +5367,24 @@ public class BotBrain extends Module {
             return;
         }
         if (now - gatherStallSince < GATHER_STALL_MS) return;
+        // Digging toward the next pocket of the block crosses stone where nothing drops, so
+        // an item count that stands still is not a hang on its own. A bot that is moving is
+        // working; only one that is both idle and not gaining items is stalled.
+        if (mc.player != null) {
+            double mx = mc.player.getX() - gatherStallLastX;
+            double my = mc.player.getY() - gatherStallLastY;
+            double mz = mc.player.getZ() - gatherStallLastZ;
+            boolean moved = !Double.isNaN(gatherStallLastX) && (mx * mx + my * my + mz * mz) > 1.0;
+            gatherStallLastX = mc.player.getX();
+            gatherStallLastY = mc.player.getY();
+            gatherStallLastZ = mc.player.getZ();
+            if (moved) {
+                gatherStallSince = now;
+                gatherStallCount = have;
+                if (gatherStallReissues > 0) gatherStallReissues = 0;
+                return;
+            }
+        }
         String blockId = currentlyMining;
         BlockPos approach = (blockId != null && mc.level != null) ? findBreakTarget(blockId, 64) : null;
         // Distinguish "Baritone lost the thread" from "this terrain has none of that
