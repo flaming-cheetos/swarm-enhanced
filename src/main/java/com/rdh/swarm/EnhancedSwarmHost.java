@@ -201,6 +201,39 @@ public class EnhancedSwarmHost extends Thread {
         }
     }
 
+    /**
+     * Drop one half of a double chest from the deposit list and the registry. Two
+     * coordinates for one inventory sent the bot to the same chest twice and let the index
+     * sum both halves.
+     */
+    public void pruneDuplicateChest(int keepX, int keepY, int keepZ, int x, int y, int z) {
+        if (keepX == x && keepY == y && keepZ == z) return;
+        try {
+            String server = getCurrentServer();
+            boolean removed = false;
+            java.util.Map<String, java.util.List<int[]>> chests = depositConfig.getChests(server);
+            for (var entry : chests.entrySet()) {
+                java.util.List<int[]> list = entry.getValue();
+                for (int[] p : new java.util.ArrayList<>(list)) {
+                    if (p != null && p.length >= 3 && p[0] == x && p[1] == y && p[2] == z) {
+                        depositConfig.removeChest(server, entry.getKey(), list.indexOf(p) + 1);
+                        removed = true;
+                        break;
+                    }
+                }
+            }
+            BaseRegistry.Entry e = baseRegistry.byPosition(x, y, z);
+            if (e != null && e.isStorage()) {
+                baseRegistry.remove(e.id);
+                removed = true;
+            }
+            if (removed) {
+                ChatUtils.infoPrefix("Swarm", "CHEST: twin %d,%d,%d folded into %d,%d,%d", x, y, z, keepX, keepY, keepZ);
+                pushDepositConfigAll();
+            }
+        } catch (Exception ignored) {}
+    }
+
     /** Remove a chest from both the deposit config and the registry. */
     public boolean removeDepositChest(int x, int y, int z) {
         boolean removed = false;

@@ -25,6 +25,9 @@ public class StorageIndex {
         public int usedSlots = 0;
         public int totalSlots = 0;
         public double fullness = 0.0;
+        /** Set when the world reports this block as one half of a double chest. */
+        public boolean doubleChest = false;
+        public int[] twin = null;
     }
 
     // server -> category -> chestKey -> ChestRecord
@@ -176,6 +179,18 @@ public class StorageIndex {
     public synchronized void setChestContents(String server, String category, int x, int y, int z,
                                               Map<String, Long> counts,
                                               int usedSlots, int totalSlots, long lastScan) {
+        setChestContents(server, category, x, y, z, counts, usedSlots, totalSlots, lastScan, null);
+    }
+
+    /**
+     * @param twin the other half of a double chest, when the world says this block is one.
+     *             A double chest is one inventory at two coordinates, so it must hold one
+     *             record; storing both halves doubled every total for that container.
+     */
+    public synchronized void setChestContents(String server, String category, int x, int y, int z,
+                                              Map<String, Long> counts,
+                                              int usedSlots, int totalSlots, long lastScan,
+                                              int[] twin) {
         server = normalize(server);
         category = normalize(category);
         Map<String, Map<String, ChestRecord>> serverMap =
@@ -191,6 +206,59 @@ public class StorageIndex {
         for (var cEntry : serverMap.entrySet()) {
             if (!cEntry.getKey().equals(category)) cEntry.getValue().remove(key);
         }
+        // Collapse double chests onto one record. If this reading is a known twin, update
+        // the record that already represents the container; if it names a twin, drop the
+        // twin's own record so the two halves never add up twice.
+        if (twin != null && twin.length >= 3) {
+            String twinKey = chestKey(twin[0], twin[1], twin[2]);
+            for (var cEntry : serverMap.entrySet()) {
+                ChestRecord canonical = cEntry.getValue().get(twinKey);
+                if (canonical != null) {
+                    // twin was the canonical record; fold this reading into it instead.
+                    canonical.counts.clear();
+                    if (counts != null) {
+                        for (Map.Entry<String, Long> e2 : counts.entrySet()) {
+                            if (e2.getKey() != null && e2.getValue() != null && e2.getValue() > 0L) {
+                                canonical.counts.put(e2.getKey(), e2.getValue());
+                            }
+                        }
+                    }
+                    canonical.usedSlots = usedSlots;
+                    canonical.totalSlots = totalSlots;
+                    canonical.fullness = totalSlots > 0 ? (double) usedSlots / (double) totalSlots : 0.0;
+                    canonical.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
+                    canonical.status = ChestStatus.FRESH;
+                    if (canonical.twin == null) canonical.twin = new int[]{x, y, z};
+                    save();
+                    return;
+                }
+            }
+            // No canonical record yet: this reading becomes it, and the twin's own record
+            // (if one exists) is dropped so the halves cannot be summed twice.
+            for (var cEntry : serverMap.entrySet()) {
+                cEntry.getValue().remove(twinKey);
+            }
+        }
+        for (var cEntry : serverMap.entrySet()) {
+            for (ChestRecord r : cEntry.getValue().values()) {
+                if (r.twin != null && r.twin.length >= 3 && r.twin[0] == x && r.twin[1] == y && r.twin[2] == z) {
+                    r.counts.clear();
+                    if (counts != null) {
+                        for (Map.Entry<String, Long> e2 : counts.entrySet()) {
+                            if (e2.getKey() != null && e2.getValue() != null && e2.getValue() > 0L) {
+                                r.counts.put(e2.getKey(), e2.getValue());
+                            }
+                        }
+                    }
+                    r.usedSlots = usedSlots;
+                    r.totalSlots = totalSlots;
+                    r.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
+                    r.status = ChestStatus.FRESH;
+                    save();
+                    return;
+                }
+            }
+        }
         ChestRecord rec = new ChestRecord();
         rec.x = x; rec.y = y; rec.z = z; rec.category = category;
         if (counts != null) {
@@ -204,6 +272,10 @@ public class StorageIndex {
         rec.fullness = totalSlots > 0 ? (double) usedSlots / (double) totalSlots : 0.0;
         rec.lastScan = lastScan > 0 ? lastScan : System.currentTimeMillis();
         rec.status = ChestStatus.FRESH;
+        if (twin != null && twin.length >= 3) {
+            rec.doubleChest = true;
+            rec.twin = new int[]{twin[0], twin[1], twin[2]};
+        }
         serverMap.computeIfAbsent(category, k -> new ConcurrentHashMap<>()).put(key, rec);
         save();
     }

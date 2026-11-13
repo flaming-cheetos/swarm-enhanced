@@ -266,6 +266,31 @@ public class EnhancedSwarmWorker extends Thread {
         } catch (IOException ignored) {}
     }
 
+    /**
+     * The other half of a double chest, straight from the world's block state: a chest with
+     * ChestType LEFT/RIGHT is one inventory with an adjacent chest, not two containers.
+     */
+    private int[] chestTwin(int x, int y, int z) {
+        try {
+            if (mc == null || mc.level == null) return null;
+            BlockPos pos = new BlockPos(x, y, z);
+            var state = mc.level.getBlockState(pos);
+            if (!(state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock)) return null;
+            var type = state.getValue(net.minecraft.world.level.block.ChestBlock.TYPE);
+            if (type == net.minecraft.world.level.block.state.properties.ChestType.SINGLE) return null;
+            for (net.minecraft.core.Direction d : net.minecraft.core.Direction.values()) {
+                if (d.getAxis().isVertical()) continue;
+                BlockPos np = pos.relative(d);
+                var ns = mc.level.getBlockState(np);
+                if (!(ns.getBlock() instanceof net.minecraft.world.level.block.ChestBlock)) continue;
+                var nt = ns.getValue(net.minecraft.world.level.block.ChestBlock.TYPE);
+                if (nt == net.minecraft.world.level.block.state.properties.ChestType.SINGLE || nt == type) continue;
+                return new int[]{np.getX(), np.getY(), np.getZ()};
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
     /** Send the contents of a chest we just opened, so the host replaces its record. */
     private void publishMeasuredChest(int x, int y, int z, int used, int total, java.util.Map<String, Long> counts) {
         try {
@@ -281,8 +306,12 @@ public class EnhancedSwarmWorker extends Thread {
             container.append('}');
             String msg = "CHEST_DELTA:measured:" + x + ":" + y + ":" + z + "|{\"counts\":{},"
                 + "\"container\":" + container + ",\"absolute\":true,"
-                + "\"usedSlots\":" + used + ",\"totalSlots\":" + total + ","
-                + "\"lastScan\":" + System.currentTimeMillis() + "}";
+                + "\"usedSlots\":" + used + ",\"totalSlots\":" + total + ",";
+            int[] twin = chestTwin(x, y, z);
+            if (twin != null) {
+                msg = msg + "\"twin\":[" + twin[0] + "," + twin[1] + "," + twin[2] + "],";
+            }
+            msg = msg + "\"lastScan\":" + System.currentTimeMillis() + "}";
             sendProtocol(msg);
         } catch (Exception ignored) {}
     }

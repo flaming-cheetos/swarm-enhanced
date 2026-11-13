@@ -1,5 +1,6 @@
 package com.rdh.swarm;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
@@ -99,6 +100,8 @@ public final class DepositDriver {
     private final Map<String, Long> containerSnapshot = new LinkedHashMap<>();
     private int containerUsedSlots = 0;
     private int containerTotalSlots = 0;
+    /** The other half of a double chest, so the host can collapse the two into one record. */
+    private int[] containerTwin = null;
 
     public DepositDriver(Supplier<Minecraft> mcSupplier,
                          Consumer<String> protocol,
@@ -705,6 +708,28 @@ public final class DepositDriver {
             if (!id.isEmpty()) containerSnapshot.merge(id, (long) stack.getCount(), Long::sum);
         }
         containerTotalSlots = containerSlots;
+        containerTwin = target != null ? chestTwin(mc, target.pos) : null;
+    }
+
+    /** A chest whose block state says LEFT/RIGHT shares one inventory with its neighbour. */
+    private int[] chestTwin(Minecraft mc, BlockPos pos) {
+        try {
+            if (mc == null || mc.level == null || pos == null) return null;
+            var state = mc.level.getBlockState(pos);
+            if (!(state.getBlock() instanceof ChestBlock)) return null;
+            var type = state.getValue(ChestBlock.TYPE);
+            if (type == net.minecraft.world.level.block.state.properties.ChestType.SINGLE) return null;
+            for (Direction d : Direction.values()) {
+                if (d.getAxis().isVertical()) continue;
+                BlockPos np = pos.relative(d);
+                var ns = mc.level.getBlockState(np);
+                if (!(ns.getBlock() instanceof ChestBlock)) continue;
+                var nt = ns.getValue(ChestBlock.TYPE);
+                if (nt == net.minecraft.world.level.block.state.properties.ChestType.SINGLE || nt == type) continue;
+                return new int[]{np.getX(), np.getY(), np.getZ()};
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     /**
@@ -734,6 +759,11 @@ public final class DepositDriver {
         root.addProperty("absolute", true);
         root.addProperty("usedSlots", containerUsedSlots);
         root.addProperty("totalSlots", containerTotalSlots);
+        if (containerTwin != null) {
+            JsonArray twin = new JsonArray();
+            twin.add(containerTwin[0]); twin.add(containerTwin[1]); twin.add(containerTwin[2]);
+            root.add("twin", twin);
+        }
         root.addProperty("lastScan", System.currentTimeMillis());
         try {
             if (protocol != null) {

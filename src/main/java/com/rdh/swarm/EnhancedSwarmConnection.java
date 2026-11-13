@@ -431,10 +431,24 @@ public class EnhancedSwarmConnection extends Thread {
                                             }
                                             int used = o.has("usedSlots") ? o.get("usedSlots").getAsInt() : 0;
                                             int total = o.has("totalSlots") ? o.get("totalSlots").getAsInt() : 0;
-                                            host.getStorageIndex().setChestContents(host.getCurrentServer(), category, x, y, z, contents, used, total, when);
+                                            int[] twin = null;
+                                            try {
+                                                if (o.has("twin") && o.getAsJsonArray("twin").size() >= 3) {
+                                                    var tw = o.getAsJsonArray("twin");
+                                                    twin = new int[]{tw.get(0).getAsInt(), tw.get(1).getAsInt(), tw.get(2).getAsInt()};
+                                                }
+                                            } catch (Exception ignored) {}
+                                            host.getStorageIndex().setChestContents(host.getCurrentServer(), category, x, y, z, contents, used, total, when, twin);
+                                            if (twin != null) {
+                                                // Two coordinates, one inventory: the duplicate deposit entry
+                                                // only sends the bot to the same chest twice.
+                                                host.pruneDuplicateChest(x, y, z, twin[0], twin[1], twin[2]);
+                                            }
                                             System.out.println(String.format(
-                                                "[CHEST MEASURED] %s %d,%d,%d slots=%d/%d contents=%s",
-                                                category, x, y, z, used, total, contents));
+                                                "[CHEST MEASURED] %s %d,%d,%d slots=%d/%d twin=%s contents=%s",
+                                                category, x, y, z, used, total,
+                                                twin == null ? "none" : twin[0] + "," + twin[1] + "," + twin[2],
+                                                contents));
                                         } else {
                                             host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
                                         }
