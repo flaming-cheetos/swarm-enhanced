@@ -74,7 +74,14 @@ chosen bot, sets it `ACTIVE`, and sends the assignment. `cleanDead` calls
 `requeueActiveForBot` when a worker disappears. `BotBrain` implements pause,
 resume and cancel through its halt state; the queue keeps paused work and drops
 a cancelled task. `/api/task/add` no longer calls `clearCompleted`; only
-`/api/task/clear_done` prunes finished rows.
+`/api/task/clear_done` prunes finished rows. Host-side cancel is
+`/api/task/cancel {"id":"<uuid>"}` → `TaskQueue.cancelById` marks the row
+`CANCELLED`, clears the lease and removes it, then sends `swarm:<bot> cancel` to
+the owning worker. Verified live: `TASK: cancelled d617ac41-… owner=jamal` and
+`HALT: cancelled d617ac41-…` with no lease renewal or re-dispatch afterwards
+(`test-runs/live-smelt-day2/blast-furnace-and-cancel-trace.log`). Before the
+fix the endpoint only sent `cancel`, so the `ACTIVE` row stayed queued and was
+re-dispatched; the old workaround was stopping it worker-side.
 
 **How you start it.** `/eswarm task add`, `/eswarm task list`,
 `/eswarm task cancel`, `pause`/`resume`, or the same controls in `/v2` and the
@@ -86,8 +93,34 @@ construction.
 and an item with a known source for `GATHER`/`CRAFT` work. A bot with an active
 task is not given another one.
 
-**What it breaks it.** There is no lease, owner token or atomic claim; the only
-recovery is `requeueActiveForBot` when a connection is cleaned up. `load()`
+**Completion is the outcome, not the plan.** `finishTaskWithEvidence` is the one
+path that may mark a task `COMPLETE`, and it no longer trusts the plan's own
+counter. For `GATHER`, `SMELT` and `CRAFT` it recomputes the result as
+`countInInventory(target) + what this task actually put in a chest`, and when that
+is short it logs `TASK: refused-complete <id> inventory=<have>/<need>
+deposited=<landed>` and rewrites `collectedQuantity` to the truth so the brain
+goes back to work instead of re-declaring the same win. When the items exist but
+are still carried, the completion is deferred with `TASK: holding complete <id>
+until the deposit lands`, the deposit runs, and the move is credited with
+`TASK: ledger <id> += <n> <item> landed in chests` before `TASK: complete`. If the
+deposit cannot land, the task completes on the inventory proof with a warning
+instead of hanging. `BUILD`, `GRIND`, `SHULKER`, `SMITH` and `HUNT_FOOD` are not
+measured this way — their output is not an inventory count.
+
+That replaced a real lie: on 2026-11-13 the host printed `✓ jamal completed:
+iron_ingot x12 in 2s` while the smelt had not started and finished 73 s later,
+because a requeued task carried a stale `collectedQuantity` and `isComplete()`
+read it as a win. Proof of the fix, one run, ordering visible in the timestamps:
+`test-runs/live-smelt-day2/full-stack-deposit-and-completion.log` — 64 ore
+withdrawn, `ingot total after=64 (before=0, delta=64)`, `holding complete`,
+`DEPOSIT: complete moved=64`, `ledger += 64`, then `TASK: complete` and the host's
+`✓` last, with chest totals 373 -> 501 (+64 per run).
+
+**What it breaks it.** A lease, owner token and attempt counter fence every claim
+(`TASK: claimed <id> attempt=N`, `lease renewed`, `lease expired … requeued`), and
+`module-guard` still skips BotBrain, so a task can only run while the module is
+active — a disabled BotBrain answers every claim with `BotBrain module is not
+active` and the task churns through attempts. `load()`
 restores `ACTIVE` rows as `ACTIVE`, and the host constructor does not requeue all
 active rows; after a host restart a task can stay assigned to a worker that no
 longer owns it, while `dispatchNextTask` sees `hasActiveTask` and refuses to give
@@ -97,7 +130,10 @@ omit them from the Add form, and `/api/task/add` rejects them before queueing;
 an older saved row that still carries one reaches `failUnhandledTask`. Priority is honored by
 `getNextPendingForBot`, not by the raw `PriorityQueue` iterator.
 
-Status: **CODE ONLY**. Sources: `src/main/java/com/rdh/swarm/task/TaskQueue.java`
+Status: **LIVE** — claims, leases, requeues and the outcome-completion gate were
+all observed on 2026-11-13
+(`test-runs/live-smelt-day2/full-stack-deposit-and-completion.log`). Sources:
+`src/main/java/com/rdh/swarm/task/TaskQueue.java`
 (`add`, `addTask`, `save`, `load`, `clearCompleted`, `getNextPendingForBot`,
 `requeueActiveForBot`, `hasActiveTask`), `src/main/java/com/rdh/swarm/task/BotTask.java`
 (`Type`, `Status`), `src/main/java/com/rdh/swarm/EnhancedSwarmHost.java`
@@ -127,6 +163,65 @@ deposit actions. `auto-deposit` in `EnhancedSwarm` and `BotBrain.shouldDeposit`
 trigger the same `startDeposit` entry point when inventory is full or nearly
 full; `/eswarm deposit` remains the manual path.
 
+**What it will not deposit, and why that is now visible.** `keepReason` protects a
+fixed keep list (food, coal/charcoal, totems, pearls, elytra, fireworks) plus item
+suffixes for tools and armour, plus material prefixes (`minecraft:iron_`,
+`minecraft:diamond_`, `minecraft:golden_`, `minecraft:netherite_`,
+`minecraft:stone_`, `minecraft:wooden_`). The prefix rule exists for gear, but as
+a prefix it also caught the bare resource: `minecraft:iron_ingot` starts with
+`minecraft:iron_`, so every smelted ingot was kept forever — a stack and 14 iron
+ingots sat in the inventory and were never deposited, with nothing in the log to
+say so. Ingots and nuggets now bypass the prefix rule (they are task output, not
+gear) and every deposit announces both halves of its plan:
+`DEPOSIT: moving minecraft:iron_ingot=12` and
+`DEPOSIT: keeping minecraft:diamond_sword=1 (tool)`. Anything else that matches a
+prefix (blocks, ore, stone bricks, diamond_block) is still kept — that part of the
+list is unchanged and deliberate. Live proof, smelt through to chest:
+`test-runs/live-smelt-day2/iron-deposit-proof.log` — 12 ore withdrawn, smelted
+(`ore into furnace=12, ingot total before=0` → `ingot total after=12 … delta=12`),
+`DEPOSIT: step=1 moved=12`, `moved=14 … success=true` (12 ingots plus a cobble
+and a furnace), chest `[-549 91 598]` then held `minecraft:iron_ingot=12`, and the
+next deposit reported `DEPOSIT: moving nothing`.
+
+**The host player's own inventory.** Deposits used to drive workers only: the
+panel's deposit action is relayed to bots, so an item in the host player's
+inventory was never eligible for anything, however the keep list was written.
+`EnhancedSwarm.depositSelf(reason)` now runs a `DepositDriver` over the local
+player with the host's own chest list (`EnhancedSwarmHost.currentDepositChests()`)
+and the same keep rules, so both inventories behave identically. It is wired to
+`/api/action/deposit_self` and `/eswarm deposit self`, announces
+`Self-deposit: starting over N chest group(s)` and the same
+`DEPOSIT: moving … / keeping …` plan, and must run on the client thread (it logs
+and reads player state). Refusals are explicit: no chest configured, not the
+host, or no player in a world. `/api/action/deposit` still relays to bots only,
+so it does not touch the host inventory.
+
+Proven live (`test-runs/live-smelt-day2/player-deposit-proof.log`): 12 ingots in
+the player's inventory gave `DEPOSIT: moving minecraft:iron_ingot=12`,
+`DEPOSIT: step=1 moved=12 stacks=1 menu=ChestMenu`,
+`DEPOSIT: complete moved=12 stacks=1 delta={minecraft:iron_ingot=12}`, the
+destination chest went 12 -> 24 (+12, exactly the plan), and the next plan said
+`DEPOSIT: moving nothing`. The bot path on the same build moved its own 2 ingots
+(`moved=2 … delta={minecraft:iron_ingot=2}`) and that chest went 24 -> 26.
+
+**The test fixture.** The host player has no task and no worker, and the panel's
+commands are relayed to workers, so there was no way to put a known stack in that
+inventory. `/api/action/test_give {"item","count"}` sends a vanilla `/give` for the
+local player (`TEST FIXTURE: /give @s …`); it is test setup, not a survival path,
+the server's permissions decide, and no task calls it.
+
+**Where the 64 + 14 went** (`test-runs/live-smelt-day2/ingot-location-answer.log`).
+On this build neither inventory holds iron ingots (`DEPOSIT: moving nothing` on
+the host, and on the bot after its own deposit), and the chests held 12 at
+`-549 91 598` and 87 at `-550 91 599`. 64 + 14 = 78, so that chest's 87 misses a
+raw match by 9; the logs only account for 78 -> 80 -> 86 across two earlier smelts
+(2 and 6), leaving one unattributed ingot. The 64/14 slot split cannot be checked
+inside the 87 because the scan reports a chest as an aggregate, and this deposit
+path cannot have put them there — `minecraft:iron_` has been in `KEEP_PREFIXES`
+since commit `24e8f79` (2026-11-07), so no deposit moved an ingot before the
+exemption. Stowed by hand is the only remaining explanation, and that is a
+deduction about the path, not a claim about who did it.
+
 **What it needs.** At least one chest configured for the current server, a safe
 standing position, a container block that is still there when the menu opens, an
 empty player menu before opening, and items that match the category. Withdraw
@@ -135,9 +230,9 @@ also needs a `StorageIndex` entry and a worker that can path to the chest.
 **What it breaks it.** No chest gives `DEPOSIT: refused reason=no-target`. An
 already-open menu, a changed block, a different container id or a mismatched menu
 gives `menu-mismatch`; a failed transfer gives `timeout`, `no-progress`,
-`step-cap` or `click-failed`. The panel's `/api/action/scan_chests` does not scan:
-`SwarmWebServer` logs that the container reader is unavailable and sends no
-command. The `scan` worker path is synchronous: it can wait up to 60 seconds for
+`step-cap` or `click-failed`. The `/v2` Scan Chests button is disabled and sends no request; calling
+`/api/action/scan_chests` directly does send `swarm:all scan`. The `scan`
+worker path is synchronous: it can wait up to 60 seconds for
 a goto and 10 seconds for a menu, so it blocks that worker thread. Storage
 counts are only what the last scan or observed delta reported; there is no TTL
 or periodic refresh. The host's `WITHDRAW_REQUEST` handler and the worker's
@@ -174,13 +269,22 @@ the cooking task. The panel's Quick Action `Check Fuel` is not a fuel check:
 `SwarmWebHandler` answers `/api/action/check_fuel` with HTTP 501 and
 `check_fuel unavailable: container reader not implemented`.
 
-**What it needs.** A furnace (existing, in inventory, or craftable from eight
-cobblestone), a fuel stack whose burn time resolves, the ore/raw food in the
-inventory, and a client that can reach a `ServerLevel` for the loot context.
-That last requirement is the catch: `SmeltingManager.serverLevel()` uses
-`Minecraft.getInstance().getSingleplayerServer()`. On a normal multiplayer
-client that is null, so `fuelValue` returns `UNRESOLVABLE` with
-`no server level (multiplayer client)` and cooking is blocked.
+**What it needs.** An appliance found by the bot's own scan (smoker preferred for
+food, blast furnace for ore work), the ore/raw food in the inventory, and fuel
+that is either in the inventory or already sitting in the appliance.
+
+**Multiplayer.** Block-entity slots are not synced to a client, so a stocked
+furnace looks empty until its menu is open. `BotBrain.peekApplianceFuel` opens
+the appliance, reads all three slots through the menu
+(`SmeltingManager.readOpenAppliance`), caches the answer for a minute, and the
+cook decision uses it (`G2: appliance read [...] in=… fuel=… out=…`). Burn time
+falls back to published vanilla values (`estimatedBurnTicks`) when
+`SmeltingManager.serverLevel()` is null, which it always is on a multiplayer
+client. Cooking was previously blocked there with
+`no server level (multiplayer client)`; it now runs — live proof:
+`FUEL: minecraft:coal x64 = 102400 ticks in furnace` then
+`SMELT: complete, have 3/3 cooked_beef`, and `SMELT: using Smoker at -551 91 605`
+then `SMELT: complete, have 2/2 cooked_chicken`.
 
 **What it breaks it.** No furnace and fewer than eight cobblestone leaves the
 state at `STUCK`. No fuel produces `FUEL: none` or `FUEL: ... unresolvable` and
@@ -189,12 +293,129 @@ stops the deposit. An input that never empties times out after ten minutes with
 quantity leaves the bot `STUCK` rather than claiming completion. The
 `check_fuel` endpoint is a 501 stub, so it cannot tell you whether fuel exists.
 
-Status: **CODE ONLY**. Sources: `src/main/java/com/rdh/swarm/task/SmeltingManager.java`
-(`fuelValue`, `buildFuelContext`, `serverLevel`, `depositFuel`, `hasFuel`,
-`countFuel`, `fuelStatus`), `src/main/java/com/rdh/swarm/modules/BotBrain.java`
-(`handleSmeltingDeposit`, `handleSmeltingWait`, `maybeQueueCooking`,
-`hasCookFuel`), `src/main/java/com/rdh/swarm/web/SwarmWebHandler.java`
-(`/api/action/check_fuel`).
+Status: **LIVE — furnace, smoker and blast furnace all verified in a
+multiplayer session** (2026-11-12). Cook proof:
+`test-runs/live-smelt-day2/cook-live-trace.log`; ore proof:
+`test-runs/live-smelt-day2/blast-furnace-and-cancel-trace.log`. The blast-furnace
+ore run works end to end: the storage query returns the host index count and the
+chest it came from (`[STORAGE QUERY] server=… req=minecraft:raw_iron:3 ->
+STORAGE_QUERY_RESPONSE:minecraft:raw_iron:4:-549,91,598=4`), the gather step
+reports that source (`Planner: minecraft:raw_iron x4 in base storage, withdrawing
+4 from -549,91,598=4`) and advances the plan,
+and the bot picks the appliance by name (`SMELT: using Blast Furnace at -551 91
+606`), inserts its own coal, waits and collects (`SMELT: complete, have 1/1
+iron_ingot`). Things that used to block it and are now fixed: a smeltable target
+queued as a `GATHER` job (it "completed" 1/1 without smelting), a satisfied
+furnace/fuel gather step that never advanced the plan, a deposit trip that ran
+while a smelt step was still waiting for its ore, and a smelt state that failed
+from far away instead of walking back to the base appliance.
+
+**The furnace that would not open.** The open phase used to retry the same interact
+from wherever the bot stood. At the edge of reach (4.0 blocks) that never lands,
+so it spent 100 attempts and 25 s and failed the task `reason=stuck` on a furnace
+it could see; the same furnace opened fine at 1.0 blocks. It now re-paths onto the
+block (`#goto <furnace>`) when the first attempts fail
+(`SMELT: furnace did not open from here (attempt 20), stepping closer`) before the
+100-tick timeout, and still fails `STUCK` if that does not help.
+
+**Storage query wire format.** `STORAGE_QUERY_REQUEST:<id>:<need>` per item;
+the host replies `STORAGE_QUERY_RESPONSE:<id>:<count>:<x,y,z>=count;...`, items
+joined by `#`. The trailing field is `StorageIndex.getBreakdown`, so a total is
+attributable to a container and a legacy `id:count` reply still parses. The
+gather step now queries whenever it has no answer for the item (not only every
+100th tick) and refuses to `#mine` until a reply lands, so it withdraws ore the
+base already holds instead of mining more.
+
+**Withdraw.** `WITHDRAW_REQUEST:<itemId>|<needed>|<category>` — '|' because the id
+is namespace-qualified and the old `id:needed` form split on ':' gave the host
+`minecraft:minecraft`, which matched no chest and dispatched nothing. The host
+answers `[WITHDRAW SEND] -> (x,y,z) taking N of <id>` and the worker verifies each
+shift-click against the menu before counting it (`Withdraw: slot 21 click moved
+nothing (64 -> 64)`); a click that the server ignores no longer reports success.
+`handleWithdraw` refuses to run on a furnace/crafting menu, which used to pass the
+"chest opened" check and shift-click the blast furnace's own input slot. On
+`WITHDRAW_RESULT` the host debits the index (`[WITHDRAW DONE] … moved=1 index 1 ->
+0`) and the worker drops that item from the bot's cached reply so the next planner
+tick re-queries instead of re-reading a stale number. Live proof of the chain,
+including the count stepping 3 → 2 → 1 at `-549,91,598=…` and the bot then
+holding the ore (`Gathering raw_iron: 1/1`):
+`test-runs/live-smelt-day2/withdraw-chain-trace.log`.
+
+**One withdrawal per task.** A task may dispatch at most one withdrawal for a
+given item, however many plan steps or re-plans it goes through. `withdrawTaskId`
++ `withdrawTaskItem` record it when the request is sent; a later planner tick that
+still wants that item logs `already withdrawn for this task; no second withdrawal,
+gathering the rest` and mines the shortfall instead of asking again.
+`withdrawInFlightItem` additionally keeps the step from re-dispatching while the
+transfer is walking to the chest (a bare 5 s throttle used to re-fire mid-transfer
+and pull several ores for a one-ore step). A dispatch is skipped entirely while
+the bot has another menu open, because the worker refuses a chest at that point
+and the refusal would spend the task's one withdrawal for nothing
+(`WITHDRAW_REFUSED` is still reported if it happens). A take that is dispatched but
+delivers nothing does not keep the guard either: when the in-flight window times
+out with the inventory no higher than when the request went out, the guard is
+cleared (`Withdraw: <item> attempt produced nothing; allowing the task to retry`).
+That mattered live — a chest that never opened spent the task's one withdrawal,
+after which every plan tick said `already withdrawn for this task` forever and the
+task mined for ore the storage index still listed, until it failed `reason=stuck`.
+The amount dispatched is the deficit:
+the plan is resolved for `target - already held` (`Plan deficit: iron_ingot x2
+(task needs 50, have 48)`) instead of the task's gross quantity, which is what
+used to plan 3 ores for one missing ingot. Live: one `WITHDRAW SEND` of 2, one
+`WITHDRAW DONE … moved=2 index 4 -> 2`, zero further sends for that task —
+`test-runs/live-smelt-day2/one-withdraw-per-task-trace.log`.
+
+**The take is exact, and the landing is verified against the bot's inventory,
+not the chest.** A shift-click moves a whole stack, so a slot larger than the
+need is not shift-clicked: the bot picks the stack up, right-clicks the needed
+singles into a player slot, then puts the remainder back into the same chest
+slot (`Withdraw: exact take 2 from a 4 stack (slot 42 -> 54)`). A slot that
+holds no more than the need is still shift-clicked whole, which is exact by
+definition. Either way each click is checked by reading the bot inventory by
+item id and count (`Withdraw: slot 42 took 2 (inventory 0 -> 2)`), and after the
+menu closes a bounded wait re-reads the inventory (`Withdraw: inventory holds
+2/2 minecraft:raw_iron after transfer`). What the inventory does not hold is not
+counted and not debited, so `[WITHDRAW DONE] … moved=N` always equals what the
+bot received. Live: a task needing 2 from a 4-ore slot took 2, the inventory
+went 0 → 2, `moved=2 index 4 -> 2`, and the smelt finished at exactly the
+planned quantity (78 + 2 = 80, task target 80). When the chest holds less than
+the need the bot takes what exists and mines the rest, still without a second
+withdrawal in the same task: needing 6 with 2 in the chest gave `moved=2 index 2
+-> 0`, `already withdrawn for this task; no second withdrawal, gathering the
+rest`, and a smelt of `ore into furnace=6` (2 withdrawn + 4 mined, 80 + 6 = 86,
+task target 86) — `test-runs/live-smelt-day2/chest-to-smelt-exact.log`. The
+appliance scan will not fall back to a smoker for a non-food smelt (a smoker
+rejects ore, so that fallback stalled the task until it was removed).
+The smelt step logs the two quantities
+that make the output checkable: `SMELT: ore into furnace=6, ingot total
+before=72` at insert and `SMELT: ingot total after=78 (before=72, delta=6, ore
+in furnace=6)` after collection, so ore-in, ingot delta and the debit all read
+as the same number. The earliest full chain (kept for history, it still
+shift-clicked whole stacks and therefore over-delivered) —
+`test-runs/live-smelt-day2/chest-to-smelt-complete.log`: one `WITHDRAW SEND`,
+`raw_iron` 0 → 6 in the inventory by item id and count, `ore into furnace=6`,
+`ingot total after=78 (before=72, delta=6 …)`, task completed, no `reason=stuck`.
+Caveats that still hold: the exact take is several clicks (pickup, one
+right-click per item, return the rest) at roughly 120 ms each, so a large take
+from a big stack is slower than a shift-click, and a menu closing mid-take can
+leave it partly done — the inventory readback is what decides the debit, so a
+partial take is debited as a partial take. Cancelling a task after the ore has
+been inserted leaves that ore inside the appliance; it is not reclaimed. And the
+task report's `xN` is the task target while `have A/B` is held/step-need, which
+are different quantities.
+Still not clean: the chest's menu-read count can rise during the same task because
+the bot keeps mining and depositing in parallel, so a single before/after scan
+does not isolate the withdrawn amount; the index-level debit plus the item
+appearing in the bot's inventory is the evidence that holds. Also still true:
+the plan can only withdraw what the index claims, and an index entry that goes
+stale is now cleared on a zero-move withdrawal, which costs one extra pass
+before the bot mines that item itself. Sources:
+`src/main/java/com/rdh/swarm/task/SmeltingManager.java` (`fuelValue`,
+`estimatedBurnTicks`, `readOpenAppliance`, `buildFuelContext`, `serverLevel`,
+`depositFuel`, `hasFuel`, `countFuel`, `fuelStatus`),
+`src/main/java/com/rdh/swarm/modules/BotBrain.java` (`peekApplianceFuel`,
+`findSmelter`, `maybeQueueCooking`, `hasCookFuel`), and
+`src/main/java/com/rdh/swarm/web/SwarmWebHandler.java` (`/api/action/check_fuel`).
 
 ## Item pickup
 
@@ -251,8 +472,9 @@ The WebSocket is `ws://<host>/ws`.
 token (or the generated session token), and a same-origin browser request.
 
 **What it breaks it.** A missing or wrong token is 401; a foreign `Origin` is
-403. `/api/action/check_fuel` is 501, and `/api/action/scan_chests` logs that the
-container reader is unavailable and sends nothing. `/api/items` returns every
+403. `/api/action/check_fuel` is 501. `/api/action/scan_chests` sends
+`swarm:all scan` if called directly, but the `/v2` button is disabled and
+sends nothing. `/api/items` returns every
 registry id, including `minecraft:air`. There is no TLS, and the token is placed
 in the query string and printed to chat. Exposing the panel beyond loopback is a
 red line. The panel was not opened against a real Minecraft host in this pass, so
@@ -343,21 +565,54 @@ Status: **CODE ONLY**. Sources: `src/main/java/com/rdh/swarm/task/TaskQueue.java
 `src/main/java/com/rdh/swarm/WorkerConfig.java`, `src/main/java/com/rdh/swarm/EnhancedSwarmHost.java`
 (constructor).
 
+## The base registry (A3/A4/A5, 2026-11-13)
+
+`BaseRegistry` (`src/main/java/com/rdh/swarm/BaseRegistry.java`) is the single place that
+knows where the base stores and smelts. Coordinates are data on disk
+(`meteor-client/enhanced-swarm/base-registry.json`), not literals on the observation path:
+a grep for `-549`/`-550`/`-551` outside that class returns nothing.
+
+- **Entries:** 12 - `chest-main` (double, twin recorded), `chest-full`, two spares, and
+  eight furnaces (`bf1`-`bf3`, `smoker1`-`smoker3`, `furnace1`-`furnace2`). Every entry
+  carries the measurement that seeded it in `source`.
+- **Readable:** `POST /api/debug/registry`, and the `base_registry` MCP tool.
+- **Id-addressed reads:** `world_container {id: "bf1"}` resolves position and kind from
+  the registry and opens the container; no coordinates are passed by the caller.
+- **Registry-driven index view:** `/api/debug/storage` now reports `registryChests` and
+  `registryFurnaces` alongside the totals.
+
+**Proof (04:29-04:33).** Boot 1 seeded the file (`loadedFromDisk=false`, 2708 bytes).
+Both instances were then stopped, the jar redeployed (`md5 89a60bf`, later `d564d2d`,
+identical on both), and restarted: `loadedFromDisk=true`, `count=12`, same `seededAt`,
+**no re-seeding**. After that restart:
+
+| check | value |
+|---|---|
+| `/api/debug/storage` iron | **832**, breakdown `-549,91,598=64; -550,91,601=768` |
+| `world_container {id:bf1}` | `BlastFurnaceBlockEntity`, `coal x42` |
+| `world_container {id:chest-main}` | `ChestBlockEntity`, **768 iron**, 32/54 slots |
+| `swarm_preflight` | **pass=true, failed=[]** (11 checks) |
+| selftest | **20 passed, 0 failed** |
+
 ## Status table
 
 | Feature | Status | Where it lives |
 |---|---|---|
-| Mining and gathering | `CODE ONLY` | `BotBrain.handleGathering`; `EnhancedSwarmHost.dispatchNextTask`; `TaskQueue` |
-| Task queue | `CODE ONLY` | `TaskQueue`; `EnhancedSwarmHost.dispatchNextTask`; `BotBrain` halt state |
-| Deposits and chests | `CODE ONLY` | `DepositDriver`; `DepositConfig`; `StorageIndex`; `EnhancedSwarmWorker.handleScan`/`handleWithdraw` |
+| Mining and gathering | `DONE` (live 2026-11-13) | `BotBrain.handleGathering`; `EnhancedSwarmHost.dispatchNextTask`; `TaskQueue` |
+| Task queue | `DONE` (live 2026-11-13 — claims, leases, requeues, outcome gate) | `TaskQueue`; `EnhancedSwarmHost.dispatchNextTask`; `BotBrain` halt state |
+| Deposits and chests | `DONE` (live 2026-11-13 — chest totals +78 verified by scan) | `DepositDriver`; `DepositConfig`; `StorageIndex`; `EnhancedSwarmWorker.handleScan`/`handleWithdraw` |
 | Fuel | `CODE ONLY` | `SmeltingManager`; `BotBrain.handleSmeltingDeposit`/`handleSmeltingWait` |
 | Item pickup | `CODE ONLY` | `DropCollector`; `BotBrain.finishTaskWithEvidence` |
 | Panel (`/v2`, old `/`) | `CODE ONLY` | `SwarmWebServer`; `SwarmWebHandler`; `SwarmWebPanelV2`; `web/v2/*` |
 | Commands and keybinds | `CODE ONLY` | `SwarmCommand`; `EnhancedSwarmAddon`; `SwarmHoleFiller.forceFill` |
-| Persistence across restart | `CODE ONLY` | `TaskQueue`, `DepositConfig`, `StorageIndex`, `WaypointManager`; `DeathTracker` is memory-only |
+| Persistence across restart | `PARTIAL` - base registry proven across a real restart 2026-11-13 (12 entries, no re-seed); tasks/waypoints/death still unproven | `TaskQueue`, `DepositConfig`, `StorageIndex`, `WaypointManager`; `DeathTracker` is memory-only |
 
-None of these rows is `OBSERVED`. The `/v2` row is the only one with browser
-evidence, and that evidence is fake players, not a Minecraft client.
+Three rows are `DONE` on live evidence from 2026-11-13: mining and gathering,
+the task queue, and deposits and chests (`test-runs/live-smelt-day2/` — the
+64-ingot run plus four 78-ingot runs, the last ending `612 -> 690` ingots,
++78, with the completion line after the deposit). Fuel, item pickup, panel,
+commands and persistence stay `CODE ONLY`; the `/v2` row's only browser
+evidence is fake players, not a Minecraft client.
 
 ## Described but not in the code
 
@@ -383,7 +638,8 @@ Short list, not a roadmap:
 - **Registry/storage HTTP endpoints.** `/api/registry/items`,
   `/api/registry/blocks`, `/api/storage`, `/api/waypoints` and
   `/api/grind/status` are not registered. The actual item endpoint is
-  `/api/items`; `/api/action/scan_chests` is a logged no-op and
+  `/api/items`; `/api/action/scan_chests` sends `swarm:all scan` when called
+  directly, but the `/v2` button is disabled and sends no request.
   `/api/action/check_fuel` is a 501.
 - **Task leasing.** `LEASE_REQUEST`, a lease table and atomic task claiming are
   not present. `TaskQueue` has `requeueActiveForBot` and `hasActiveTask` only.
@@ -391,3 +647,37 @@ Short list, not a roadmap:
   `deaths.json` writer.
 - **Waypoint push.** `/eswarm waypoint push` exists in the tree but only logs
   that workers will query the host; it does not serialize or send waypoints.
+
+## Base inventory as measured (2026-11-13, `world_containers` + opened chest menus)
+
+Authoritative, read from the world rather than from the storage index:
+
+| position | block | contents |
+|---|---|---|
+| -550 91 601 **+** -550 91 602 | double chest | 32/54 slots, **768 iron_ingot**, 519 cobblestone, 118 dirt, 113 diorite |
+| -549 91 598 | chest | 54/54 full, 64 iron_ingot, 1127 cobblestone, 832 dirt, 128 andesite, 71 cobbled_deepslate |
+| -549 91 601 / -549 91 602 | chest | empty |
+| -549/-550/-551 91 606 | 3x blast furnace | **holds coal** - `world_container open=true` read `coal x42` in 1/3 slots (probe, 04:24) |
+| -549/-550/-551 91 605 | 3x smoker | not read (same block-entity limit) |
+| -550/-549 91 607 | 2x furnace | not read (same block-entity limit) |
+
+**How each row was measured matters.** Chest rows come from an opened container menu
+(`world_container open=true`). Furnace rows come from the mod's own fuel reader
+(`G2: cook check` in the bot log) - a furnace's contents are *not* readable from its
+block entity, and an earlier version of this table wrongly said "empty" because it
+tried. A client-side block entity never carries an inventory; contents only exist in
+the `ContainerMenu` after opening. `world_containers` therefore lists containers
+without claiming to know what is inside them.
+
+Three corrections against earlier notes: the iron sits in the **double chest at
+601/602** (768 ingots - the "690" figure came from the storage index, which only sees
+one half of a double chest), the base has **three** blast furnaces and not two, and
+those furnaces are **fuelled with coal**, not empty. A double chest is two blocks with
+one inventory, so both halves report identical contents.
+
+**The 690-vs-768 question is closed (04:26).** `/api/debug/storage` (new) reports
+`iron_ingot = 832` with breakdown `-549,91,598=64; -550,91,601=768`: the double chest is
+counted **once**, not twice, and 832 = 768 + 64 is exactly what the opened chests hold.
+The old 690 was a snapshot taken before the final deposit landed, not a counting bug.
+Before this endpoint existed the index was unobservable from outside, which is why the
+gap survived two sessions of speculation.

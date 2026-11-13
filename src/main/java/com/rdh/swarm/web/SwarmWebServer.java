@@ -376,6 +376,130 @@ public class SwarmWebServer {
         return cached;
     }
 
+    /**
+     * Debug read surface for the MCP server (docs/MCP_SERVER_SPEC.md section 6).
+     * Returns null for paths this method does not own, so the caller falls back to
+     * the fire-and-forget command switch. POST-only, same token/Origin rules.
+     */
+    public String handleDebugApi(String path, String body) {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        try {
+            if ("/api/debug/state".equals(path)) {
+                return buildStateJson();
+            }
+            if ("/api/debug/bot".equals(path)) {
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                String bot = extractJson(body, "bot");
+                if (bot == null || bot.isBlank()) {
+                    StringBuilder sb = new StringBuilder("{\"ok\":true,\"bots\":{");
+                    boolean first = true;
+                    for (String name : mod.host.getDebugStateWorkers()) {
+                        if (!first) sb.append(',');
+                        first = false;
+                        sb.append('"').append(esc(name)).append("\":").append(mod.host.getDebugState(name));
+                    }
+                    return sb.append("}}").toString();
+                }
+                boolean refresh = "true".equalsIgnoreCase(String.valueOf(extractJson(body, "refresh")));
+                if (refresh) mod.host.requestDebugState(bot);
+                String json = mod.host.getDebugState(bot);
+                if (json == null) {
+                    return "{\"ok\":false,\"error\":\"no_state_yet\",\"bot\":\"" + esc(bot)
+                        + "\",\"detail\":\"no debug reply cached for this worker yet\"}";
+                }
+                long age = System.currentTimeMillis() - mod.host.getDebugStateAt(bot);
+                return "{\"ok\":true,\"bot\":\"" + esc(bot) + "\",\"ageMs\":" + age + ",\"data\":" + json + "}";
+            }
+            if ("/api/debug/registry".equals(path)) {
+                // A3: storage and furnace locations as data, readable by any observer.
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                return mod.host.getBaseRegistry().toJson();
+            }
+            if ("/api/debug/storage".equals(path)) {
+                // A2: the index was invisible, which made "index says 690, world says 768"
+                // unanswerable. Totals + per-chest breakdown, read straight from StorageIndex.
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                String server = mod.host.getCurrentServer();
+                var idx = mod.host.getStorageIndex();
+                StringBuilder sb = new StringBuilder("{\"ok\":true,\"server\":\"" + esc(server) + "\",\"totals\":{");
+                var items = idx.getAllItems(server);
+                boolean first = true;
+                for (String it : items) {
+                    long n = idx.getTotal(server, it);
+                    if (n <= 0L) continue;
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append('"').append(esc(it)).append("\":").append(n);
+                }
+                sb.append("},\"breakdown\":{");
+                first = true;
+                for (String it : items) {
+                    long n = idx.getTotal(server, it);
+                    if (n <= 0L) continue;
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append('"').append(esc(it)).append("\":\"").append(esc(idx.getBreakdown(server, it))).append('"');
+                }
+                sb.append("},\"registryChests\":[");
+                boolean firstChest = true;
+                for (var ce : mod.host.getBaseRegistry().storage()) {
+                    if (!firstChest) sb.append(',');
+                    firstChest = false;
+                    sb.append("{\"id\":\"").append(esc(ce.id)).append("\",\"pos\":\"")
+                      .append(esc(ce.posString())).append("\",\"double\":").append(ce.doubleChest).append('}');
+                }
+                int furnaceCount = mod.host.getBaseRegistry().furnaces().size();
+                sb.append("],\"registryFurnaces\":").append(furnaceCount);
+                return sb.append('}').toString();
+            }
+            if ("/api/debug/world".equals(path)) {
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                String bot = extractJson(body, "bot");
+                if (bot == null || bot.isBlank()) {
+                    return "{\"ok\":false,\"error\":\"bot_required\"}";
+                }
+                String kind = extractJson(body, "kind");
+                String args = extractJson(body, "args");
+                // A4: an id resolves through the registry, so the furnace's position and
+                // kind come from data rather than from whatever the caller passed.
+                String regId = extractJson(body, "id");
+                if (regId != null && !regId.isBlank()) {
+                    var entry = mod.host.getBaseRegistry().byId(regId);
+                    if (entry == null) {
+                        return "{\"ok\":false,\"error\":\"unknown_id\",\"id\":\"" + esc(regId) + "\"}";
+                    }
+                    // Registry-driven reads default to opening the container: that is the
+                    // only way contents are real, and it is what the id exists for.
+                    boolean wantOpen = !"false".equalsIgnoreCase(String.valueOf(extractJson(body, "open")));
+                    if (kind == null || kind.isBlank()) kind = wantOpen ? "container_open" : "container";
+                    args = entry.posString();
+                }
+                boolean ask = kind != null && !kind.isBlank();
+                if (ask) mod.host.requestWorldProbe(bot, kind.trim(), args == null ? "" : args.trim());
+                String json = mod.host.getWorldProbe(bot);
+                if (json == null) {
+                    return "{\"ok\":false,\"error\":\"waiting\",\"bot\":\"" + esc(bot) + "\"}";
+                }
+                long age = System.currentTimeMillis() - mod.host.getWorldProbeAt(bot);
+                if (!ask && age > 15000L) {
+                    return "{\"ok\":false,\"error\":\"stale\",\"ageMs\":" + age + "}";
+                }
+                return "{\"ok\":true,\"bot\":\"" + esc(bot) + "\",\"ageMs\":" + age + ",\"data\":" + json + "}";
+            }
+        } catch (Exception e) {
+            return "{\"ok\":false,\"error\":\"debug_failed\",\"detail\":\"" + esc(String.valueOf(e.getMessage())) + "\"}";
+        }
+        return null;
+    }
+
     public void handleApiCommand(String path, String body) {
         EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
         if (mod == null || !mod.isHost() || mod.host == null) return;
@@ -423,7 +547,28 @@ public class SwarmWebServer {
                             return;
                         }
                     }
-                    BotTask task = new BotTask(taskType, mcItem, qty);
+                    // Something that must be produced by smelting (ingot from ore, cooked
+                    // food from raw) is a SMELT job, not a GATHER job. As GATHER it tried to
+                    // mine the finished item and could report 1/1 COMPLETE without smelting.
+                    net.minecraft.world.item.Item smeltSource = null;
+                    if (mcItem != null && taskType == BotTask.Type.GATHER) {
+                        try { smeltSource = com.rdh.swarm.task.RecipeBook.getOreForIngot(mcItem); } catch (Exception ignored) {}
+                        if (smeltSource == null) {
+                            for (var e : com.rdh.swarm.task.FoodManager.COOKING.entrySet()) {
+                                if (e.getValue() == mcItem) { smeltSource = e.getKey(); break; }
+                            }
+                        }
+                    }
+                    BotTask task;
+                    if (smeltSource != null) {
+                        java.util.Map<String, Object> smeltData = new java.util.HashMap<>();
+                        smeltData.put("item", mcItem);
+                        smeltData.put("quantity", qty);
+                        smeltData.put("source", smeltSource);
+                        task = new BotTask(java.util.UUID.randomUUID(), BotTask.Type.SMELT, 0, smeltData);
+                    } else {
+                        task = new BotTask(taskType, mcItem, qty);
+                    }
                     if (!itemless && !com.rdh.swarm.task.DependencyResolver.hasKnownSource(mcItem)) {
                         task.setStatus(BotTask.Status.FAILED);
                         task.setFailureReason("no known source");
@@ -485,9 +630,24 @@ public class SwarmWebServer {
                     logInfo("resume received for " + bot);
                 }
                 case "/api/task/cancel" -> {
+                    String id = extractJson(body, "id");
                     String bot = extractJson(body, "bot");
-                    host.sendTo(bot, "swarm:" + bot + " cancel");
-                    logInfo("cancel received for " + bot);
+                    String target = bot;
+                    if (id != null && !id.isBlank() && host.getTaskQueue() != null) {
+                        try {
+                            // Cancel the row first so the scheduler cannot re-dispatch
+                            // it, then tell the owning worker to stop.
+                            String owner = host.getTaskQueue().cancelById(java.util.UUID.fromString(id));
+                            if (owner != null && !owner.isBlank()) target = owner;
+                            logInfo("Task cancelled: " + id);
+                        } catch (Exception e) {
+                            logWarn("Invalid task id: " + id);
+                        }
+                    }
+                    if (target != null && !target.isBlank()) {
+                        host.sendTo(target, "swarm:" + target + " cancel");
+                        logInfo("cancel sent to " + target);
+                    }
                 }
                 case "/api/action/follow" -> {
                     String myName = "";
@@ -508,6 +668,42 @@ public class SwarmWebServer {
                     host.sendAll("swarm:all depositall");
                     logInfo("Deposit all sent to all bots");
                 }
+                case "/api/action/test_give" -> {
+                    // Test fixture for the player-side deposit path: the host player has no
+                    // task and no worker, so there was no way to put a known stack in their
+                    // inventory to deposit. Hands a vanilla /give to the client thread; the
+                    // server still decides whether it is allowed. Not a survival feature.
+                    var giveMod = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                        .get(com.rdh.swarm.EnhancedSwarm.class);
+                    String giveItem = extractJson(body, "item");
+                    int giveCount = 1;
+                    try { giveCount = Integer.parseInt(extractJson(body, "count")); } catch (Exception ignored) {}
+                    if (giveMod == null || giveItem == null || giveItem.isBlank()) {
+                        logWarn("Test fixture: swarm module or item missing");
+                    } else {
+                        final String gi = giveItem;
+                        final int gc = giveCount;
+                        net.minecraft.client.Minecraft.getInstance()
+                            .execute(() -> giveMod.testGive(gi, gc));
+                        logInfo("Test fixture: requested " + gi + " x" + gc + " via /give");
+                    }
+                }
+                case "/api/action/deposit_self" -> {
+                    // The host player's own inventory: no worker owns it, so this runs
+                    // the deposit driver locally instead of relaying a command. It has to
+                    // be handed to the client thread — chat output and the driver both
+                    // expect it, and from a web thread the whole call dies silently.
+                    var swarmMod = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                        .get(com.rdh.swarm.EnhancedSwarm.class);
+                    if (swarmMod == null) {
+                        logWarn("Self-deposit: swarm module not found");
+                    } else {
+                        net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                            boolean started = swarmMod.depositSelf("api");
+                            logInfo(started ? "Self-deposit started (host inventory)" : "Self-deposit refused (see game log)");
+                        });
+                    }
+                }
                 case "/api/action/deposit_ores" -> {
                     host.sendAll("swarm:all deposit ores");
                     logInfo("Deposit ores sent to all bots");
@@ -527,7 +723,11 @@ public class SwarmWebServer {
                     logInfo("PVP mode DISABLED");
                 }
                 case "/api/action/scan_chests" -> {
-                    logWarn("Scan Chests is not implemented: container reader unavailable; no command sent");
+                    // Scanning is a worker verb ("swarm:all scan" -> handleScan), not an
+                    // exec chat command. This endpoint used to be a stub, so the panel
+                    // could never populate the storage index that withdraw depends on.
+                    host.sendAll("swarm:all scan");
+                    logInfo("Scan Chests: requested a storage scan from all workers");
                 }
                 case "/api/command" -> {
                     String target = extractJson(body, "target");

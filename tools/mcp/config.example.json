@@ -1,0 +1,29 @@
+{
+  "port": 8790,
+  "bind": "127.0.0.1",
+  "panel": "http://127.0.0.1:8888",
+  "token": "",
+  "project": "C:\\Projects\\swarm\\swarm-improved",
+  "mcServer": {
+    "host": "192.168.4.57",
+    "rconPort": 25575,
+    "note": "the password is read from .rcon-password next to this file, or SWARM_MC_RCON_PASSWORD"
+  },
+  "instances": {
+    "main": {
+      "launcher": "C:\\Users\\rdh\\Desktop\\PineconeMC-Windows-MSVC-Portable-11.1.2\\elyprismlauncher.exe",
+      "args": ["-l", "main", "-a", "chris", "-s", "192.168.4.57"],
+      "log": "C:\\Users\\rdh\\Desktop\\PineconeMC-Windows-MSVC-Portable-11.1.2\\instances\\main\\.minecraft\\logs\\latest.log",
+      "port": 8888,
+      "joined": "joined the game"
+    },
+    "bot": {
+      "launcher": "C:\\Users\\rdh\\Desktop\\PineconeMC-Windows-MSVC-Portable-11.1.2\\elyprismlauncher.exe",
+      "args": ["-l", "bot", "-a", "jamal", "-s", "192.168.4.57"],
+      "log": "C:\\Users\\rdh\\Desktop\\PineconeMC-Windows-MSVC-Portable-11.1.2\\instances\\bot\\.minecraft\\logs\\latest.log",
+      "port": 8898,
+      "joined": "joined the game"
+    }
+  },
+  "destructive": false
+}

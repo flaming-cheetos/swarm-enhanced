@@ -302,6 +302,174 @@ public class BotBrain extends Module {
         .build()
     );
 
+
+    /**
+     * Debug snapshot for the MCP server (docs/MCP_SERVER_SPEC.md 6.1). Only this
+     * process knows the plan, the task baseline, the withdraw guard and the live
+     * inventory, so the worker answers with this and the host caches it.
+     * Hand-built JSON so the socket protocol needs no new dependency.
+     */
+    public String debugStateJson() {
+        StringBuilder sb = new StringBuilder(1024);
+        long now = System.currentTimeMillis();
+        sb.append('{');
+        sb.append("\"ms\":").append(now);
+        sb.append(",\"moduleEnabled\":").append(isActive());
+        sb.append(",\"halted\":").append(halted);
+        sb.append(",\"state\":\"").append(state == null ? "IDLE" : state.name()).append("\"");
+        sb.append(",\"taskDescription\":\"").append(escJson(currentTaskDescription)).append("\"");
+
+        try {
+            if (mc.player != null) {
+                sb.append(",\"pos\":[").append((int) Math.floor(mc.player.getX())).append(',')
+                  .append((int) Math.floor(mc.player.getY())).append(',')
+                  .append((int) Math.floor(mc.player.getZ())).append(']');
+                sb.append(",\"health\":").append(mc.player.getHealth());
+                sb.append(",\"food\":").append(mc.player.getFoodData().getFoodLevel());
+                // dimension is reported by the host; this process only needs its own facts
+            }
+        } catch (Exception ignored) {}
+
+        // plan
+        List<BotTask> plan = executionPlan;
+        sb.append(",\"plan\":{\"step\":").append(planStep)
+          .append(",\"size\":").append(plan == null ? 0 : plan.size())
+          .append(",\"steps\":[");
+        if (plan != null) {
+            for (int i = 0; i < plan.size(); i++) {
+                BotTask st = plan.get(i);
+                if (st == null) continue;
+                if (i > 0) sb.append(',');
+                sb.append("{\"type\":\"").append(st.getType())
+                  .append("\",\"item\":\"").append(itemIdOf(st.getTargetItem()))
+                  .append("\",\"qty\":").append(st.getTargetQuantity())
+                  .append(",\"status\":\"").append(st.getStatus()).append("\"}");
+            }
+        }
+        sb.append("]}");
+
+        // current task
+        BotTask t = currentTask;
+        if (t == null) {
+            sb.append(",\"task\":null");
+        } else {
+            sb.append(",\"task\":{\"id\":\"").append(t.getId())
+              .append("\",\"type\":\"").append(t.getType())
+              .append("\",\"item\":\"").append(itemIdOf(t.getTargetItem()))
+              .append("\",\"qty\":").append(t.getTargetQuantity())
+              .append(",\"collected\":").append(t.getCollectedQuantity())
+              .append(",\"status\":\"").append(t.getStatus()).append("\"}");
+        }
+
+        // withdraw guard
+        sb.append(",\"withdraw\":{\"taskId\":\"").append(withdrawTaskId == null ? "" : escJson(withdrawTaskId.toString()))
+          .append("\",\"item\":\"").append(withdrawTaskItem == null ? "" : escJson(withdrawTaskItem))
+          .append("\",\"delivered\":").append(withdrawTaskDelivered)
+          .append(",\"attempts\":").append(withdrawTaskAttempts)
+          .append(",\"inFlight\":").append(withdrawInFlightItem == null ? "null" : "\"" + escJson(withdrawInFlightItem) + "\"")
+          .append(",\"inFlightHave\":").append(withdrawInFlightHave)
+          .append(",\"inFlightAgeMs\":").append(withdrawInFlightItem == null ? 0 : (now - withdrawInFlightAt))
+          .append('}');
+
+        // smelt baseline
+        sb.append(",\"smelt\":{\"baselineTaskId\":\"").append(smeltBaselineTaskId == null ? "" : escJson(smeltBaselineTaskId))
+          .append("\",\"ingotsBefore\":").append(smeltIngotBefore)
+          .append(",\"oreIn\":").append(smeltOreIn).append('}');
+
+        // live inventory, split by the SAME keep predicate the deposit path uses
+        // (EnhancedSwarmWorker.shouldKeepStatic). Nothing downstream may re-decide
+        // what counts as junk: tools, gear, food and fuel are keep, everything else
+        // is deposit-able. This is why preflight cannot call a stack of coal "dirt".
+        sb.append(",\"inventory\":{");
+        Map<String, Integer> inv = new java.util.TreeMap<>();
+        Map<String, Integer> keep = new java.util.TreeMap<>();
+        Map<String, Integer> junk = new java.util.TreeMap<>();
+        try {
+            if (mc.player != null) {
+                var container = mc.player.getInventory();
+                for (int i = 0; i < container.getContainerSize(); i++) {
+                    net.minecraft.world.item.ItemStack st = container.getItem(i);
+                    if (st == null || st.isEmpty()) continue;
+                    String id = itemIdOf(st.getItem());
+                    inv.merge(id, st.getCount(), Integer::sum);
+                    boolean kept;
+                    try { kept = com.rdh.swarm.EnhancedSwarmWorker.shouldKeepStatic(st); }
+                    catch (Exception e) { kept = true; } // unsure = keep, never drop gear
+                    (kept ? keep : junk).merge(id, st.getCount(), Integer::sum);
+                }
+            }
+        } catch (Exception ignored) {}
+        boolean firstInv = true;
+        for (Map.Entry<String, Integer> e : inv.entrySet()) {
+            if (!firstInv) sb.append(',');
+            firstInv = false;
+            sb.append('"').append(escJson(e.getKey())).append("\":").append(e.getValue());
+        }
+        sb.append('}');
+
+        appendIntMap(sb, "keep", keep);
+        appendIntMap(sb, "deposit", junk);
+
+        // storage cache age + contents
+        sb.append(",\"storage\":{\"ageMs\":").append(lastStorageCacheAt == 0L ? -1 : (now - lastStorageCacheAt));
+        sb.append(",\"items\":{");
+        boolean firstSt = true;
+        Map<String, Long> cache = lastStorageCache;
+        if (cache != null) {
+            for (Map.Entry<String, Long> e : cache.entrySet()) {
+                if (!firstSt) sb.append(',');
+                firstSt = false;
+                sb.append('"').append(escJson(e.getKey())).append("\":").append(e.getValue());
+            }
+        }
+        sb.append("}}");
+
+        // base anchor
+        if (basePos == null) sb.append(",\"base\":null");
+        else sb.append(",\"base\":[").append(basePos.getX()).append(',').append(basePos.getY()).append(',').append(basePos.getZ()).append(']');
+
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static void appendIntMap(StringBuilder sb, String name, Map<String, Integer> map) {
+        sb.append(",\"").append(name).append("\":{");
+        boolean first = true;
+        for (Map.Entry<String, Integer> e : map.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append('"').append(escJson(e.getKey())).append("\":").append(e.getValue());
+        }
+        sb.append('}');
+    }
+
+    private static String itemIdOf(net.minecraft.world.item.Item item) {
+        if (item == null) return "";
+        try {
+            return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item).toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String escJson(String s) {
+        if (s == null) return "";
+        final char quote = (char) 34;
+        final char slash = (char) 92;
+        StringBuilder b = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == quote || c == slash) {
+                b.append(slash).append(c);
+            } else if (c == (char) 10 || c == (char) 13 || c == (char) 9) {
+                b.append(' ');
+            } else {
+                b.append(c);
+            }
+        }
+        return b.toString();
+    }
+
     public enum BrainState {
         IDLE,
         CHECKING_EQUIPMENT,
@@ -349,6 +517,11 @@ public class BotBrain extends Module {
     private long stateEnterTime = 0;
     private long lastBrainTick = 0;
     private static final long BRAIN_TICK_MS = 250;
+    // TASK_PROGRESS doubles as the host-side lease renewal. A work phase like
+    // walking, staging or smelting can run for minutes without emitting a
+    // progress event, so the heartbeat is driven by time, not by change.
+    private long lastLeaseHeartbeatAt = 0;
+    private static final long LEASE_HEARTBEAT_MS = 5_000L;
     private int tickCounter = 0;
     private final Map<String, Long> debugLast = new java.util.concurrent.ConcurrentHashMap<>();
     private int stuckCounter = 0;
@@ -389,6 +562,14 @@ public class BotBrain extends Module {
     private int stagingGotoAttempts = 0;
     private static final long STAGING_GOTO_TIMEOUT_MS = 60_000L;
     private boolean pendingDepositAfterReturn = false;
+
+    // Completion is judged on inventory + what actually reached a chest for this task.
+    // Never on the plan's own ledger.
+    private java.util.UUID outcomeTaskId;
+    private int outcomeDeposited;
+    private BotTask deferredCompletionTask;
+    private String deferredCompletionEvidence = "inv";
+    private java.util.UUID deferredTriedTaskId;
     // Waypoint manager for worker-side waypoint lookups
     private WaypointManager waypointManager = null;
     // Resource currently gathering (e.g., "diamond_ore")
@@ -544,6 +725,10 @@ public class BotBrain extends Module {
     private int smeltPhase = 0;
     private BlockPos smelterPos = null;
     private int smeltTicks = 0;
+    private int smeltOreIn = 0;
+    private int smeltIngotBefore = 0;
+    /** Task the smelt baseline belongs to; a multi-load batch keeps one baseline. */
+    private String smeltBaselineTaskId = "";
     private long smeltWaitStart = 0;
     private static final int SMELT_SCAN = 0;
     private static final int SMELT_GOTO = 1;
@@ -567,6 +752,8 @@ public class BotBrain extends Module {
 
     // Storage query response cache (non-blocking)
     private volatile Map<String, Long> lastStorageCache = Collections.emptyMap();
+    /** When the storage cache was last filled; -0 means never. Used by the debug snapshot. */
+    private volatile long lastStorageCacheAt = 0L;
 
     /** Reflect a completed chest transfer in the local storage cache immediately. */
     public void mergeLocalStorageCounts(Map<String, Long> delta) {
@@ -577,8 +764,52 @@ public class BotBrain extends Module {
             lastStorageCache = merged;
         }
     }
+    /**
+     * A confirmed withdrawal moved items out of base, so drop that item from the
+     * cached reply: otherwise the planner kept re-reading the pre-withdraw figure
+     * and asked for the same ore again (and again) without re-querying.
+     */
+    public void noteWithdraw(String itemId, int moved) {
+        if (moved <= 0 || itemId == null) return;
+        synchronized (this) {
+            String norm = com.rdh.swarm.StorageIndex.normalizeId(itemId);
+            Map<String, Long> counts = new HashMap<>(lastStorageCache == null ? Collections.emptyMap() : lastStorageCache);
+            counts.remove(norm);
+            counts.remove(itemId);
+            Map<String, String> sources = new HashMap<>(lastStorageSources == null ? Collections.emptyMap() : lastStorageSources);
+            sources.remove(norm);
+            sources.remove(itemId);
+            lastStorageCache = counts;
+            lastStorageSources = sources;
+            if (norm.equals(withdrawInFlightItem) || itemId.equals(withdrawInFlightItem)) {
+                withdrawInFlightItem = null;
+            }
+        }
+    }
+
     private volatile long lastCacheTime = 0L;
     private volatile boolean storageQueryPending = false;
+    private volatile long storageQuerySentAt = 0L;
+
+    // One withdrawal per gather step. Set when the request is dispatched, cleared when
+    // the item shows up in the inventory or after a timeout, so the planner cannot
+    // re-dispatch the same step while the first transfer is still running.
+    private volatile String withdrawInFlightItem = null;
+    // The task that already dispatched a withdrawal. One task = one withdrawal per
+    // item, no matter how many plan steps or re-plans it goes through.
+    private long lastPerTaskWithdrawLog = 0L;
+    private volatile java.util.UUID withdrawTaskId = null;
+    private volatile String withdrawTaskItem = null;
+    private volatile long withdrawInFlightAt = 0L;
+    private volatile int withdrawInFlightHave = 0;
+    // Items this step has actually pulled from base storage, and how many requests the
+    // step has spent. A short delivery (70 of 78) may top up from storage instead of
+    // sending the bot off to mine the last 8, but only while storage still has stock,
+    // the last request delivered something, and the step has requests left.
+    private volatile int withdrawTaskDelivered = 0;
+    private volatile int withdrawTaskAttempts = 0;
+    private static final int MAX_WITHDRAWS_PER_STEP = 3;
+    private static final long WITHDRAW_INFLIGHT_TIMEOUT_MS = 25_000L;
     // Pending withdrawals requested by planner (itemId -> qty)
     private volatile List<Map.Entry<String, Integer>> pendingWithdrawals = null;
     private volatile boolean withdrawInProgress = false;
@@ -595,14 +826,48 @@ public class BotBrain extends Module {
         this.out = null;
     }
 
-    // Called by EnhancedSwarmWorker when a STORAGE_QUERY_RESPONSE arrives
+    // Source chests behind the last storage reply (itemId -> "x,y,z=count;...").
+    private volatile Map<String, String> lastStorageSources = Collections.emptyMap();
+
     public void receiveStorageQueryResponse(Map<String, Long> response) {
+        receiveStorageQueryResponse(response, null);
+    }
+
+    // Called by EnhancedSwarmWorker when a STORAGE_QUERY_RESPONSE arrives
+    public void receiveStorageQueryResponse(Map<String, Long> response, Map<String, String> sources) {
         try {
             this.lastStorageCache = response != null ? new HashMap<>(response) : Collections.emptyMap();
+            this.lastStorageCacheAt = System.currentTimeMillis();
+            this.lastStorageSources = sources != null ? new HashMap<>(sources) : Collections.emptyMap();
             this.lastCacheTime = System.currentTimeMillis();
             this.storageQueryPending = false;
             debug("QUERY_RESPONSE", "thread=%s cacheSize=%d", Thread.currentThread().getName(), this.lastStorageCache.size());
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * Stored count for an item, with the containers it came from. Returns -1 when the
+     * last reply never covered this id: "not asked" is not the same as "zero in base",
+     * and the old codeguessed 0 for both, which is how the planner stared at
+     * {@code storage=0} for an item the host index held.
+     */
+    private long storedCount(String id, String alias) {
+        Map<String, Long> cache = lastStorageCache;
+        if (cache == null || cache.isEmpty()) return -1L;
+        String key = com.rdh.swarm.StorageIndex.normalizeId(id);
+        if (cache.containsKey(key)) return cache.get(key);
+        if (alias != null && cache.containsKey(alias)) return cache.get(alias);
+        return -1L;
+    }
+
+    /** Container breakdown for the last reply, or an empty string when unknown. */
+    private String storedSource(String id, String alias) {
+        Map<String, String> src = lastStorageSources;
+        if (src == null || src.isEmpty()) return "";
+        String key = com.rdh.swarm.StorageIndex.normalizeId(id);
+        if (src.containsKey(key)) return src.get(key);
+        if (alias != null && src.containsKey(alias)) return src.get(alias);
+        return "";
     }
 
     // Query host storage for availability before gathering. Returns map itemId->available
@@ -797,6 +1062,16 @@ public class BotBrain extends Module {
         }
 
         if (haltState == HaltState.PAUSED) return;
+
+        // Keep a live lease live while work continues. Sending on a fixed
+        // cadence means renewal no longer depends on an inventory change; a
+        // dead or frozen process stops sending and still loses its lease.
+        if (currentTask != null && haltState == HaltState.RUNNING
+            && now - lastLeaseHeartbeatAt >= LEASE_HEARTBEAT_MS) {
+            lastLeaseHeartbeatAt = now;
+            try { sendTaskProgress(currentTask); } catch (Exception ignored) {}
+        }
+
         if (dropCollector.tick()) return;
 
         if (manageModules.get() && moduleGuard.shouldFreezeTimers()) {
@@ -824,7 +1099,11 @@ public class BotBrain extends Module {
         }
 
         // Check inventory fullness and transition to depositing if needed
-        if (state == BrainState.GATHERING && shouldDeposit() && System.currentTimeMillis() - stateEnterTime > 5000) {
+        // Never deposit while a smelt step is still waiting for its inputs: the trip
+        // would dump the ore into a chest and the smelt step would then find the
+        // ingredient missing in inventory.
+        if (state == BrainState.GATHERING && !hasPendingSmeltStep() && shouldDeposit()
+            && System.currentTimeMillis() - stateEnterTime > 5000) {
             if (canSendBaritone()) sendBaritoneChat("#stop");
             startDeposit("full");
         }
@@ -856,8 +1135,109 @@ public class BotBrain extends Module {
     // === STATE HANDLERS ===
 
     /** The only path that may mark a task COMPLETE. */
+    /** Cancel any in-flight Baritone mining so no task keeps running work. */
+    private void stopGatheringCommand() {
+        if (currentlyMining != null || mineCommandSent) {
+            try { if (canSendBaritone()) sendBaritoneChat("#stop"); } catch (Exception ignored) {}
+        }
+        currentlyMining = null;
+        mineCommandSent = false;
+    }
+
     private boolean finishTaskWithEvidence(BotTask task, String evidence) {
+        return finishTaskWithEvidence(task, evidence, false);
+    }
+
+    /**
+     * True only when the inventory count is the honest measure of the task's output.
+     * BUILD counts placed blocks, GRIND counts kills and HUNT_FOOD can finish on a
+     * partial stack, so those are deliberately not measured this way.
+     */
+    private boolean outcomeIsCounted(BotTask task) {
+        if (task == null || task.getTargetItem() == null || task.getTargetQuantity() <= 0) return false;
+        return switch (task.getType()) {
+            case GATHER, SMELT, CRAFT -> true;
+            default -> false;
+        };
+    }
+
+    private int outcomeHave(BotTask task) {
+        try {
+            return CraftingManager.countInInventory(task.getTargetItem());
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    /** Credit the last deposit run to the task that was waiting for it. */
+    private void creditDepositToTask(BotTask task) {
+        if (task == null || task.getTargetItem() == null) return;
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod == null || swarmMod.worker == null) return;
+            String id = BuiltInRegistries.ITEM.getKey(task.getTargetItem()).toString();
+            Long moved = swarmMod.worker.lastDepositDelta.get(id);
+            if (moved != null && moved > 0) {
+                outcomeDeposited += moved.intValue();
+                ChatUtils.infoPrefix("BotBrain", "TASK: ledger %s += %d %s landed in chests",
+                    task.getId(), moved, id);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean finishTaskWithEvidence(BotTask task, String evidence, boolean depositLanded) {
         if (task == null) return true;
+
+        if (task.getId() != null && !task.getId().equals(outcomeTaskId)) {
+            outcomeTaskId = task.getId();
+            outcomeDeposited = 0;
+        }
+
+        // A task is finished by its outcome, not by its plan. collectedQuantity is
+        // bookkeeping a requeued task carries over, so a task whose plan never ran could
+        // report COMPLETE against an empty inventory — that is the bug that printed
+        // "completed: iron_ingot x12 in 2s" while the smelt had not started yet.
+        if (outcomeIsCounted(task)) {
+            int have = outcomeHave(task);
+            int need = task.getTargetQuantity();
+            int landed = outcomeDeposited;
+            if (have + landed < need) {
+                ChatUtils.warningPrefix("BotBrain",
+                    "TASK: refused-complete %s inventory=%d/%d deposited=%d %s — the counter is not the outcome, re-planning the shortfall",
+                    task.getId(), have, need, landed, task.getItemName());
+                // Make the counter say what the world says, so isComplete() stops
+                // reporting a win and the brain goes back to work.
+                int truthful = Math.min(need, have + landed);
+                task.addCollected(truthful - task.getCollectedQuantity());
+                deferredCompletionTask = null;
+                return false;
+            }
+            if (!depositLanded && have > 0) {
+                // The output exists but is still in the bot's inventory. This task's
+                // outcome is a deposit, so the completion waits for the move.
+                boolean alreadyWaiting = deferredCompletionTask == task;
+                boolean triedOnce = task.getId() != null && task.getId().equals(deferredTriedTaskId);
+                if (!triedOnce) {
+                    deferredCompletionTask = task;
+                    deferredCompletionEvidence = evidence;
+                    deferredTriedTaskId = task.getId();
+                    ChatUtils.infoPrefix("BotBrain",
+                        "TASK: holding complete %s until the deposit lands (inventory=%d/%d)",
+                        task.getId(), have, need);
+                    if (startDepositChecked("task-complete")) return false;
+                    // No chest or the worker is busy: fall through and complete on proof,
+                    // the refusal is already logged by the deposit path.
+                    deferredCompletionTask = null;
+                } else if (alreadyWaiting) {
+                    return false;
+                } else {
+                    ChatUtils.warningPrefix("BotBrain",
+                        "TASK: deposit already attempted for %s, completing on inventory proof", task.getId());
+                }
+            }
+        }
+
         if (completionTaskId == null || !completionTaskId.equals(task.getId())) {
             completionTaskId = task.getId();
             completionAttempts = 0;
@@ -882,6 +1262,9 @@ public class BotBrain extends Module {
             ? "verified-empty" : (evidence == null || evidence.isEmpty() ? "inv" : evidence);
         ChatUtils.infoPrefix("BotBrain", "TASK: complete %s evidence=%s", task.getId(), evidenceValue);
         try { sendTaskComplete(task); } catch (Exception ignored) {}
+        // A terminal task owns no work: stop the path miner so it cannot keep
+        // mining after the task is finished.
+        stopGatheringCommand();
         if (currentTask == task) currentTask = null;
         executionPlan = null;
         planStep = 0;
@@ -896,6 +1279,7 @@ public class BotBrain extends Module {
         task.setFailureReason(reason);
         ChatUtils.warningPrefix("BotBrain", "TASK: failed %s reason=%s", task.getId(), reason);
         try { sendTaskFailed(task, reason); } catch (Exception ignored) {}
+        stopGatheringCommand();
         if (currentTask == task) currentTask = null;
         executionPlan = null;
         planStep = 0;
@@ -904,6 +1288,22 @@ public class BotBrain extends Module {
     }
 
     private void handleIdle() {
+        // A task whose deposit has landed must still be allowed to finish. The completion
+        // is deferred to the deposit path, and that path can lose its retry: the final
+        // drop-sweep was still running when the deposit reported success, and the worker
+        // resumed underneath it. Retry here, before any new work is taken on.
+        if (deferredCompletionTask != null) {
+            BotTask waiting = deferredCompletionTask;
+            if (finishTaskWithEvidence(waiting, deferredCompletionEvidence, true)) {
+                deferredCompletionTask = null;
+                currentTaskDescription = "Idle — task complete";
+                return;
+            }
+            ChatUtils.infoPrefix("BotBrain",
+                "TASK: awaiting final sweep before completing %s", waiting.getId());
+            return;
+        }
+
         if (currentTask == null) {
         if (tryAutoHunt()) return;
             if (tryAutoGrind()) return;
@@ -1046,8 +1446,27 @@ public class BotBrain extends Module {
                 gatherStaging.get(), gatherStagingDistance.get());
         }
         // Dedicated GATHER task type flow (no dependency resolution)
-        if (currentTask != null && currentTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER) {
+        BotTask gatherFlowStep = getCurrentStep();
+        boolean gatherFlow = currentTask != null
+            && (currentTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER
+                // A SMELT job starts with a gather step for its input (raw_iron for
+                // an iron_ingot); without this the job sat in GATHERING with no
+                // handler driving the gather at all.
+                || (currentTask.getType() == com.rdh.swarm.task.BotTask.Type.SMELT
+                    && gatherFlowStep != null
+                    && gatherFlowStep.getType() == com.rdh.swarm.task.BotTask.Type.GATHER));
+        if (gatherFlow) {
+            // Follow the resolved plan. A GATHER task for something that is not
+            // mined directly (an ingot, cooked food) resolves to gather steps for
+            // its inputs — raw_iron, coal, stone for iron_ingot. Reading the task
+            // target here mined "iron_ingot" itself, found nothing, and looped
+            // forever while the planner kept reporting storage=0.
             net.minecraft.world.item.Item tgt = currentTask.getTargetItem();
+            BotTask planStepTask = getCurrentStep();
+            if (planStepTask != null && planStepTask.getType() == com.rdh.swarm.task.BotTask.Type.GATHER
+                && planStepTask.getTargetItem() != null) {
+                tgt = planStepTask.getTargetItem();
+            }
             if (tgt == null || tgt == Items.AIR) {
                 failUnhandledTask(currentTask);
                 return;
@@ -1068,9 +1487,11 @@ public class BotBrain extends Module {
                 // to log the inventory count without ever sending it, so a fast
                 // completion left the host row at collected=0.
                 syncTaskProgress(currentTask, have);
-                long inStorage = lastStorageCache != null ? lastStorageCache.getOrDefault(tgtId, lastStorageCache.getOrDefault(cleanTarget, 0L)) : 0L;
-                int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
-                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d", cleanTarget, need, have, inStorage, effectiveHave);
+                long inStorage = storedCount(tgtId, cleanTarget);
+                String storSrc = storedSource(tgtId, cleanTarget);
+                int effectiveHave = have + (int) Math.min(Math.max(inStorage, 0L), Integer.MAX_VALUE);
+                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%s src=%s effective=%d",
+                    cleanTarget, need, have, inStorage < 0 ? "?" : Long.toString(inStorage), storSrc.isEmpty() ? "?" : storSrc, effectiveHave);
                 if (have >= need) {
                     if (canSendBaritone()) sendBaritoneChat("#stop");
                     ChatUtils.infoPrefix("BotBrain", "Gathered enough %s (%d/%d)", cleanTarget, have, need);
@@ -1115,20 +1536,167 @@ public class BotBrain extends Module {
             // Query storage availability (non-blocking). Withdraw attempts are disabled here
             try {
                 int have = countForTask(tgt);
-                int need = currentTask.getTargetQuantity();
+                // A plan gather step carries its own quantity (1 raw_iron for one ingot).
+                // Using the task total here asked the chest for the whole stack: a
+                // 1-ingot job withdrew every ore the base held.
+                BotTask stepForNeed = getCurrentStep();
+                int need = (stepForNeed != null && stepForNeed.getType() == BotTask.Type.GATHER)
+                    ? stepForNeed.getTargetQuantity()
+                    : currentTask.getTargetQuantity();
                 int deficit = need - have;
                 if (deficit > 0 && out != null) {
                     String itemId = BuiltInRegistries.ITEM.getKey(tgt).toString();
                     Map<String, Integer> needs = new HashMap<>();
                     needs.put(itemId, deficit);
-                    Map<String, Long> avail = Collections.emptyMap();
-                    if ((tickCounter % 100 == 0) || (!storageQueryPending && (lastStorageCache == null || lastStorageCache.isEmpty()))) {
+                    // Read the freshest reply, not the (empty) return of the fire-and-forget
+                    // query: the answer for this id arrives on the next tick.
+                    Map<String, Long> avail = lastStorageCache != null ? lastStorageCache : Collections.emptyMap();
+                    // Ask the host whenever this item has no answer yet, not only on
+                    // every hundredth tick: the gather step used to dispatch #mine on
+                    // its first tick, so the query never went out and the bot mined
+                    // ore that was already sitting in a base chest.
+                    boolean covered = lastStorageCache != null && lastStorageCache.containsKey(itemId);
+                    if (!covered || tickCounter % 100 == 0) {
                         storageQueryPending = true;
+                        storageQuerySentAt = System.currentTimeMillis();
                         avail = queryStorageBeforeGathering(needs);
+                        if (!covered) {
+                            ChatUtils.infoPrefix("BotBrain", "GATHER: no stored count yet for %s, query sent to host", itemId);
+                            return; // give the reply a round trip before mining
+                        }
                     }
                     long a = avail.getOrDefault(itemId, 0L);
-                    // Non-blocking mode: do not issue WITHDRAW_REQUEST here; rely on cache and async responses.
-                    // Future: implement non-blocking withdraw worker to request from host.
+                    // Base storage already holds what this step needs: ask the host for it
+                    // through the withdraw path instead of mining ore that is sitting in a
+                    // chest. A step gets exactly ONE withdrawal: a time throttle alone let
+                    // the planner fire again at the 5 s mark while the first transfer was
+                    // still walking to the chest, so a step needing 1 pulled several ores.
+                    long nowMs = System.currentTimeMillis();
+                    if (withdrawInFlightItem != null && withdrawInFlightItem.equals(itemId)) {
+                        boolean arrived = have > withdrawInFlightHave;
+                        boolean timedOut = nowMs - withdrawInFlightAt > WITHDRAW_INFLIGHT_TIMEOUT_MS;
+                        if (arrived || timedOut) {
+                            if (arrived) {
+                                withdrawTaskDelivered += Math.max(1, have - withdrawInFlightHave);
+                            }
+                            withdrawInFlightItem = null;
+                            if (timedOut && !arrived) {
+                                // The attempt produced nothing: the chest never opened, or
+                                // the take was refused. The per-task guard is set when the
+                                // request is dispatched, so leaving it set spent the task's
+                                // one withdrawal on an attempt that delivered nothing — the
+                                // task then "already withdrew" forever and mined for ore the
+                                // storage index still showed. A failed attempt does not count.
+                                withdrawTaskId = null;
+                                withdrawTaskItem = null;
+                                if (nowMs - lastPerTaskWithdrawLog > 10_000L) {
+                                    lastPerTaskWithdrawLog = nowMs;
+                                    ChatUtils.warningPrefix("BotBrain",
+                                        "Withdraw: %s attempt produced nothing; allowing the task to retry", itemId);
+                                }
+                            }
+                        }
+                    }
+                    boolean inFlight = withdrawInFlightItem != null && withdrawInFlightItem.equals(itemId);
+                    java.util.UUID taskKey = currentTask != null ? currentTask.getId() : null;
+                    boolean taskAlreadyWithdrew = taskKey != null && taskKey.equals(withdrawTaskId)
+                        && itemId.equals(withdrawTaskItem);
+                    if (inFlight) {
+                        // A withdrawal for this step is already out; wait for the transfer
+                        // rather than asking again or mining over the top of it.
+                        return;
+                    }
+                    if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                        // The worker refuses to take from a chest while another menu is
+                        // open (furnace, crafting). Dispatching now spends the task's one
+                        // withdrawal on a refusal that debits nothing, so wait instead.
+                        return;
+                    }
+                    // One withdrawal per step is the default. A delivery that came up short
+                    // while the index still shows stock is not the end of the step though:
+                    // a chest handing over 70 of 78 used to send the bot mining the last 8
+                    // with 80 ore sitting in the base. Top up instead, bounded so a chest
+                    // that keeps delivering nothing still falls back to mining.
+                    boolean topUp = taskAlreadyWithdrew && a > 0 && deficit > 0
+                        && withdrawTaskDelivered > 0
+                        && withdrawTaskAttempts < MAX_WITHDRAWS_PER_STEP;
+                    if (taskAlreadyWithdrew && !topUp) {
+                        // This step already got its withdrawals for this item and cannot ask
+                        // again, but it must still gather the shortfall itself, so fall
+                        // through to the mining path instead of idling on a base-storage
+                        // count the bot may no longer be able to use.
+                        if (nowMs - lastPerTaskWithdrawLog > 10_000L) {
+                            lastPerTaskWithdrawLog = nowMs;
+                            ChatUtils.infoPrefix("BotBrain", "Planner: %s already withdrawn for this task; no second withdrawal, gathering the rest", itemId);
+                        }
+                    } else if (a > 0) {
+                        if (!topUp) {
+                            withdrawTaskDelivered = 0;
+                            withdrawTaskAttempts = 0;
+                        }
+                        withdrawTaskId = taskKey;
+                        withdrawTaskItem = itemId;
+                        withdrawTaskAttempts++;
+                        withdrawInFlightItem = itemId;
+                        withdrawInFlightAt = nowMs;
+                        withdrawInFlightHave = have;
+                        int take = (int) Math.min(a, deficit);
+                        DataOutputStream stream = this.out;
+                        if (stream != null) {
+                            try {
+                                synchronized (stream) {
+                                    // '|' so a namespace-qualified id survives the host's parse
+                                    stream.writeUTF("WITHDRAW_REQUEST:" + itemId + "|" + take + "|all");
+                                    stream.flush();
+                                }
+                                String src = storedSource(itemId, null);
+                                if (topUp) {
+                                    ChatUtils.infoPrefix("BotBrain", "Planner: %s still short %d after a short delivery, topping up %d from base storage%s",
+                                        itemId, deficit, take, src.isEmpty() ? "" : " (" + src + ")");
+                                } else {
+                                    ChatUtils.infoPrefix("BotBrain", "Planner: %s x%d in base storage, withdrawing %d%s",
+                                        itemId, a, take, src.isEmpty() ? "" : " from " + src);
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        // Let the transfer land before mining: withdrawing and then
+                        // dispatching #mine in the same tick mined ore we already owned.
+                        return;
+                    }
+                    if (inFlight) {
+                        // A withdrawal for this step is already out; wait for it instead of
+                        // asking again (and instead of mining over the top of it).
+                        return;
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // Never restart mining for a target that is already met. The count
+            // check only runs every 20 ticks, and the final-sweep controller can
+            // defer completion for a tick or two, so non-check ticks used to fall
+            // through and re-issue #mine after the stop — the bot kept mining a
+            // finished task.
+            try {
+                BotTask gatherStep = getCurrentStep();
+                boolean isPlanGather = gatherStep != null && gatherStep.getType() == BotTask.Type.GATHER;
+                int stepNeed = isPlanGather ? gatherStep.getTargetQuantity() : currentTask.getTargetQuantity();
+                if (countForTask(tgt) >= stepNeed) {
+                    if (currentlyMining != null || mineCommandSent) {
+                        if (canSendBaritone()) sendBaritoneChat("#stop");
+                        currentlyMining = null;
+                        mineCommandSent = false;
+                    }
+                    // A satisfied plan step has to be closed out and the plan index
+                    // advanced, or the SMELT step after the gathers never runs and
+                    // the bot sits on "Gathering <target>" forever.
+                    if (isPlanGather) {
+                        gatherStep.setStatus(BotTask.Status.COMPLETE);
+                        planStep++;
+                        withdrawInFlightItem = null;
+                        ChatUtils.infoPrefix("BotBrain", "GATHER step complete: %s (need %d); advancing plan", tgtId, stepNeed);
+                        setState(BrainState.IDLE);
+                    }
+                    return;
                 }
             } catch (Exception ignored) {}
 
@@ -1203,10 +1771,14 @@ public class BotBrain extends Module {
                 if (material == Items.GRAVEL) {
                     have += CraftingManager.countInInventory(Items.FLINT);
                 }
-                long inStorage = storageAvailable.getOrDefault(material, 0L);
+                String path = BuiltInRegistries.ITEM.getKey(material).getPath();
+                long inStorage = storedCount(path, null);
+                if (inStorage < 0) inStorage = storageAvailable.getOrDefault(material, 0L);
+                String storSrc = storedSource(path, null);
+                boolean storageUnknown = lastStorageCache == null || lastStorageCache.isEmpty();
                 int effectiveHave = have + (int) Math.min(inStorage, Integer.MAX_VALUE);
-                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%d effective=%d",
-                    BuiltInRegistries.ITEM.getKey(material).getPath(), need, have, inStorage, effectiveHave);
+                if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[PLANNER] %s need=%d inv=%d storage=%s src=%s effective=%d",
+                    path, need, have, storageUnknown ? "?" : Long.toString(inStorage), storSrc.isEmpty() ? "?" : storSrc, effectiveHave);
 
                 if (tickCounter % 100 == 0) ChatUtils.infoPrefix("BotBrain", "[GATHER CHECK] %s need=%d have=%d",
                     net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(material).getPath(), need, have);
@@ -2115,8 +2687,8 @@ public class BotBrain extends Module {
         if (pos == null || mc.player == null || mc.level == null) return false;
         try {
             var b = mc.level.getBlockState(pos).getBlock();
-            if (b == Blocks.FURNACE || b == Blocks.SMOKER) return true;
-            return !isCookingTask() && b == Blocks.BLAST_FURNACE;
+            if (b == Blocks.FURNACE || b == Blocks.BLAST_FURNACE) return true;
+            return b == Blocks.SMOKER && isCookingTask();
         } catch (Exception e) {
             return false;
         }
@@ -2542,23 +3114,22 @@ public class BotBrain extends Module {
                 BlockPos playerPos = mc.player.blockPosition();
                 int range = 45;
                 boolean cookingTask = isCookingTask();
-                BlockPos found = null;
-                for (int x = -range; x <= range && found == null; x++) {
-                    for (int y = -10; y <= 10 && found == null; y++) {
-                        for (int z = -range; z <= range; z++) {
-                            BlockPos pos = playerPos.offset(x, y, z);
-                            var b = mc.level.getBlockState(pos).getBlock();
-                            if (b == Blocks.FURNACE || b == Blocks.SMOKER || (!cookingTask && b == Blocks.BLAST_FURNACE)) {
-                                found = pos;
-                                break;
-                            }
-                        }
-                    }
-                }
+                BlockPos found = findSmelter(playerPos, range, cookingTask, ore);
                 if (found != null) {
                     smelterPos = found;
+                    ChatUtils.infoPrefix("BotBrain", "SMELT: using %s at %d %d %d (%.1f blocks)",
+                        mc.level.getBlockState(found).getBlock().getName().getString(),
+                        found.getX(), found.getY(), found.getZ(),
+                        Math.sqrt(mc.player.blockPosition().distSqr(found)));
                     smeltPhase = SMELT_GOTO;
                     smeltTicks = 0;
+                } else if (returnToBaseForSmelter()) {
+                    // Out of range of the base appliances: walk back and rescan
+                    // instead of failing the task from wherever the gather step
+                    // happened to leave us.
+                    smeltPhase = SMELT_SCAN;
+                    smeltTicks = 0;
+                    return;
                 } else {
                     // If we have a furnace item, place one nearby; otherwise attempt to craft one
                     if (InvUtils.find(Items.FURNACE).found() || InvUtils.findInHotbar(Items.FURNACE).found()) {
@@ -2721,6 +3292,18 @@ public class BotBrain extends Module {
                     SmeltingManager.openFurnace(smelterPos);
                 }
 
+                // Clicking from the edge of reach never lands: the bot sat at 4.0 blocks
+                // and spent 100 attempts / 25 s failing to open a furnace it could see.
+                // Re-path onto the block instead of repeating the same click.
+                if (smeltTicks == 20 || smeltTicks == 45) {
+                    ChatUtils.infoPrefix("BotBrain",
+                        "SMELT: furnace did not open from here (attempt %d), stepping closer", smeltTicks);
+                    if (canSendBaritone()) {
+                        sendBaritoneChat(String.format("#goto %d %d %d",
+                            smelterPos.getX(), smelterPos.getY(), smelterPos.getZ()));
+                    }
+                }
+
                 if (smeltTicks > 100) {
                     ChatUtils.infoPrefix("BotBrain", "Failed to open furnace after timeout");
                     setState(BrainState.STUCK);
@@ -2731,7 +3314,10 @@ public class BotBrain extends Module {
             case SMELT_INSERT -> {
                 // Deposit fuel then ore
                 if (smeltTicks == 1) ChatUtils.infoPrefix("BotBrain", "SMELT: inserting fuel and ore into furnace");
-                boolean fuelOk = SmeltingManager.depositFuel();
+                // Only touch fuel when the furnace has none: the insert phase retries
+                // every tick until the ore lands, and re-running depositFuel each tick
+                // spammed the same FUEL line dozens of times per second.
+                boolean fuelOk = SmeltingManager.hasFuel() || SmeltingManager.depositFuel();
                 boolean oreOk = SmeltingManager.depositOre(ore);
                 if (!fuelOk && SmeltingManager.countFuel() == 0 && !SmeltingManager.hasFuel()) {
                     ChatUtils.warningPrefix("BotBrain", "SMELT: %s", SmeltingManager.fuelStatus());
@@ -2751,8 +3337,34 @@ public class BotBrain extends Module {
                     }
                 }
 
-                // Assume inserted and go wait for smelt to complete
+                // Verify the ore actually landed in the input slot before closing the
+                // menu. Closing in the same tick as the move dropped it, so the furnace
+                // stayed empty and the wait loop reported "complete" having smelted
+                // nothing — the task then re-planned and mined for ore it had already
+                // withdrawn.
+                if (!SmeltingManager.inputHasOre(ore)) {
+                    if (smeltTicks < 40) return; // menu still open; retry the move next tick
+                    ChatUtils.warningPrefix("BotBrain", "SMELT: ore never reached the input slot");
+                    setState(BrainState.STUCK);
+                    return;
+                }
                 smeltWaitStart = System.currentTimeMillis();
+                // Record the two numbers a reader needs to reconcile the output: how
+                // much ore is in the furnace now, and the ingot total before any of it
+                // comes back out.
+                smeltOreIn = SmeltingManager.inputCount();
+                BotTask insStep = getCurrentStep();
+                // One furnace load holds 64, so a 78-item batch is smelted in more than one
+                // load. The "before" number belongs to the task, not to the load, or the
+                // reported delta would only ever describe the last batch.
+                String baselineId = insStep == null || insStep.getId() == null ? "" : insStep.getId().toString();
+                if (!baselineId.equals(smeltBaselineTaskId)) {
+                    smeltBaselineTaskId = baselineId;
+                    smeltIngotBefore = insStep != null && insStep.getTargetItem() != null
+                        ? CraftingManager.countInInventory(insStep.getTargetItem()) : 0;
+                }
+                ChatUtils.infoPrefix("BotBrain", "SMELT: ore into furnace=%d, ingot total before=%d",
+                    smeltOreIn, smeltIngotBefore);
                 // Close furnace screen so player isn't stuck in GUI
                 if (mc.player != null) mc.setScreenAndShow(null);
                 ChatUtils.infoPrefix("BotBrain", "SMELT: ore and fuel inserted, closing furnace and waiting");
@@ -2821,8 +3433,10 @@ public class BotBrain extends Module {
         if (targetIngot != null) {
             int have = CraftingManager.countInInventory(targetIngot);
             int need = step.getTargetQuantity();
+            ChatUtils.infoPrefix("BotBrain", "SMELT: ingot total after=%d (before=%d, delta=%d, ore in furnace=%d)",
+                have, smeltIngotBefore, have - smeltIngotBefore, smeltOreIn);
             if (have >= need) {
-                ChatUtils.infoPrefix("BotBrain", "SMELT: complete, have %d/%d %s", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
+                ChatUtils.infoPrefix("BotBrain", "SMELT: complete, collected output, have %d/%d %s", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
                 step.setStatus(BotTask.Status.COMPLETE);
                 if (directSmelt && step == currentTask) currentTask.addCollected(currentTask.getRemaining());
                 try { sendTaskProgress(step); } catch (Exception ignored) {}
@@ -2830,6 +3444,27 @@ public class BotBrain extends Module {
                 setState(BrainState.IDLE);
                 return;
             } else {
+                // The load emptied but the target is short. A furnace input slot holds 64,
+                // so a bigger batch is simply not finished yet: if the bot still carries
+                // the raw item, open the furnace again and run the next load. Failing here
+                // is what turned a 78-item task into "input empty but only have 14/78" and
+                // a STUCK bot holding 64 unsmelted ore.
+                Item raw = step.getSourceItem();
+                if (raw == null) {
+                    for (var e : SmeltingManager.COOKING.entrySet()) {
+                        if (e.getValue() == targetIngot) { raw = e.getKey(); break; }
+                    }
+                }
+                int heldRaw = raw == null ? 0 : CraftingManager.countInInventory(raw);
+                if (heldRaw > 0) {
+                    ChatUtils.infoPrefix("BotBrain",
+                        "SMELT: load finished at %d/%d, %d %s still held; loading the next load",
+                        have, need, heldRaw, BuiltInRegistries.ITEM.getKey(raw).getPath());
+                    smeltPhase = SMELT_OPEN;
+                    smeltTicks = 0;
+                    setState(BrainState.SMELTING_DEPOSIT);
+                    return;
+                }
                 ChatUtils.warningPrefix("BotBrain", "SMELT: input empty but only have %d/%d %s after collection", have, need, BuiltInRegistries.ITEM.getKey(targetIngot).getPath());
                 setState(BrainState.STUCK);
                 return;
@@ -2846,6 +3481,27 @@ public class BotBrain extends Module {
     }
 
     private long lastDepositCheckLog = 0L;
+
+    /**
+     * Start a deposit and report whether it actually started. The completion gate needs
+     * to know: with no chest configured, blocking a completion on a deposit that never
+     * runs would hang the task forever.
+     */
+    private boolean startDepositChecked(String reason) {
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod == null || swarmMod.worker == null) return false;
+            if (!swarmMod.worker.startDeposit(reason)) {
+                ChatUtils.warningPrefix("BotBrain", "DEPOSIT: refused reason=busy-or-no-chest");
+                return false;
+            }
+            currentTaskDescription = "Depositing items";
+            setState(BrainState.DEPOSITING);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     /** The single brain-side entry point for every deposit path. */
     public void startDeposit(String reason) {
@@ -2884,6 +3540,35 @@ public class BotBrain extends Module {
                         pathing, atChest, swarmMod.worker.lastDepositTransferRan, swarmMod.worker.lastDepositMoved, swarmMod.worker.lastDepositSucceeded);
                 }
                 if (!swarmMod.worker.isDepositing) {
+                    if (deferredCompletionTask != null) {
+                        // A task is waiting for this move to land before it may complete.
+                        BotTask waiting = deferredCompletionTask;
+                        deferredCompletionTask = null;
+                        if (swarmMod.worker.lastDepositSucceeded) {
+                            creditDepositToTask(waiting);
+                            ChatUtils.infoPrefix("BotBrain",
+                                "DEPOSIT: landed for %s (moved=%d); completing it now",
+                                waiting.getId(), swarmMod.worker.lastDepositMoved);
+                            if (!finishTaskWithEvidence(waiting, deferredCompletionEvidence, true)) {
+                                // The drop sweep is still running; the ledger will let it
+                                // complete on the next idle tick either way.
+                                deferredCompletionTask = waiting;
+                            } else {
+                                setState(BrainState.IDLE);
+                                return;
+                            }
+                        } else {
+                            ChatUtils.warningPrefix("BotBrain",
+                                "TASK: deposit did not land for %s (%s); completing on inventory proof instead",
+                                waiting.getId(), swarmMod.worker.lastDepositFailure);
+                            if (!finishTaskWithEvidence(waiting, "inv", true)) {
+                                deferredCompletionTask = waiting;
+                            } else {
+                                setState(BrainState.IDLE);
+                                return;
+                            }
+                        }
+                    }
                     if (!swarmMod.worker.lastDepositSucceeded) {
                         ChatUtils.warningPrefix("BotBrain", "DEPOSIT: aborted — %s", swarmMod.worker.lastDepositFailure.isEmpty() ? "transfer did not complete" : swarmMod.worker.lastDepositFailure);
                         setState(BrainState.IDLE);
@@ -3304,6 +3989,31 @@ public class BotBrain extends Module {
         boolean inventoryFuel = SmeltingManager.countFuel(furnace) > 0;
         boolean furnaceFuel = hasCookFuel(furnace);
 
+        // Block entity slots are not synced on a multiplayer client, so a stocked
+        // furnace reads as empty until its menu is open. Probe it: open, read the
+        // three slots, close, and cache the answer for a minute.
+        boolean peekKnown = false;
+        boolean peekPending = false;
+        if (!inventoryFuel && !furnaceFuel && furnace != null) {
+            Boolean peeked = peekApplianceFuel(furnace, now);
+            if (peeked == null) peekPending = true;
+            else { furnaceFuel = peeked; peekKnown = true; }
+        }
+
+        // Raw food, a furnace, and nothing to burn: pull fuel from base storage
+        // through the existing WITHDRAW_REQUEST path instead of skipping forever.
+        // A furnace that already holds fuel is not readable from a multiplayer
+        // client: block-entity slots only sync while the screen is open, so
+        // fuelStackAt() returns empty and this check used to skip forever even
+        // with a stocked furnace. Defer that case to the SMELT flow, which opens
+        // the appliance and verifies the fuel slot itself (SMELT_INSERT accepts
+        // existing furnace fuel via SmeltingManager.hasFuel()).
+        boolean applianceFuel = furnace != null && !inventoryFuel && !furnaceFuel && !peekKnown && !peekPending;
+        boolean fuelRequested = false;
+        if (!inventoryFuel && !furnaceFuel && hasRaw && furnace == null) {
+            fuelRequested = requestFuelFromStorage();
+        }
+
         if (hasRaw && furnace == null && !noCookFurnaceWarned) {
             ChatUtils.warningPrefix("BotBrain", "G2: no furnace within %d blocks; cannot cook raw food", COOK_FURNACE_RANGE);
             noCookFurnaceWarned = true;
@@ -3315,12 +4025,18 @@ public class BotBrain extends Module {
         if (now - lastCookAttempt < COOK_COOLDOWN) decision = "skip: cooldown";
         else if (!hasRaw) decision = "skip: no raw food";
         else if (furnace == null) decision = "skip: no furnace";
-        else if (!inventoryFuel && !furnaceFuel) decision = SmeltingManager.fuelDecision();
+        else if (peekPending) {
+            decision = "skip: reading appliance contents";
+        } else if (!inventoryFuel && !furnaceFuel && applianceFuel) {
+            decision = "cook: fuel already in appliance (verified on open)";
+        } else if (!inventoryFuel && !furnaceFuel) {
+            decision = fuelRequested ? "skip: fuel requested from storage" : SmeltingManager.fuelDecision();
+        }
         else if (cooked == null) decision = "skip: no recipe";
         else if (want <= 0) decision = "skip: target reached";
         else decision = "cook";
 
-        if ((!inventoryFuel && !furnaceFuel) && hasRaw && furnace != null) {
+        if ((!inventoryFuel && !furnaceFuel) && hasRaw && furnace != null && !applianceFuel) {
             if (!noCookFuelWarned) {
                 ChatUtils.warningPrefix("BotBrain", "G2: cook blocked — %s", SmeltingManager.fuelStatus());
                 noCookFuelWarned = true;
@@ -3365,6 +4081,80 @@ public class BotBrain extends Module {
         setTask(cook);
     }
 
+    /**
+     * Drop gather steps that are already satisfied around the base: the resolver
+     * always adds stone (to craft a furnace) and coal (for fuel), which is wasted
+     * work when an appliance is already nearby. Removing the stone step is safe
+     * because a furnace exists; removing the fuel step defers to SMELT_INSERT,
+     * which reads the appliance's own fuel slot and reports a clear failure if
+     * that appliance is genuinely empty.
+     */
+    private void pruneSatisfiedGatherSteps() {
+        if (executionPlan == null || executionPlan.isEmpty()) return;
+        if (mc.player == null || mc.level == null) return;
+        BlockPos appliance = findSmelter(mc.player.blockPosition(), COOK_FURNACE_RANGE, false,
+            currentTask != null ? currentTask.getTargetItem() : null);
+        boolean haveAppliance = appliance != null || CraftingManager.countInInventory(Items.FURNACE) > 0;
+        if (!haveAppliance) return;
+        try {
+            executionPlan.removeIf(step -> {
+                if (step == null || step.getType() != BotTask.Type.GATHER) return false;
+                Item it = step.getTargetItem();
+                return it == Items.STONE || it == Items.COAL;
+            });
+            if (resolverGatherList != null) {
+                resolverGatherList.remove(Items.STONE);
+                resolverGatherList.remove(Items.COAL);
+            }
+            ChatUtils.infoPrefix("BotBrain", "Plan: appliance in reach at %s — skipping furnace/fuel gathering",
+                appliance == null ? "inventory" : (appliance.getX() + " " + appliance.getY() + " " + appliance.getZ()));
+        } catch (Exception ignored) {}
+    }
+
+    private boolean smeltBaseReturnIssued = false;
+
+    /**
+     * No appliance within scan range. If the base (deposit chests) is further out,
+     * walk there and let the next scan find the furnace/smoker/blast furnace that
+     * is actually stocked. Returns true when a return trip was issued or is running.
+     */
+    private boolean returnToBaseForSmelter() {
+        if (mc.player == null) return false;
+        BlockPos base = null;
+        try {
+            var swarmMod = Modules.get().get(com.rdh.swarm.EnhancedSwarm.class);
+            if (swarmMod != null && swarmMod.worker != null && swarmMod.worker.depositChests != null) {
+                for (var list : swarmMod.worker.depositChests.values()) {
+                    if (list != null && !list.isEmpty()) {
+                        int[] p = list.get(0);
+                        base = new BlockPos(p[0], p[1], p[2]);
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        if (base == null) return false;
+        double dist = Math.sqrt(mc.player.blockPosition().distSqr(base));
+        if (dist <= 8) return false;
+        if (!smeltBaseReturnIssued) {
+            smeltBaseReturnIssued = true;
+            ChatUtils.infoPrefix("BotBrain", "SMELT: no appliance within range; returning to base (%.0f blocks)", dist);
+        }
+        sendBaritoneChat(String.format("#goto %d %d %d", base.getX(), base.getY(), base.getZ()));
+        return true;
+    }
+
+    /** True while an unfinished SMELT step remains in the current ingestion plan. */
+    private boolean hasPendingSmeltStep() {
+        if (executionPlan == null || executionPlan.isEmpty()) return false;
+        for (int i = Math.max(0, planStep); i < executionPlan.size(); i++) {
+            BotTask step = executionPlan.get(i);
+            if (step != null && step.getType() == BotTask.Type.SMELT
+                && step.getStatus() != BotTask.Status.COMPLETE) return true;
+        }
+        return false;
+    }
+
     private boolean isCookingTask() {
         return currentTask != null && currentTask.getType() == BotTask.Type.SMELT
             && currentTask.getSourceItem() != null && currentTask.getTargetItem() != null
@@ -3391,6 +4181,56 @@ public class BotBrain extends Module {
             }
         }
         return best;
+    }
+
+    /**
+     * Nearest usable appliance: smoker is the right tool for food, a plain furnace
+     * for anything else, and a blast furnace only for ore work (it rejects food).
+     * The old scan returned whichever block happened to come first in x/y/z order,
+     * so a food task could be sent to a blast furnace and stall.
+     */
+    /** Ore-style items that a blast furnace accepts (and a plain furnace also takes). */
+    private static boolean isBlastFurnaceItem(Item item) {
+        if (item == null) return false;
+        try {
+            String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+            return path.startsWith("raw_") || path.endsWith("_ore")
+                || path.equals("iron_ingot") || path.equals("gold_ingot") || path.equals("copper_ingot")
+                || path.endsWith("_sword") || path.endsWith("_pickaxe") || path.endsWith("_axe")
+                || path.endsWith("_shovel") || path.endsWith("_hoe") || path.endsWith("_helmet")
+                || path.endsWith("_chestplate") || path.endsWith("_leggings") || path.endsWith("_boots");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private BlockPos findSmelter(BlockPos playerPos, int range, boolean cookingTask, Item smeltTarget) {
+        if (mc.level == null) return null;
+        boolean preferBlast = !cookingTask && isBlastFurnaceItem(smeltTarget);
+        BlockPos bestSmoker = null, bestFurnace = null, bestBlast = null;
+        double dSmoker = Double.MAX_VALUE, dFurnace = Double.MAX_VALUE, dBlast = Double.MAX_VALUE;
+        for (int x = -range; x <= range; x++) {
+            for (int y = -10; y <= 10; y++) {
+                for (int z = -range; z <= range; z++) {
+                    BlockPos pos = playerPos.offset(x, y, z);
+                    var b = mc.level.getBlockState(pos).getBlock();
+                    double d = playerPos.distSqr(pos);
+                    if (b == Blocks.SMOKER) {
+                        if (d < dSmoker) { dSmoker = d; bestSmoker = pos; }
+                    } else if (b == Blocks.FURNACE) {
+                        if (d < dFurnace) { dFurnace = d; bestFurnace = pos; }
+                    } else if (b == Blocks.BLAST_FURNACE && !cookingTask) {
+                        if (d < dBlast) { dBlast = d; bestBlast = pos; }
+                    }
+                }
+            }
+        }
+        if (cookingTask) return bestSmoker != null ? bestSmoker : bestFurnace;
+        if (preferBlast && bestBlast != null) return bestBlast;
+        // A smoker only cooks food; falling back to one for ore opens a menu that
+        // can never accept the input and stalls the task. Better to report no
+        // appliance and let the caller walk to base or place a furnace.
+        return bestFurnace != null ? bestFurnace : bestBlast;
     }
 
     private boolean isCookFurnaceLit(BlockPos pos) {
@@ -3430,6 +4270,87 @@ public class BotBrain extends Module {
         } else {
             autoCookSkipLogged = false;
         }
+    }
+
+    private volatile long lastGatherWithdrawAt = 0L;
+    private static final long APPLIANCE_PEEK_TTL_MS = 60_000L;
+    private static final long APPLIANCE_PEEK_TIMEOUT_MS = 5_000L;
+    private BlockPos cookPeekPos = null;
+    private long cookPeekDeadline = 0L;
+    private long cookPeekResultAt = 0L;
+    private boolean cookPeekHasFuel = false;
+
+    /**
+     * Open an appliance and read what is really inside it (input / fuel / output).
+     * Returns null while the read is still pending, otherwise whether usable fuel
+     * was found. Cached for APPLIANCE_PEEK_TTL_MS so the once-a-second cook check
+     * does not spam open/close.
+     */
+    private Boolean peekApplianceFuel(BlockPos furnace, long now) {
+        if (cookPeekPos != null && !cookPeekPos.equals(furnace)) cookPeekPos = null;
+        if (cookPeekResultAt > 0 && now - cookPeekResultAt < APPLIANCE_PEEK_TTL_MS) return cookPeekHasFuel;
+
+        if (cookPeekPos == null) {
+            cookPeekPos = furnace;
+            cookPeekDeadline = now + APPLIANCE_PEEK_TIMEOUT_MS;
+            SmeltingManager.openFurnace(furnace);
+            return null;
+        }
+        if (SmeltingManager.isFurnaceOpen()) {
+            SmeltingManager.ApplianceView view = SmeltingManager.readOpenAppliance(furnace);
+            SmeltingManager.closeFurnace();
+            cookPeekPos = null;
+            cookPeekResultAt = now;
+            cookPeekHasFuel = view != null && view.fuelUsable();
+            if (view != null) {
+                ChatUtils.infoPrefix("BotBrain",
+                    "G2: appliance read [%d %d %d] in=%s x%d fuel=%s x%d out=%s x%d usable=%b lit=%b",
+                    furnace.getX(), furnace.getY(), furnace.getZ(),
+                    view.inputId(), view.inputCount(), view.fuelId(), view.fuelCount(),
+                    view.outputId(), view.outputCount(), view.fuelUsable(), view.lit());
+            }
+            return cookPeekHasFuel;
+        }
+        if (now > cookPeekDeadline) {
+            SmeltingManager.closeFurnace();
+            cookPeekPos = null;
+            cookPeekResultAt = now;
+            cookPeekHasFuel = false;
+            ChatUtils.warningPrefix("BotBrain", "G2: appliance [%d %d %d] did not open for a contents read",
+                furnace.getX(), furnace.getY(), furnace.getZ());
+            return false;
+        }
+        return null;
+    }
+
+    private static final long FUEL_WITHDRAW_COOLDOWN = 30_000L;
+    private volatile long lastFuelWithdrawRequest = 0L;
+
+    /**
+     * Ask the host for fuel from its storage index. The host answers with a
+     * "withdraw <category> <x> <y> <z> <item> <n>" command that runs
+     * EnhancedSwarmWorker.handleWithdraw, which walks to that chest and takes the
+     * items. Only chests the host actually has stock of produce a withdraw, so
+     * asking for several candidates costs nothing when they are absent.
+     */
+    private boolean requestFuelFromStorage() {
+        DataOutputStream stream = this.out;
+        if (stream == null) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastFuelWithdrawRequest < FUEL_WITHDRAW_COOLDOWN) return true;
+        lastFuelWithdrawRequest = now;
+        String[] candidates = {
+            "minecraft:coal", "minecraft:charcoal", "minecraft:oak_log",
+            "minecraft:oak_planks", "minecraft:stick"
+        };
+        try {
+            for (String id : candidates) stream.writeUTF("WITHDRAW_REQUEST:" + id + "|8|all");
+            stream.flush();
+        } catch (Exception e) {
+            return false;
+        }
+        ChatUtils.infoPrefix("BotBrain", "G2: no fuel — requested fuel from base storage");
+        return true;
     }
 
     private boolean hasCookFuel(BlockPos furnace) {
@@ -4060,6 +4981,12 @@ public class BotBrain extends Module {
             ChatUtils.warningPrefix("BotBrain", "HALT: task assignment ignored while halted");
             return;
         }
+        // A new task starts with an empty outcome ledger. A requeued task keeps its
+        // collected counter, which is exactly why the ledger resets here instead.
+        outcomeTaskId = task == null ? null : task.getId();
+        outcomeDeposited = 0;
+        deferredCompletionTask = null;
+        deferredTriedTaskId = null;
         if (task != null && task.getTargetItem() != null) {
             if (task.getTargetItem() == Items.AIR) {
                 task.setStatus(BotTask.Status.FAILED);
@@ -4100,6 +5027,16 @@ public class BotBrain extends Module {
         this.executionPlan = null;
         this.directSmelt = false;
         this.planStep = 0;
+        this.smeltBaseReturnIssued = false;
+        this.withdrawInFlightItem = null;
+        // A re-dispatch of the SAME task keeps its withdrawal record: one task gets
+        // one withdrawal for an item even across attempts.
+        if (this.withdrawTaskId == null || task == null || !this.withdrawTaskId.equals(task.getId())) {
+            this.withdrawTaskId = null;
+            this.withdrawTaskItem = null;
+            this.withdrawTaskDelivered = 0;
+            this.withdrawTaskAttempts = 0;
+        }
         this.lastReportedCount = 0;
         this.basePos = null;
         this.baseReturnCommandSent = false;
@@ -4156,12 +5093,20 @@ public class BotBrain extends Module {
             return;
         }
 
-        // Resolve dependencies once at assignment and store results
+        // Resolve dependencies once at assignment and store results. Resolve the
+        // DEFICIT, not the task total: DependencyResolver is gross (it subtracts no
+        // inventory), so asking for x17 with 16 in hand planned 3 ores and then a
+        // fresh plan, and therefore a fresh withdrawal, after each smelt.
         try {
-            var plan = DependencyResolver.resolve(task.getTargetItem(), task.getTargetQuantity());
+            int haveNow = countForTask(task.getTargetItem());
+            int want = Math.max(1, task.getTargetQuantity() - haveNow);
+            ChatUtils.infoPrefix("BotBrain", "Plan deficit: %s x%d (task needs %d, have %d)",
+                task.getItemName(), want, task.getTargetQuantity(), haveNow);
+            var plan = DependencyResolver.resolve(task.getTargetItem(), want);
             this.executionPlan = plan.steps;
             this.resolverGatherList = plan.gatherList;
             this.resolverCraftPlan = plan.craftPlan;
+            pruneSatisfiedGatherSteps();
             // detect if any craft step requires a 3x3 table
             boolean needs3 = false;
             if (this.resolverCraftPlan != null) {
@@ -4170,7 +5115,7 @@ public class BotBrain extends Module {
                 }
             }
             this.resolverNeeds3x3 = needs3;
-            ChatUtils.infoPrefix("BotBrain", "Dependency plan for %s x%d:", task.getItemName(), task.getTargetQuantity());
+            ChatUtils.infoPrefix("BotBrain", "Dependency plan for %s x%d:", task.getItemName(), want);
             ChatUtils.infoPrefix("BotBrain", "  Gather: %s", resolverGatherList == null ? "{}" : resolverGatherList.toString());
             if (resolverCraftPlan != null) {
                 for (int i = 0; i < resolverCraftPlan.size(); i++) {

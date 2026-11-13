@@ -1,0 +1,14 @@
+{
+  "name": "enhanced-swarm-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server (Streamable HTTP) that drives the Enhanced Swarm mod, its test server and its clients",
+  "engines": {
+    "node": ">=25"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node selftest.mjs"
+  }
+}

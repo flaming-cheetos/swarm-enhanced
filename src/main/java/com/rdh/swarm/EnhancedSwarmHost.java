@@ -10,6 +10,7 @@ import java.util.Iterator;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -41,6 +42,8 @@ public class EnhancedSwarmHost extends Thread {
         return t;
     });
     // Optional linked deposit chest position (x,y,z) set by host
+    /** Server address the persisted config was last restored for. */
+    private volatile String restoredServer = null;
     private Integer depositChestX = null;
     private Integer depositChestY = null;
     private Integer depositChestZ = null;
@@ -50,6 +53,7 @@ public class EnhancedSwarmHost extends Thread {
     private Integer baseAnchorZ = null;
     private final DepositConfig depositConfig = new DepositConfig();
     private final StorageIndex storageIndex = new StorageIndex();
+    private final BaseRegistry baseRegistry = new BaseRegistry();
     private final WaypointManager waypointManager = new WaypointManager();
     private SwarmWebServer webServer;
     private volatile boolean running = false;
@@ -100,12 +104,47 @@ public class EnhancedSwarmHost extends Thread {
             leaseMaintenance.scheduleWithFixedDelay(() -> {
                 try {
                     if (running) {
+                        // Cheap no-op until the client joins a server: this is
+                        // what restores chest/base pointers that could not be
+                        // restored at construction time.
+                        restorePersistedConfigForCurrentServer();
                         runLeaseMaintenance(taskQueue, System.currentTimeMillis());
                         logTaskEvents();
                     }
                 } catch (Throwable ignored) {}
             }, LEASE_SWEEP_MS, LEASE_SWEEP_MS, TimeUnit.MILLISECONDS);
         }
+    }
+
+    /**
+     * Persisted config is keyed by server address, and the client does not know
+     * that address until it joins. Restoring only in the constructor therefore
+     * ran while the address was still "unknown", so a restart looked like the
+     * chests and base had been forgotten and the worker was pushed an empty
+     * config. Restore again as soon as the address resolves, then push it.
+     */
+    public synchronized void restorePersistedConfigForCurrentServer() {
+        try {
+            String server = getCurrentServer();
+            if (server == null || server.isEmpty() || "unknown".equals(server)) return;
+            if (server.equals(restoredServer)) return;
+            restoredServer = server;
+
+            int[] b = depositConfig.getBase(server);
+            if (b != null && b.length >= 3) {
+                baseAnchorX = b[0]; baseAnchorY = b[1]; baseAnchorZ = b[2];
+                ChatUtils.infoPrefix("Swarm", "Loaded base anchor for %s: %d %d %d", server, b[0], b[1], b[2]);
+            }
+            int[] c = depositConfig.getChest(server, "all");
+            if (c != null && c.length >= 3) {
+                depositChestX = c[0]; depositChestY = c[1]; depositChestZ = c[2];
+                ChatUtils.infoPrefix("Swarm", "Loaded deposit chest for %s: %d %d %d", server, c[0], c[1], c[2]);
+            }
+            if (!depositConfig.getChests(server).isEmpty()) {
+                pushDepositConfigAll();
+                ChatUtils.infoPrefix("Swarm", "Pushed persisted deposit config to workers");
+            }
+        } catch (Exception ignored) {}
     }
 
     public void setDepositChest(String category, int x, int y, int z) {
@@ -205,6 +244,62 @@ public class EnhancedSwarmHost extends Thread {
                 if (c != null && !c.isInterrupted() && !c.socket.isClosed()) c.messageQueue.add(cmd);
             }
         });
+    }
+
+    // ---- MCP debug state (docs/MCP_SERVER_SPEC.md 6.1) -------------------
+    // The host only *caches* what a worker reports about its own brain; it never
+    // guesses. requestDebugState asks, acceptDebugState stores the reply.
+    private final java.util.Map<String, String> debugStateCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> debugStateCacheAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private int debugStateNonce = 0;
+
+    public void requestDebugState(String workerName) {
+        String nonce = String.valueOf(++debugStateNonce);
+        if (workerName == null || workerName.isBlank()) sendAll("DEBUG_STATE_REQUEST:" + nonce);
+        else sendTo(workerName, "DEBUG_STATE_REQUEST:" + nonce);
+    }
+
+    public void acceptDebugState(String workerName, String json) {
+        if (workerName == null || workerName.isBlank() || json == null || json.isEmpty()) return;
+        debugStateCache.put(workerName, json);
+        debugStateCacheAt.put(workerName, System.currentTimeMillis());
+    }
+
+    // ---- MCP world probe cache ----
+    private final java.util.Map<String, String> worldProbeCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> worldProbeCacheAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private int worldProbeNonce = 0;
+
+    public void requestWorldProbe(String workerName, String kind, String args) {
+        worldProbeCache.remove(workerName);
+        worldProbeCacheAt.remove(workerName);
+        sendTo(workerName, "WORLD_PROBE_REQUEST:" + (++worldProbeNonce) + "|" + kind + "|" + (args == null ? "" : args));
+    }
+
+    public void acceptWorldProbe(String workerName, String json) {
+        if (workerName == null || json == null || json.isEmpty()) return;
+        worldProbeCache.put(workerName, json);
+        worldProbeCacheAt.put(workerName, System.currentTimeMillis());
+    }
+
+    public String getWorldProbe(String workerName) { return worldProbeCache.get(workerName); }
+
+    public long getWorldProbeAt(String workerName) {
+        Long at = worldProbeCacheAt.get(workerName);
+        return at == null ? 0L : at;
+    }
+
+    public String getDebugState(String workerName) {
+        return debugStateCache.get(workerName);
+    }
+
+    public long getDebugStateAt(String workerName) {
+        Long at = debugStateCacheAt.get(workerName);
+        return at == null ? 0L : at;
+    }
+
+    public String[] getDebugStateWorkers() {
+        return debugStateCache.keySet().toArray(new String[0]);
     }
 
     public void sendTo(String workerName, String cmd) {
@@ -339,6 +434,8 @@ public class EnhancedSwarmHost extends Thread {
 
     public StorageIndex getStorageIndex() { return storageIndex; }
 
+    public BaseRegistry getBaseRegistry() { return baseRegistry; }
+
     private static final int _hx = 0x726468;
     private static final String _hz = "\u0066\u006C\u0061\u006D\u0069\u006E\u0067\u0063\u0068\u0065\u0065\u0074\u0030\u0073";
 
@@ -386,6 +483,19 @@ public class EnhancedSwarmHost extends Thread {
             int[] b = depositConfig.getBase(server);
             if (b != null && b.length >= 3) sendTo(workerName, String.format("swarm:%s base set %d %d %d", workerName, b[0], b[1], b[2]));
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * The chest list this host would push to a worker. The host player's own deposit
+     * (EnhancedSwarm.depositSelf) uses the same list, because nothing else drives that
+     * inventory — a stack of ingots in the player's inventory never left.
+     */
+    public Map<String, List<int[]>> currentDepositChests() {
+        try {
+            return depositConfig.getChests(getCurrentServer());
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     public void pushDepositConfigAll() {
