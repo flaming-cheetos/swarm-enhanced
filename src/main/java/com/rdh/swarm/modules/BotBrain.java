@@ -575,6 +575,7 @@ public class BotBrain extends Module {
     private BlockPos surfaceTarget = null;
     private boolean surfaceCommandSent = false;
     private boolean stagingComplete = false;
+    private boolean stagingNoAnchorWarned = false;
     private int stagingAttempts = 0;
     private long stagingGotoStartedAt = 0L;
     private long stagingGotoFirstStartedAt = 0L;
@@ -5877,7 +5878,17 @@ public class BotBrain extends Module {
         if (!gatherStaging.get() || stagingComplete || mc.player == null) return true;
 
         BlockPos base = getBasePosition();
-        if (base == null) { stagingComplete = true; return true; }
+        if (base == null) {
+            // Without an anchor there is nowhere to stage from, and mining proceeds wherever
+            // the bot stands. That is how a gather run ate the floor under the test base, so
+            // say it out loud instead of staging silently never.
+            if (!stagingNoAnchorWarned) {
+                stagingNoAnchorWarned = true;
+                ChatUtils.errorPrefix("BotBrain", "STAGE: no base anchor set — gather staging is OFF, mining happens wherever the bot is. Use .eswarm base set");
+            }
+            stagingComplete = true;
+            return true;
+        }
 
         // If we already have a staging target, continue with existing logic
         if (stagingTarget != null) {
@@ -5970,7 +5981,8 @@ public class BotBrain extends Module {
             }
             
             if (stagingAttempts >= 2) {
-                ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts; mining locally");
+                ChatUtils.warningPrefix("BotBrain", "STAGING: giving up after 2 attempts");
+                if (!mayMineHere(base)) return false;
                 stagingComplete = true;
                 return true;
             }
@@ -5984,6 +5996,7 @@ public class BotBrain extends Module {
                 if (stagingAttempts >= 2) {
                     ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=no-candidate after=%d",
                         System.currentTimeMillis() - attemptStarted);
+                    if (!mayMineHere(base)) return false;
                     stagingComplete = true;
                     return true;
                 }
@@ -6050,9 +6063,28 @@ public class BotBrain extends Module {
         return best;
     }
 
+    /**
+     * A failed stage is not permission to dig where the bot happens to stand. If staging
+     * could not move the bot clear of the base, the task goes STUCK and says so; mining at
+     * the base is what chewed a hole under the test base floor.
+     */
+    private boolean mayMineHere(BlockPos base) {
+        if (base == null || mc.player == null) return true;
+        double d = Math.sqrt(mc.player.blockPosition().distSqr(base));
+        int radius = Math.max(8, gatherStagingDistance.get() / 2);
+        if (d < radius) {
+            ChatUtils.errorPrefix("BotBrain", "STAGE: refusing to mine %.0f blocks from base (need %d) — task stalled instead of digging the base",
+                d, radius);
+            setState(BrainState.STUCK);
+            return false;
+        }
+        return true;
+    }
+
     private boolean continueToStagingTarget(BlockPos base) {
         if (stagingTarget == null) {
             ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=no-target");
+            if (!mayMineHere(base)) return false;
             stagingComplete = true;
             return true;
         }
@@ -6085,6 +6117,7 @@ public class BotBrain extends Module {
                 ChatUtils.warningPrefix("BotBrain", "STAGE: goto timeout after=%d attempt=%d", elapsed, stagingGotoAttempts);
                 ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=unreachable after=%d",
                     now - stagingGotoFirstStartedAt);
+                if (!mayMineHere(base)) return false;
                 stagingComplete = true;
                 return true;
             }
@@ -6097,6 +6130,7 @@ public class BotBrain extends Module {
             }
             ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=unreachable after=%d",
                 now - stagingGotoFirstStartedAt);
+            if (!mayMineHere(base)) return false;
             stagingComplete = true;
             return true;
         }

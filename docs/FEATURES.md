@@ -810,3 +810,24 @@ remove -> config 4 / registry 4 / worker `n=4 gen=117`.
 **Lesson worth keeping:** the registry is the single source of truth for chests, so every
 path that adds one must write it. Any future "add chest" feature that only touches the
 deposit config will be erased by the next push.
+
+## Gather staging was fail-open (2026-11-14)
+
+`ensureStagedAwayFromBase()` runs before every gather. With no base anchor it returned
+"staged" immediately, and with a staging goto that timed out it also returned "staged" and
+let mining start from wherever the bot stood. Both paths are silent. On 2026-11-14 the
+anchor did not exist until 15:03:51 and the log shows `No base anchor set` at 15:03:48 with
+no `STAGE:` line all session: every gather ran unstaged, and Baritone's `#mine` picked the
+nearest dirt — under the test base floor.
+
+Staging is not a protection radius: it only moves the bot far away, and `#mine` then picks
+the nearest target to the bot. So the fix is to stop treating a failed stage as permission
+to dig:
+
+- missing anchor now logs a one-shot error naming the fix (`.eswarm base set`)
+- every give-up path (no target, no candidate after 2 tries, goto unreachable after 3
+  tries) calls `mayMineHere(base)`: if the bot is closer than `gather-staging-distance / 2`
+  (default 80, floor 8) to the base it does **not** mine, logs the distance and the radius,
+  and the task goes `STUCK`
+
+Committed as `e9d0c00`-era work; not yet live on the running clients.
