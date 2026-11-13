@@ -5349,6 +5349,24 @@ public class BotBrain extends Module {
         }
         if (now - gatherStallSince < GATHER_STALL_MS) return;
         if (gatherStallReissues == 0) {
+            // Distinguish "Baritone lost the thread" from "this terrain has none of that
+            // block". The second case cannot be fixed by waiting or by asking again, so
+            // say so immediately instead of spending two stall windows on it.
+            String blockId = currentlyMining;
+            if (blockId != null && mc.level != null && findBreakTarget(blockId, 64) == null) {
+                ChatUtils.warningPrefix("BotBrain",
+                    "GATHER: no %s within 64 blocks for %s (%d/%d in hand); failing with a reason instead of stalling",
+                    blockId, itemId, have, task.getTargetQuantity());
+                if (canSendBaritone()) sendBaritoneChat("#stop");
+                currentlyMining = null;
+                mineCommandSent = false;
+                gatherStallItem = "";
+                gatherStallCount = -1;
+                gatherStallSince = 0;
+                gatherStallReissues = 0;
+                failTaskWithReason(task, "no-target-nearby");
+                return;
+            }
             gatherStallReissues = 1;
             gatherStallSince = now;
             ChatUtils.warningPrefix("BotBrain",
