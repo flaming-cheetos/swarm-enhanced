@@ -541,6 +541,16 @@ public class EnhancedSwarmWorker extends Thread {
                         if (args != null && args.startsWith("#")) {
                             Minecraft mc = Minecraft.getInstance();
                             if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, args);
+                        } else if (args != null && args.equals("stagefail")) {
+                            // Test hook: arm one forced staging failure so the base-protection
+                            // guard can be exercised without waiting for a real pathfinding
+                            // failure. Fires once, then disarms itself.
+                            try {
+                                var b = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                                    .get(com.rdh.swarm.modules.BotBrain.class);
+                                if (b != null) b.forceStagingFailureOnce = true;
+                                ChatUtils.infoPrefix("Swarm", "STAGE: forced failure armed (one shot)");
+                            } catch (Exception ignored) {}
                         } else {
                             String cleaned = args;
                             if (cleaned != null && cleaned.startsWith(".")) cleaned = cleaned.substring(1);

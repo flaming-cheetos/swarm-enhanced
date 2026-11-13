@@ -576,6 +576,8 @@ public class BotBrain extends Module {
     private boolean surfaceCommandSent = false;
     private boolean stagingComplete = false;
     private boolean stagingNoAnchorWarned = false;
+    /** Test hook, armed by the worker's "stagefail" exec verb. One shot. */
+    public volatile boolean forceStagingFailureOnce = false;
     private int stagingAttempts = 0;
     private long stagingGotoStartedAt = 0L;
     private long stagingGotoFirstStartedAt = 0L;
@@ -6082,6 +6084,13 @@ public class BotBrain extends Module {
     }
 
     private boolean continueToStagingTarget(BlockPos base) {
+        if (forceStagingFailureOnce) {
+            forceStagingFailureOnce = false;
+            ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=forced-for-test");
+            if (!mayMineHere(base)) return false;
+            stagingComplete = true;
+            return true;
+        }
         if (stagingTarget == null) {
             ChatUtils.warningPrefix("BotBrain", "STAGE: gave up reason=no-target");
             if (!mayMineHere(base)) return false;
