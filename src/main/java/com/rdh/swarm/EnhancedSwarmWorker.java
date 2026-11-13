@@ -31,6 +31,22 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
 public class EnhancedSwarmWorker extends Thread {
+    /**
+     * Baritone builds world state when it handles a chat command, so a command sent from
+     * the worker thread dies with "BlockStateInterface must be constructed on the main
+     * thread" and the gather silently never starts. Always hand chat to the client thread.
+     */
+    private static void sendChatOnClient(Minecraft mc, String message) {
+        if (mc == null || message == null || message.isEmpty()) return;
+        if (mc.isSameThread()) {
+            if (mc.getConnection() != null) mc.getConnection().sendChat(message);
+        } else {
+            mc.execute(() -> {
+                if (mc.getConnection() != null) mc.getConnection().sendChat(message);
+            });
+        }
+    }
+
     private Socket socket;
     private final String host;
     private final int port;
@@ -465,7 +481,7 @@ public class EnhancedSwarmWorker extends Thread {
                     try {
                         if (args != null && args.startsWith("#")) {
                             Minecraft mc = Minecraft.getInstance();
-                            if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args);
+                            if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, args);
                         } else {
                             String cleaned = args;
                             if (cleaned != null && cleaned.startsWith(".")) cleaned = cleaned.substring(1);
@@ -501,15 +517,15 @@ public class EnhancedSwarmWorker extends Thread {
                     break;
 
                 case "say":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, args); } catch (Exception ignored) {}
                     break;
 
                 case "where":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.player != null && mc.getConnection() != null) mc.getConnection().sendChat(String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.player != null && mc.getConnection() != null) sendChatOnClient(mc, String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
                     break;
 
                 case "help":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, "Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
                     break;
 
                 case "deposit":
@@ -937,7 +953,7 @@ public class EnhancedSwarmWorker extends Thread {
             if (resumeTaskAfterDeposit != null && !resumeTaskAfterDeposit.isEmpty()) {
                 if (resumeTaskAfterDeposit.startsWith("#")) {
                     Minecraft mc = Minecraft.getInstance();
-                    if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(resumeTaskAfterDeposit);
+                    if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, resumeTaskAfterDeposit);
                 } else {
                     try { Commands.dispatch(resumeTaskAfterDeposit); } catch (Exception ignored) {}
                 }
@@ -1091,7 +1107,7 @@ public class EnhancedSwarmWorker extends Thread {
                         }
                     }
                 } catch (Exception ignored) {}
-                if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("#" + toSend);
+                if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, "#" + toSend);
                 else Commands.dispatch(toSend);
             } else {
                 Commands.dispatch(effective);
@@ -1131,7 +1147,7 @@ public class EnhancedSwarmWorker extends Thread {
                         continue;
                     }
 
-                    if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+                    if (mc.getConnection() != null) sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
                     long start = System.currentTimeMillis();
                     while (System.currentTimeMillis() - start < 60000) {
                         if (mc.player != null) {
@@ -1253,7 +1269,7 @@ public class EnhancedSwarmWorker extends Thread {
                 return;
             }
 
-            if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+            if (mc.getConnection() != null) sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 60000) {
                 if (mc.player != null) {
@@ -1635,7 +1651,7 @@ public class EnhancedSwarmWorker extends Thread {
                 return sb.append(',').append(jq("error")).append(':').append(jq("unreachable")).append('}').toString();
             }
             if (mc.getConnection() != null) {
-                mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+                sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
             }
             long start = System.currentTimeMillis();
             boolean arrived = false;
