@@ -267,26 +267,16 @@ public class EnhancedSwarmWorker extends Thread {
     }
 
     /** Send the contents of a chest we just opened, so the host replaces its record. */
-    private void publishMeasuredChest(int x, int y, int z, int used, int total, CharSequence slotsJson) {
+    private void publishMeasuredChest(int x, int y, int z, int used, int total, java.util.Map<String, Long> counts) {
         try {
             StringBuilder container = new StringBuilder("{");
-            java.util.LinkedHashMap<String, Long> counts = new java.util.LinkedHashMap<>();
-            String json = slotsJson == null ? "" : slotsJson.toString();
-            // slotsJson is [{slot:..,item:"id",count:..},...]; fold it into per-item totals.
-            for (String part : json.split("\\},\\{")) {
-                String id = between(part, "\"item\":\"", "\"");
-                String cnt = between(part, "\"count\":", ",");
-                if (cnt.endsWith("}")) cnt = cnt.substring(0, cnt.length() - 1);
-                if (id == null || id.isEmpty()) continue;
-                long n;
-                try { n = Long.parseLong(cnt.trim()); } catch (Exception e) { continue; }
-                counts.merge(id, n, Long::sum);
-            }
-            boolean first = true;
-            for (var e : counts.entrySet()) {
-                if (!first) container.append(',');
-                first = false;
-                container.append('"').append(e.getKey()).append("\":").append(e.getValue());
+            if (counts != null) {
+                boolean first = true;
+                for (var e : counts.entrySet()) {
+                    if (!first) container.append(',');
+                    first = false;
+                    container.append('"').append(e.getKey()).append("\":").append(e.getValue());
+                }
             }
             container.append('}');
             String msg = "CHEST_DELTA:measured:" + x + ":" + y + ":" + z + "|{\"counts\":{},"
@@ -1738,6 +1728,7 @@ public class EnhancedSwarmWorker extends Thread {
             var handler = mc.player.containerMenu;
             int used = 0, total = 0;
             StringBuilder slots = new StringBuilder();
+            java.util.LinkedHashMap<String, Long> containerCounts = new java.util.LinkedHashMap<>();
             try {
                 for (int si = 0; si < handler.slots.size(); si++) {
                     try {
@@ -1750,6 +1741,7 @@ public class EnhancedSwarmWorker extends Thread {
                         if (slots.length() > 0) slots.append(',');
                         String id = "";
                         try { id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString(); } catch (Exception ignored) {}
+                        if (!id.isEmpty()) containerCounts.merge(id, (long) st.getCount(), Long::sum);
                         slots.append('{').append(jq("slot")).append(':').append(si)
                              .append(',').append(jq("item")).append(':').append(jq(id))
                              .append(',').append(jq("count")).append(':').append(st.getCount()).append('}');
@@ -1760,7 +1752,7 @@ public class EnhancedSwarmWorker extends Thread {
             // Opening a chest is a measurement of it, so publish what the menu said. The
             // host index is a record of measurements, never a running total, and this is
             // the path that keeps it honest outside a deposit.
-            publishMeasuredChest(x, y, z, used, total, slots);
+            publishMeasuredChest(x, y, z, used, total, containerCounts);
             sb.append(',').append(jq("usedSlots")).append(':').append(used);
             sb.append(',').append(jq("totalSlots")).append(':').append(total);
             sb.append(',').append(jq("slots")).append(":[").append(slots).append(']');
