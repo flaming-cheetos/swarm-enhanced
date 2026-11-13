@@ -555,6 +555,7 @@ public class BotBrain extends Module {
      * That is the hang Gate A exists to catch. Watch the count itself, not the command.
      */
     private static final long GATHER_STALL_MS = 45_000L;
+    private String gatherStallTaskId = "";
     private String gatherStallItem = "";
     private int gatherStallCount = -1;
     private long gatherStallSince = 0;
@@ -5337,6 +5338,17 @@ public class BotBrain extends Module {
     /** Re-issue a stalled gather once, then fail it with a reason. Never idle on it. */
     private void tickGatherStall(BotTask task) {
         if (task == null || task.getTargetItem() == null) return;
+        // The watchdog belongs to one task. Carrying its state into the next task of the
+        // same item sent that task straight to "no progress after a re-issue" without
+        // ever trying the walk or the re-issue itself.
+        String thisTaskId = task.getId() == null ? "" : task.getId().toString();
+        if (!thisTaskId.equals(gatherStallTaskId)) {
+            gatherStallTaskId = thisTaskId;
+            gatherStallItem = "";
+            gatherStallCount = -1;
+            gatherStallSince = 0;
+            gatherStallReissues = 0;
+        }
         int have = countForTask(task.getTargetItem());
         long now = System.currentTimeMillis();
         String itemId = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(task.getTargetItem()));
