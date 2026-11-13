@@ -412,6 +412,99 @@ public class SwarmWebServer {
                 long age = System.currentTimeMillis() - mod.host.getDebugStateAt(bot);
                 return "{\"ok\":true,\"bot\":\"" + esc(bot) + "\",\"ageMs\":" + age + ",\"data\":" + json + "}";
             }
+            if ("/api/debug/health".equals(path)) {
+                // Reachability + identity: the jar path proves which build answered, so a
+                // stale process cannot be mistaken for the one just started.
+                String jar = "";
+                try {
+                    jar = EnhancedSwarm.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+                } catch (Exception ignored) {}
+                return "{\"ok\":true,\"pid\":" + ProcessHandle.current().pid()
+                    + ",\"uptimeMs\":" + java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime()
+                    + ",\"isHost\":" + (mod != null && mod.isHost())
+                    + ",\"jar\":\"" + esc(jar) + "\"}";
+            }
+
+            if ("/api/debug/logs".equals(path)) {
+                // B1 log_tail: the real tail of this instance's log, filtered, with timestamps.
+                int want = 80;
+                try {
+                    String n = extractJson(body, "lines");
+                    if (n != null) want = Math.max(1, Math.min(500, Integer.parseInt(n.trim())));
+                } catch (Exception ignored) {}
+                String filter = extractJson(body, "filter");
+                java.nio.file.Path logFile = java.nio.file.Path.of("logs", "latest.log");
+                if (!java.nio.file.Files.exists(logFile)) {
+                    return "{\"ok\":false,\"error\":\"no_log\",\"path\":\"" + esc(logFile.toAbsolutePath().toString()) + "\"}";
+                }
+                java.util.List<String> all = java.nio.file.Files.readAllLines(logFile);
+                java.util.List<String> kept = new java.util.ArrayList<>();
+                for (String line : all) {
+                    if (filter != null && !filter.isBlank() && !line.contains(filter)) continue;
+                    kept.add(line);
+                }
+                int from = Math.max(0, kept.size() - want);
+                StringBuilder sb = new StringBuilder("{\"ok\":true,\"path\":\"")
+                    .append(esc(logFile.toAbsolutePath().toString()))
+                    .append("\",\"totalLines\":").append(all.size())
+                    .append(",\"matched\":").append(kept.size())
+                    .append(",\"lines\":[");
+                for (int i = from; i < kept.size(); i++) {
+                    if (i > from) sb.append(',');
+                    sb.append('"').append(esc(kept.get(i))).append('"');
+                }
+                return sb.append("]}").toString();
+            }
+
+            if ("/api/debug/tasks".equals(path)) {
+                // B1 task_watch: the live queue, straight out of the TaskQueue in the tree.
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                var q = mod.host.getTaskQueue();
+                var gson = new com.google.gson.Gson();
+                com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(buildStateJson()).getAsJsonObject();
+                com.google.gson.JsonArray tasks = root.has("tasks") ? root.getAsJsonArray("tasks") : new com.google.gson.JsonArray();
+                return "{\"ok\":true,\"size\":" + q.size() + ",\"panicked\":" + mod.host.isPanicked()
+                    + ",\"tasks\":" + gson.toJson(tasks) + "}";
+            }
+
+            if ("/api/debug/chest".equals(path)) {
+                // B1 chest_delta backend: read a registry chest by id, synchronously.
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                String bot = extractJson(body, "bot");
+                String cid = extractJson(body, "id");
+                if (bot == null || bot.isBlank() || cid == null || cid.isBlank()) {
+                    return "{\"ok\":false,\"error\":\"bot_and_id_required\"}";
+                }
+                var entry = mod.host.getBaseRegistry().byId(cid);
+                if (entry == null) {
+                    return "{\"ok\":false,\"error\":\"unknown_id\",\"id\":\"" + esc(cid) + "\"}";
+                }
+                mod.host.requestWorldProbe(bot, "container_open", entry.posString());
+                long deadline = System.currentTimeMillis() + 40000L;
+                while (System.currentTimeMillis() < deadline) {
+                    String json = mod.host.getWorldProbe(bot);
+                    if (json != null && System.currentTimeMillis() - mod.host.getWorldProbeAt(bot) < 35000L) {
+                        return "{\"ok\":true,\"id\":\"" + esc(cid) + "\",\"pos\":\"" + esc(entry.posString())
+                            + "\",\"serverMs\":" + (40000L - (deadline - System.currentTimeMillis()))
+                            + ",\"data\":" + json + "}";
+                    }
+                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                }
+                return "{\"ok\":false,\"error\":\"probe_timeout\",\"id\":\"" + esc(cid) + "\"}";
+            }
+
+            if ("/api/debug/panic".equals(path) || "/api/debug/resume".equals(path)) {
+                if (mod == null || !mod.isHost() || mod.host == null) {
+                    return "{\"ok\":false,\"error\":\"not_host\"}";
+                }
+                if ("/api/debug/resume".equals(path)) mod.host.resume();
+                else mod.host.panic();
+                return mod.host.panicJson();
+            }
             if ("/api/debug/registry".equals(path)) {
                 // A3: storage and furnace locations as data, readable by any observer.
                 if (mod == null || !mod.isHost() || mod.host == null) {

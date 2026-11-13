@@ -176,6 +176,58 @@ async function probeWorld(bot, kind, args, tries = 12, id, closed = false) {
   return last;
 }
 
+// ---- B1: operator / diagnostic surface -------------------------------------
+// Every instance runs the mod's own panel, so each instance can answer for itself.
+// Reading the other instance's log means asking its panel, not reaching into a
+// file path that only this machine happens to know.
+// Every instance's panel mints its own token, printed once in that instance's log.
+// Asking the bot's panel with the host's token is a 401, so resolve per instance.
+const instanceTokens = new Map();
+function tokenFor(instance) {
+  const inst = CFG.instances[instance];
+  if (!inst) throw toolError('unknown_instance', `no instance named ${instance}`);
+  const cached = instanceTokens.get(instance);
+  if (cached) return cached;
+  try {
+    const text = fs.readFileSync(inst.log, 'utf8');
+    // Dot does not cross newlines, so this stays on the announcement line.
+    const matches = [...text.matchAll(/Web panel:.+?token=([A-Za-z0-9]+)/g)];
+    if (matches.length) {
+      const tok = matches[matches.length - 1][1];
+      instanceTokens.set(instance, tok);
+      return tok;
+    }
+  } catch { /* log not readable yet */ }
+  return resolveToken();
+}
+
+async function panelOn(instance, route, body) {
+  const inst = CFG.instances[instance];
+  if (!inst) throw toolError('unknown_instance', `no instance named ${instance}`);
+  const tok = tokenFor(instance);
+  const res = await fetch(`http://127.0.0.1:${inst.port}${route}`, {
+    method: 'POST',
+    headers: { 'X-Swarm-Token': tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { ok: false, status: res.status, raw: text.slice(0, 400) }; }
+}
+
+// Chest contents as the probe reported them: id -> count.
+function chestTotals(slots) {
+  const out = {};
+  for (const s of slots ?? []) {
+    const id = String(s.item ?? '').replace('minecraft:', '');
+    out[id] = (out[id] ?? 0) + (s.count ?? 0);
+  }
+  return out;
+}
+
+const chestBaselines = new Map();
+
+const TERMINAL = ['COMPLETE', 'COMPLETED', 'FAILED', 'CANCELLED', 'CANCELED'];
+
 const TOOLS = [
   // ---- observe
   {
@@ -268,6 +320,149 @@ const TOOLS = [
     description: 'The base registry: every storage and furnace location the mod knows, by id, with the measurement that put it there. This is data on disk, not literals in code - it survives a restart without re-seeding.',
     inputSchema: { type: 'object', properties: {} },
     handler: async () => panel('POST', '/api/debug/registry', {}),
+  },
+  {
+    name: 'log_tail',
+    description: "Tail of a running instance's own log (that instance's /api/debug/logs), newest last, with an optional substring filter. Use it instead of guessing why something stopped.",
+    inputSchema: { type: 'object', properties: { instance: { type: 'string', enum: ['main', 'bot'] }, lines: { type: 'number' }, filter: { type: 'string' } }, required: ['instance'] },
+    handler: async (a) => {
+      const lines = a.lines ?? 40;
+      try {
+        const r = await panelOn(a.instance, '/api/debug/logs', { lines, filter: a.filter });
+        if (r && r.ok) return { ...r, source: 'api' };
+      } catch { /* fall through to the file */ }
+      // A worker instance serves no debug panel of its own, so ask its log directly.
+      // The path comes from config, which is the same source client_launch uses.
+      const inst = CFG.instances[a.instance];
+      if (!inst) throw toolError('unknown_instance', `no instance named ${a.instance}`);
+      let text = '';
+      try { text = fs.readFileSync(inst.log, 'utf8'); }
+      catch (e) { return { ok: false, error: 'log_unreadable', path: inst.log, detail: String(e.message) }; }
+      const all = text.split(String.fromCharCode(10)).map((l) => l.replace(String.fromCharCode(13), '')).filter(Boolean);
+      const kept = a.filter ? all.filter((l) => l.includes(a.filter)) : all;
+      return {
+        ok: true, source: 'file', path: inst.log,
+        totalLines: all.length, matched: kept.length,
+        lines: kept.slice(Math.max(0, kept.length - lines)),
+      };
+    },
+  },
+  {
+    name: 'task_watch',
+    description: 'Watch the live TaskQueue until one task reaches a terminal state (or the timeout), then return that task plus the queue. With no id it follows the busiest task. Replaces polling task_list by hand.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, timeoutMs: { type: 'number' } } },
+    handler: async (a) => {
+      const deadline = Date.now() + Math.min(600000, a.timeoutMs ?? 120000);
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await panel('POST', '/api/debug/tasks', {});
+        const tasks = last?.tasks ?? [];
+        const tracked = a.id ? tasks.filter((t) => (t.id ?? t.taskId) === a.id) : tasks;
+        const done = tracked.find((t) => TERMINAL.includes(String(t.status ?? '').toUpperCase()));
+        if (done) return { ok: true, reached: true, task: done, queueSize: last?.size ?? tasks.length, waitedMs: Math.max(0, Date.now() - (deadline - Math.min(600000, a.timeoutMs ?? 120000))) };
+        if (a.id && tracked.length === 0) {
+          const state = await panel('POST', '/api/debug/state', {});
+          const gone = (state?.tasks ?? []).find((t) => (t.id ?? t.taskId) === a.id);
+          if (!gone) return { ok: true, reached: true, task: { id: a.id, status: 'GONE' }, note: 'not in the queue any more - cancelled, cleared or already reaped' };
+        }
+        await sleep(1000);
+      }
+      return { ok: true, reached: false, timedOut: true, queue: last?.tasks ?? [], panicked: last?.panicked, queueSize: last?.size ?? 0 };
+    },
+  },
+  {
+    name: 'chest_delta',
+    description: 'Open a registry chest by id and report what changed since the previous call for that chest: per-item delta, current totals and slot usage. First call establishes the baseline and says so.',
+    inputSchema: { type: 'object', properties: { bot: { type: 'string' }, id: { type: 'string' }, reset: { type: 'boolean' } }, required: ['bot', 'id'] },
+    handler: async (a) => {
+      const r = await panel('POST', '/api/debug/chest', { bot: a.bot, id: a.id });
+      if (!r || r.ok === false) return r;
+      const totals = chestTotals(r.data?.slots);
+      const key = `${a.bot}:${a.id}`;
+      const before = chestBaselines.get(key);
+      if (a.reset) chestBaselines.delete(key);
+      const delta = {};
+      if (before) {
+        for (const k of new Set([...Object.keys(before), ...Object.keys(totals)])) {
+          const d = (totals[k] ?? 0) - (before[k] ?? 0);
+          if (d !== 0) delta[k] = d;
+        }
+      }
+      chestBaselines.set(key, totals);
+      return {
+        ok: true, id: a.id, pos: r.pos, type: r.data?.type,
+        slotsUsed: r.data?.usedSlots, slotsTotal: r.data?.totalSlots,
+        totals, delta,
+        baseline: !before,
+        note: before ? undefined : 'first read for this chest: baseline stored, call again after a change to see the delta',
+      };
+    },
+  },
+  {
+    name: 'server_restart',
+    description: "Restart one Minecraft instance under process control: stop the process listening on its panel port, relaunch it through the configured launcher, then wait until its own /api/debug/health answers from a new pid and report bootMs. The bot brain always comes back off.",
+    inputSchema: { type: 'object', properties: { instance: { type: 'string', enum: ['main', 'bot'] }, timeoutMs: { type: 'number' } }, required: ['instance'] },
+    handler: async (a) => {
+      const inst = CFG.instances[a.instance];
+      if (!inst) throw toolError('unknown_instance', `no instance named ${a.instance}`);
+      const before = await listeningPid(inst.port);
+      const t0 = Date.now();
+      if (before !== null) {
+        try { process.kill(before); } catch { /* already gone */ }
+        const gone = Date.now() + 30000;
+        while (Date.now() < gone && (await listeningPid(inst.port)) !== null) await sleep(500);
+      }
+      const child = spawn(inst.launcher, inst.args, { cwd: path.dirname(inst.launcher), detached: true, stdio: 'ignore' });
+      child.unref();
+      const deadline = Date.now() + (a.timeoutMs ?? 240000);
+      let health = null;
+      let readyBy = null;
+      while (Date.now() < deadline) {
+        await sleep(1500);
+        const pid = await listeningPid(inst.port);
+        if (pid === null) continue;
+        if (pid === before) continue; // still the old process
+        // Host: ask its own health endpoint. Worker: it serves no debug panel, so a
+        // resolved-but-not-ok answer is expected and must not end the wait.
+        let h = null;
+        try { h = await panelOn(a.instance, '/api/debug/health', {}); } catch { h = null; }
+        if (h && h.ok) { health = h; readyBy = 'health'; break; }
+        try {
+          const st = fs.statSync(inst.log);
+          const text = fs.readFileSync(inst.log, 'utf8');
+          const initIdx = text.lastIndexOf('Initializing Enhanced Swarm');
+          const joinedSeen = initIdx >= 0 && text.indexOf(inst.joined, initIdx) !== -1;
+          if (initIdx >= 0 && st.mtimeMs > t0) {
+            readyBy = joinedSeen ? 'log+join' : 'log';
+            health = { pid, joined: joinedSeen };
+            break;
+          }
+        } catch { /* log not there yet */ }
+      }
+      return {
+        ok: health !== null, instance: a.instance,
+        oldPid: before, newPid: health?.pid ?? null,
+        bootMs: Date.now() - t0, jar: health?.jar, readyBy,
+        reachable: health !== null,
+        hint: health ? (a.instance === 'bot' ? 'bot brain is OFF — resume with command{target:"jamal",cmd:".toggle bot-brain"}' : undefined)
+          : 'no answer before timeout; check log_tail on that instance',
+      };
+    },
+  },
+  {
+    name: 'panic',
+    description: 'Pull the lever: stop dispatching new work, clear the pending queue, tell every bot to abandon its path, and leave the switch visibly on. Resume with {resume:true}. Does not touch a bot brain that the operator turned off.',
+    inputSchema: { type: 'object', properties: { resume: { type: 'boolean' }, reason: { type: 'string' } } },
+    handler: async (a) => {
+      const r = await panel('POST', a.resume ? '/api/debug/resume' : '/api/debug/panic', { reason: a.reason });
+      const q = await panel('POST', '/api/debug/tasks', {});
+      let brain = null;
+      try {
+        const b = await panel('POST', '/api/debug/bot', { bot: 'jamal', refresh: true });
+        brain = b?.data?.moduleEnabled ?? null;
+      } catch { /* bot may be down */ }
+      return { ...r, resumed: !!a.resume, queueSizeAfter: q?.size ?? null, panickedAfter: q?.panicked ?? null, botBrainOn: brain };
+    },
   },
   {
     name: 'swarm_preflight',

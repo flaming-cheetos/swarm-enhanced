@@ -594,6 +594,35 @@ identical on both), and restarted: `loadedFromDisk=true`, `count=12`, same `seed
 | `swarm_preflight` | **pass=true, failed=[]** (11 checks) |
 | selftest | **20 passed, 0 failed** |
 
+## B1 operator and diagnostic tools (2026-11-13)
+
+Five tools, each an MCP tool backed by a `/api/debug/*` endpoint on the host:
+
+| tool | endpoint | what it returns |
+|---|---|---|
+| `log_tail` | `POST /api/debug/logs` | real tail of that instance's log, filtered, timestamped |
+| `task_watch` | `POST /api/debug/tasks` | live `TaskQueue` state; waits for a terminal status |
+| `chest_delta` | `POST /api/debug/chest` | registry chest by id, opened; per-item delta since the last read |
+| `server_restart` | `POST /api/debug/health` for readiness | stop by pid, relaunch, wait for a new pid to answer |
+| `panic` | `POST /api/debug/panic` / `resume` | clears the queue, stops dispatch, tells bots to abandon paths |
+
+`panic` is a host-side switch (`isPanicked`) consulted by `dispatchNextTask`, deliberately
+separate from each bot's brain toggle: resuming does not re-enable a brain an operator
+turned off. **Resume:** `panic {resume:true}` or `POST /api/debug/resume`.
+
+**Live evidence (04:50-05:05).** `log_tail bot` returned real BotBrain HALT lines and
+`log_tail main` returned the host log; `chest_delta` on `chest-main` read 768 iron, then
+after `give 5` + `deposit_self` reported `delta={'iron_ingot': 5}` with 768 -> 773 and
+32 -> 33 slots; `panic` left `panickedAfter=true` with the brain still on, `resume` cleared
+it; `server_restart bot` killed pid 21836, relaunched, and reported
+`ok=true newPid=26196 bootMs=20655 readyBy=log`.
+
+Two limits worth writing down: a **worker instance serves no debug panel of its own**, so
+`log_tail` falls back to reading that instance's log file and `server_restart` judges worker
+readiness from a new pid plus a fresh `Initializing Enhanced Swarm`/join line rather than
+`/api/debug/health`. `mc_command` refuses anything off its safe list (`/item replace` was
+rejected), which is why the chest test used the real deposit path.
+
 ## Status table
 
 | Feature | Status | Where it lives |

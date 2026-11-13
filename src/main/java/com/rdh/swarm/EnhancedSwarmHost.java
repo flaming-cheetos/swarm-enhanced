@@ -432,6 +432,51 @@ public class EnhancedSwarmHost extends Thread {
         return depositConfig;
     }
 
+    // ---- B1: panic / resume -------------------------------------------------
+    // A single switch that stops new work being dispatched. It is deliberately
+    // separate from each bot's own brain toggle: a bot whose brain is on must
+    // still be unable to pick up new tasks while the operator has pulled the
+    // lever, and resuming must not silently re-enable a brain someone turned off.
+    private volatile long panicAt = 0L;
+    private volatile int panicTasksCleared = 0;
+
+    public boolean isPanicked() { return panicAt > 0L; }
+
+    public long getPanicAt() { return panicAt; }
+
+    public synchronized int panic() {
+        int cleared = 0;
+        try {
+            cleared = taskQueue.size();
+            taskQueue.clear();
+        } catch (Exception ignored) {}
+        panicTasksCleared = cleared;
+        panicAt = System.currentTimeMillis();
+        // Abandon any path in progress; a bot mid-walk should stop, not finish the trip.
+        try {
+            for (String w : getDebugStateWorkers()) {
+                try { sendTo(w, "swarm:" + w + " stop"); } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+        return cleared;
+    }
+
+    public synchronized void resume() {
+        panicAt = 0L;
+        panicTasksCleared = 0;
+    }
+
+    public String panicJson() {
+        StringBuilder sb = new StringBuilder("{\"ok\":true,\"panicked\":");
+        sb.append(isPanicked());
+        sb.append(",\"panickedAt\":").append(panicAt);
+        if (panicAt > 0L) sb.append(",\"panickedForMs\":").append(System.currentTimeMillis() - panicAt);
+        sb.append(",\"tasksCleared\":").append(panicTasksCleared);
+        sb.append(",\"queueSize\":").append(taskQueue.size());
+        sb.append(",\"resume\":\"POST /api/debug/resume, or the panic tool with {resume:true}\"}");
+        return sb.toString();
+    }
+
     public StorageIndex getStorageIndex() { return storageIndex; }
 
     public BaseRegistry getBaseRegistry() { return baseRegistry; }
@@ -601,6 +646,7 @@ public class EnhancedSwarmHost extends Thread {
      * bot doesn't already have a live leased task.
      */
     public void dispatchNextTask(String botName) {
+        if (isPanicked()) return; // B1 panic: no new work leaves the host while the lever is down.
         if (botName == null || botName.isEmpty()) return;
         try {
             // A halted bot accepts no planner work until an explicit resume.

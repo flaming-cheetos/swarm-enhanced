@@ -99,6 +99,7 @@ Phase 0 is close enough that Gate A is the next real proof, so the order is:
 | 1 | Five cheap tools: `log_tail`, `task_watch`, `chest_delta`, `server_restart`, `panic` | each answers once, live |
 | 2 | **Fix the 690 vs 768 gap** - the storage index undercounts the 601/602 double chest by exactly one 78-ingot run | **DONE 04:26** - index 832 = 768 + 64, double chest counted once; 690 was a pre-deposit snapshot. Built `/api/debug/storage` to see it |
 | 3a | **A3/A4/A5 base registry** - locations as data, id-addressed reads, survives restart | **DONE 2026-11-13 04:33** - 12 entries, `loadedFromDisk=true` after a real stop/start, iron 832 = 768 + 64, `bf1` coal x42 |
+| 2b | **B1 operator tools** `log_tail`, `task_watch`, `chest_delta`, `server_restart`, `panic` | **DONE 2026-11-13 05:05** - all five answer live; chest_delta caught a real +5 iron deposit; panic halts dispatch and resumes |
 | 3 | Phase 1 leftovers: surface the fuel reader (`G2: cook check`) in `bot_state` as `fuels[]` + `fuelTicks`, then the food loop | `swarm_preflight` passes every check on a fresh bot |
 | 4 | **Gate A**: one bot, 30 minutes, deposits verified by opening chests, not by chat | verdict PASS with every deposit diffed against the world |
 
