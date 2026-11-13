@@ -287,10 +287,12 @@ const TOOLS = [
     handler: async (a) => {
       const wantFresh = a.refresh !== false;
       let last = null;
-      for (let i = 0; i < 8; i++) {
-        last = await panel('POST', '/api/debug/bot', { bot: a.bot, refresh: wantFresh && i === 0 });
+      // A worker that is mid-task answers late. Asking once and polling for 2 s made a
+      // busy bot look like a missing one, which is how a healthy preflight failed.
+      for (let i = 0; i < 20; i++) {
+        last = await panel('POST', '/api/debug/bot', { bot: a.bot, refresh: wantFresh && i % 4 === 0 });
         if (last && last.ok && (!wantFresh || last.ageMs < 3000)) return last;
-        await sleep(250);
+        await sleep(300);
       }
       return last;
     },
