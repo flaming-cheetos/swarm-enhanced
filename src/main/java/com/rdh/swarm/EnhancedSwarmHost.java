@@ -108,8 +108,13 @@ public class EnhancedSwarmHost extends Thread {
                         // what restores chest/base pointers that could not be
                         // restored at construction time.
                         restorePersistedConfigForCurrentServer();
-                        runLeaseMaintenance(taskQueue, System.currentTimeMillis());
+                        int requeued = runLeaseMaintenance(taskQueue, System.currentTimeMillis());
                         logTaskEvents();
+                        // A requeued task belongs to nobody. Every other dispatch trigger is an
+                        // event (a status report, a reconnect, a new task), so a queue left
+                        // PENDING by one expiry sat there forever: the bot idled, the task
+                        // never hung up, and nothing said why. Dispatch from the sweep too.
+                        if (requeued > 0) dispatchPendingToIdle();
                     }
                 } catch (Throwable ignored) {}
             }, LEASE_SWEEP_MS, LEASE_SWEEP_MS, TimeUnit.MILLISECONDS);
@@ -730,6 +735,24 @@ public class EnhancedSwarmHost extends Thread {
     void putBotStatus(BotStatus status) {
         if (status == null || status.workerName == null) return;
         botStatuses.put(status.workerName, status);
+    }
+
+    /**
+     * Hand queued work only to workers that report themselves idle. Unlike
+     * dispatchPendingForAll this never overwrites a worker that is already on a task.
+     */
+    public void dispatchPendingToIdle() {
+        if (isPanicked()) return;
+        for (String name : getWorkerNames()) {
+            try {
+                BotStatus st = botStatuses.get(name);
+                if (st == null || st.halted) continue;
+                boolean idle = st.state != null && st.state.equalsIgnoreCase("IDLE")
+                    && (st.taskId == null || st.taskId.isEmpty());
+                if (!idle) continue;
+                dispatchNextTask(name);
+            } catch (Exception ignored) {}
+        }
     }
 
     /** Resume is only useful if the queued tasks are dispatched after the flag clears. */
