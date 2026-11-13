@@ -548,6 +548,17 @@ public class BotBrain extends Module {
     private int breakWatchTicks = 0;
     private long lastBreakWatchScan = 0;
     private int breakWatchInventory = 0;
+
+    /**
+     * Baritone can stop making progress and never say so: the mine command is accepted, no
+     * block is broken, and the tick loop keeps printing the same "Gathering x: n/m" line.
+     * That is the hang Gate A exists to catch. Watch the count itself, not the command.
+     */
+    private static final long GATHER_STALL_MS = 45_000L;
+    private String gatherStallItem = "";
+    private int gatherStallCount = -1;
+    private long gatherStallSince = 0;
+    private int gatherStallReissues = 0;
     private final DropCollector dropCollector = new DropCollector(
         () -> collectDrops.get(), () -> pickupRadius.get(), () -> pickupWaitMs.get(),
         this::canStartDropSweep, this::onSweepFinished);
@@ -1466,6 +1477,7 @@ public class BotBrain extends Module {
     private void handleGathering() {
         if (tickBreakConfirmation()) return;
         maybeArmBreakWatch();
+        tickGatherStall(currentTask);
         // Staging debug (once every 200 ticks)
         if (tickCounter % 200 == 0) {
             debug("STAGING", "gatherStaging=%s distance=%d",
@@ -5322,6 +5334,41 @@ public class BotBrain extends Module {
     }
 
     /** Track the nearest candidate so a break can be confirmed or bounded. */
+    /** Re-issue a stalled gather once, then fail it with a reason. Never idle on it. */
+    private void tickGatherStall(BotTask task) {
+        if (task == null || task.getTargetItem() == null) return;
+        int have = countForTask(task.getTargetItem());
+        long now = System.currentTimeMillis();
+        String itemId = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(task.getTargetItem()));
+        if (!itemId.equals(gatherStallItem) || have > gatherStallCount) {
+            gatherStallItem = itemId;
+            gatherStallCount = have;
+            gatherStallSince = now;
+            gatherStallReissues = 0;
+            return;
+        }
+        if (now - gatherStallSince < GATHER_STALL_MS) return;
+        if (gatherStallReissues == 0) {
+            gatherStallReissues = 1;
+            gatherStallSince = now;
+            ChatUtils.warningPrefix("BotBrain",
+                "GATHER: %s stuck at %d/%d for %ds; stopping Baritone and re-issuing the mine",
+                itemId, have, task.getTargetQuantity(), GATHER_STALL_MS / 1000);
+            if (canSendBaritone()) sendBaritoneChat("#stop");
+            currentlyMining = null;
+            mineCommandSent = false;
+            return;
+        }
+        ChatUtils.warningPrefix("BotBrain",
+            "GATHER: %s made no progress for %ds after a re-issue; failing the task instead of idling",
+            itemId, (GATHER_STALL_MS / 1000) * 2);
+        gatherStallItem = "";
+        gatherStallCount = -1;
+        gatherStallSince = 0;
+        gatherStallReissues = 0;
+        failTaskWithReason(task, "no-progress");
+    }
+
     private void armBreakWatch(String blockId) {
         if (blockId == null) return;
         if (breakWatchPos != null && blockId.equals(breakWatchBlock)) return;
