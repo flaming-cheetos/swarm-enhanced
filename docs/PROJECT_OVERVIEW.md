@@ -3,8 +3,8 @@
 - **Snapshot:** 2026-11-14 (originally 2026-11-13)
 - **Repository:** `C:\Projects\swarm\swarm-improved`
 - **Branch:** `main`
-- **Code snapshot:** `c54ce66` (task-removal probe; later docs commits are bookkeeping)
-- **`origin/main` at code snapshot:** `c54ce66`
+- **Code snapshot:** `9ec3f9f` (host HTTP task-removal proof; later docs commits are bookkeeping)
+- **`origin/main` at code snapshot:** `9ec3f9f`, contained in `origin/main` after the docs push
 - **Version:** `0.1.0`
 - **Working tree:** the runtime source changes in this snapshot are committed. The reference-corpus reorganization and concurrent operator-script edits may remain uncommitted; none are part of runtime behavior.
 
@@ -590,7 +590,7 @@ Use these labels consistently:
 
 ### 12.2 What is on `main` now
 
-This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel probe landed as `45467cf`, the lease-grace probe as `272f977`, and the task-removal probe as `c54ce66`. Current `main` includes:
+This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel probe landed as `45467cf`, the lease-grace probe as `272f977`, the task-removal probe as `c54ce66`, and the host HTTP removal proof as `9ec3f9f`. Current `main` includes:
 
 - lease fields, fencing, lease renewal, expiry, and stale-report rejection;
 - host-restart recovery of `ACTIVE` tasks;
