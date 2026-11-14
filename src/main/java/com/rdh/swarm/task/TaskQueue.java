@@ -545,6 +545,11 @@ public class TaskQueue {
         return true;
     }
 
+    /** True when this queue still owns the row. Used to spot a worker grinding a ghost. */
+    public synchronized boolean contains(UUID id) {
+        return findById(id) != null;
+    }
+
     private BotTask findById(UUID id) {
         for (BotTask task : queue) {
             if (task != null && id.equals(task.getId())) return task;

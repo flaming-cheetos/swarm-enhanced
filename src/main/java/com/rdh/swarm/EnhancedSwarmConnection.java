@@ -49,6 +49,30 @@ public class EnhancedSwarmConnection extends Thread {
         return parseTaskId(value) != null;
     }
 
+    private final java.util.Map<String, Long> lastRejectLogAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<String> ghostsCancelled = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * A rejected report can be a lost race. A report for a task the host no longer
+     * has cannot ever be accepted: the worker is grinding a ghost and will keep
+     * reporting into the void every few seconds (live: 15 rejections of a task
+     * that had already been removed). Say it once, then tell the bot to stop it.
+     */
+    private void onRejectedReport(String kind, String worker, String taskIdText, UUID taskId, String leaseToken) {
+        long now = System.currentTimeMillis();
+        Long last = lastRejectLogAt.get(taskIdText);
+        if (last == null || now - last > 10_000L) {
+            lastRejectLogAt.put(taskIdText, now);
+            logRejectedReport(kind, taskIdText, leaseToken);
+        }
+        if (host == null || taskId == null || worker == null || worker.isEmpty()) return;
+        TaskQueue queue = host.getTaskQueue();
+        if (queue != null && queue.contains(taskId)) return;
+        if (!ghostsCancelled.add(taskIdText)) return;
+        ChatUtils.warningPrefix("Swarm", "TASK: %s is not on the host queue — sending cancel to %s", taskIdText, worker);
+        try { host.sendTo(worker, "task cancel " + taskIdText); } catch (Exception ignored) {}
+    }
+
     private void logRejectedReport(String kind, String taskId, String token) {
         String shortToken = token == null || token.isEmpty()
             ? "legacy" : token.substring(0, Math.min(8, token.length()));
@@ -295,7 +319,7 @@ public class EnhancedSwarmConnection extends Thread {
                                             && EnhancedSwarmHost.recordWorkerProgress(tq, tid, wName, leaseToken,
                                                 collected, System.currentTimeMillis(), EnhancedSwarmHost.LEASE_TTL_MS);
                                         if (!accepted) {
-                                            logRejectedReport("progress", taskId, leaseToken);
+                                            onRejectedReport("progress", wName, taskId, tid, leaseToken);
                                         } else {
                                             BotStatus bs = host.getBotStatus(wName);
                                             if (bs != null) {
@@ -330,7 +354,7 @@ public class EnhancedSwarmConnection extends Thread {
                                         && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
                                             leaseToken, BotTask.Status.COMPLETE, "completed");
                                     if (!accepted) {
-                                        logRejectedReport("completion", tid, leaseToken);
+                                        onRejectedReport("completion", w, tid, taskId, leaseToken);
                                     } else {
                                         ChatUtils.infoPrefix("Swarm", "✓ %s completed: %s x%s in %s", w, item, qty, elapsed);
                                         try { if (host.getWebServer() != null) host.getWebServer().logInfo("✓ " + w + " completed: " + item + " x" + qty); } catch (Exception ignored) {}
@@ -355,7 +379,7 @@ public class EnhancedSwarmConnection extends Thread {
                                         && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
                                             leaseToken, BotTask.Status.FAILED, reason);
                                     if (!accepted) {
-                                        logRejectedReport("failure", tid, leaseToken);
+                                        onRejectedReport("failure", w, tid, taskId, leaseToken);
                                     } else {
                                         ChatUtils.warningPrefix("Swarm", "✗ %s task failed: %s", w, reason);
                                         try { if (host.getWebServer() != null) host.getWebServer().logWarn("✗ " + w + " task failed: " + reason); } catch (Exception ignored) {}
@@ -380,7 +404,7 @@ public class EnhancedSwarmConnection extends Thread {
                                         && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
                                             leaseToken, BotTask.Status.CANCELLED, reason);
                                     if (!accepted) {
-                                        logRejectedReport("cancellation", tid, leaseToken);
+                                        onRejectedReport("cancellation", w, tid, taskId, leaseToken);
                                     } else {
                                         ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
                                         try { if (host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
