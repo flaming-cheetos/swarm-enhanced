@@ -183,6 +183,12 @@ probe above is the primary channel.
 | `equip` | `bot, item` | new |
 | `toggle_module` | `bot, module` (e.g. `bot-brain`) | ex `/api/command` (`.toggle`) |
 
+`task_remove` removes the host queue row; it does not notify the worker. After
+a lease sweep, a late owner may re-attach only with its old token, only while
+the row is PENDING with `lease-expired`, and only inside the 60-second grace
+window. A reclaim by another worker replaces the token and fences the old one.
+`LeaseGraceTest` covers inside/boundary/after and reclaim fencing.
+
 ### 5.4 Fixtures and time
 
 | Tool | Args | Notes |

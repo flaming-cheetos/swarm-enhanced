@@ -1,6 +1,6 @@
 # H5 Lease/Restart Plan
 
-Status: **Steps 1–4 implemented; Step 4 live gate PASSED on `0.1.0+8e2eed6`; panel/log lease visibility, protocol matrix, and progress accounting covered by tests; live H5 not rerun after the gap closure**
+Status: **Steps 1–4 implemented; Step 4 live gate PASSED on `0.1.0+8e2eed6`; panel/log lease visibility, protocol matrix, progress accounting, and 60-second lease-grace re-attach covered by tests; live H5 not rerun after the gap closure**
 Date: 2026-11-12
 Builds under test: H1 `0.1.0+e62b2f9`; H5 Step 4 `0.1.0+8e2eed6`
 Harness status: H1 three consecutive live runs PASS under
@@ -477,6 +477,15 @@ Host restart recovery: requeued <n> active task(s)
 `TASK: rejected stale ...` remains on the socket rejection paths in
 `EnhancedSwarmConnection`.
 
+**Lease grace (2026-11-14).** `recordProgressIfLeaseMatches()` and
+`finishIfLeaseMatches()` re-attach a lapsed-but-still-working owner only
+through its old token, only while the row is `PENDING` with reason
+`lease-expired`, and only inside `LEASE_GRACE_MS` (60 seconds). The
+`LeaseGraceTest` probe covers: progress re-attaches at 59 seconds, is accepted
+at exactly 60 seconds, is rejected after 60 seconds, and a task re-claimed by
+another worker still fences the lapsed token. Re-attach emits
+`TASK: lease re-attached <id> by <bot> after <ms>ms lapsed`.
+
 **Protocol matrix.** `ProtocolMatrixTest` documents and exercises:
 
 | host / worker | progress | completion | failure / cancellation |
@@ -542,6 +551,8 @@ then passes. New evidence is under `test-runs/h5-gap-closure/`; earlier
   host-worker matrix, missing/stale tokens, reconnect and host recovery.
 - `src/h5Test/java/com/rdh/swarm/ProgressAccountingTest.java` — clamped
   progress and completed-row `2/2` accounting.
+- `src/h5Test/java/com/rdh/swarm/LeaseGraceTest.java` — late-owner re-attach
+  inside/boundary/after the 60-second grace window and re-claim fencing.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmConnection.java` — token-aware
   protocol parsing, progress/terminal fencing, reconnect handshake.
 - `src/main/java/com/rdh/swarm/EnhancedSwarmWorker.java` and
@@ -553,6 +564,7 @@ then passes. New evidence is under `test-runs/h5-gap-closure/`; earlier
 
 Steps 1–4 are implemented and tested. Step 4 passed live on `0.1.0+8e2eed6`;
 the e62b2f9 baseline failed as expected. Panel/log lease visibility, the
-completed-row progress counter, and the full old/new protocol matrix are now
-covered by automated tests. The only remaining limitation is build identity:
-the live gate ran on `0.1.0+8e2eed6`, not e62b2f9.
+completed-row progress counter, lease-grace re-attach, and the full old/new
+protocol matrix are now covered by automated tests. The only remaining
+limitation is build identity: the live gate ran on `0.1.0+8e2eed6`, not
+`e62b2f9`.

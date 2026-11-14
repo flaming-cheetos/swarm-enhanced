@@ -45,7 +45,7 @@ against you · `ABSENT` not written
 | M6 | Blueprints: `.litematic` / `.schem` | bot | `ABSENT` |
 | M7 | Bodyguard | bot | `ABSENT` |
 | M8 | Anchor / respawn bots — the hardest, and the most client-bound | bot | `ABSENT` |
-| M9 | Fleet: several bots, no two going for the same chest | bot | `PARTIAL` — task claims, leases, renew and requeue are `DONE` live 2026-11-13; chest/furnace deconfliction `ABSENT` (gate A2 depends on it) |
+| M9 | Fleet: several bots, no two going for the same chest | bot | `PARTIAL` — task claims, leases, renew and requeue are `DONE` live 2026-11-13 and h5-tested; 60-second lease-grace re-attach is h5-tested (`LeaseGraceTest`) but not separately observed live; chest/furnace deconfliction `ABSENT` (gate A2 depends on it) |
 | M10 | In-game chatbot — independent, buildable any time | bot | `ABSENT` |
 | M11 | Hostile-server hardening: pacing, packet rates, reconnects | bot | `ABSENT` |
 | M12 | Threat and evasion — priority sits **above** M4 | bot | `PARTIAL` — SafeFire proven at the collision layer 2026-11-14; Shield and Flee are `CODE ONLY` (see `30_TEST_RUN_2026-11-14.md`); arrow dodge and anti-knockback still undecided |

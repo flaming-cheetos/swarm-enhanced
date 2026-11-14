@@ -119,7 +119,10 @@ withdrawn, `ingot total after=64 (before=0, delta=64)`, `holding complete`,
 `✓` last, with chest totals 373 -> 501 (+64 per run).
 
 **What it breaks it.** A lease, owner token and attempt counter fence every claim
-(`TASK: claimed <id> attempt=N`, `lease renewed`, `lease expired … requeued`), and
+(`TASK: claimed <id> attempt=N`, `lease renewed`, `lease expired … requeued`).
+A worker whose lease lapsed while it was still working may re-attach with its
+old token inside `LEASE_GRACE_MS` (60 seconds); `LeaseGraceTest` proves
+inside/boundary/after and that a re-claimed task fences the old token.
 `module-guard` still skips BotBrain, so a task can only run while the module is
 active — a disabled BotBrain answers every claim with `BotBrain module is not
 active` and the task churns through attempts. `load()`
@@ -137,7 +140,8 @@ all observed on 2026-11-13
 (`test-runs/live-smelt-day2/full-stack-deposit-and-completion.log`). Sources:
 `src/main/java/com/rdh/swarm/task/TaskQueue.java`
 (`add`, `addTask`, `save`, `load`, `clearCompleted`, `getNextPendingForBot`,
-`requeueActiveForBot`, `hasActiveTask`), `src/main/java/com/rdh/swarm/task/BotTask.java`
+`requeueActiveForBot`, `hasActiveTask`), `src/h5Test/java/com/rdh/swarm/LeaseGraceTest.java`,
+`src/main/java/com/rdh/swarm/task/BotTask.java`
 (`Type`, `Status`), `src/main/java/com/rdh/swarm/EnhancedSwarmHost.java`
 (`dispatchNextTask`, `cleanDead`), `src/main/java/com/rdh/swarm/modules/BotBrain.java`
 (`handleIdle`, `cancel`, `pause`, `resume`).
@@ -789,8 +793,6 @@ Short list, not a roadmap:
   `/api/items`; `/api/action/scan_chests` sends `swarm:all scan` when called
   directly, but the `/v2` button is disabled and sends no request.
   `/api/action/check_fuel` is a 501.
-- **Task leasing.** `LEASE_REQUEST`, a lease table and atomic task claiming are
-  not present. `TaskQueue` has `requeueActiveForBot` and `hasActiveTask` only.
 - **Death persistence.** `DeathTracker.load()` is a no-op; there is no
   `deaths.json` writer.
 - **Waypoint push.** `/eswarm waypoint push` exists in the tree but only logs
