@@ -1398,26 +1398,6 @@ public class BotBrain extends Module {
         return -1L;
     }
 
-    private void completeFromStock(BotTask task, String itemId, long stored) {
-        task.addCollected(task.getTargetQuantity() - task.getCollectedQuantity());
-        task.setStatus(BotTask.Status.COMPLETE);
-        task.setStatusReason("already-in-stock");
-        ChatUtils.infoPrefix("BotBrain",
-            "TASK: complete %s evidence=already-in-stock (%d %s in base storage; nothing gathered or moved)",
-            task.getId(), stored, itemId);
-        try { sendTaskProgress(task); } catch (Exception ignored) {}
-        try { sendTaskComplete(task); } catch (Exception ignored) {}
-        stopGatheringCommand();
-        if (currentTask == task) currentTask = null;
-        executionPlan = null;
-        planStep = 0;
-        completionTaskId = null;
-        completionAttempts = 0;
-        // Leaving the state on GATHERING with no currentTask crashed the next tick in
-        // handleGathering (NPE on getTargetItem). Completing a task means idle.
-        setState(BrainState.IDLE);
-    }
-
     private void failTaskWithReason(BotTask task, String reason) {
         if (task == null) return;
         task.setStatus(BotTask.Status.FAILED);
