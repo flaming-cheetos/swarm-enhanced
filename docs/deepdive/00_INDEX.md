@@ -66,4 +66,4 @@ No commented-out `Modules.get().add` lines exist — all 44 are live.
 ## Document map
 01 core module/settings · 02 host · 03 connection · 04 worker · 05 task engine · 06 tiers/kits ·
 07 module catalog · 08 survival loop · 09 economy · 10 utils/mixin · 11 commands · 12 web ·
-13 protocol · 14 health · 15 data files · 16 roadmap.
+13 protocol · 14 health · 15 data files · 16 roadmap · 29 reference corpus (capability map + retrieval index).

@@ -157,6 +157,7 @@ Gate B. They are not rejected and not deleted.
 | V4 | M10 in-game chatbot | touches nothing else — can be pulled forward any time it is wanted |
 | V5 | M11 hostile-server hardening (pacing, packet rates, reconnects) | only matters once it runs on a real server for real hours |
 | V6 | W panel v2 React rewrite | current panel covers the need; revisit after fleet view (Phase 2) |
+| V7 | villager-roller enchant pipeline (`enchant:<id>:<level>` task) | **kept on purpose** — it is how any enchantment on any kit becomes farmable instead of luck. Needs a stationary villager station + emerald supply first; see `docs/deepdive/29_REFERENCE_CORPUS.md` C13 |
 
 ## Revision history
 
