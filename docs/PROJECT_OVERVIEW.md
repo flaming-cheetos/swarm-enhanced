@@ -3,10 +3,10 @@
 - **Snapshot:** 2026-11-14 (originally 2026-11-13)
 - **Repository:** `C:\Projects\swarm\swarm-improved`
 - **Branch:** `main`
-- **Code snapshot:** `272f977` (lease-grace probe; later docs commits are bookkeeping)
-- **`origin/main` at code snapshot:** `272f977`
+- **Code snapshot:** `c54ce66` (task-removal probe; later docs commits are bookkeeping)
+- **`origin/main` at code snapshot:** `c54ce66`
 - **Version:** `0.1.0`
-- **Working tree:** source is clean. The only uncommitted change is an unrelated reference-corpus reorganization (deleted tracked reference directories and untracked replacements), which is not part of runtime behavior.
+- **Working tree:** no runtime source changes. The reference-corpus reorganization and any concurrent operator-script edits may remain uncommitted; none are part of runtime behavior.
 
 This document is a project-level companion to [`PANEL_V2_SPEC.md`](PANEL_V2_SPEC.md). The panel spec explains the web panel in depth. This document explains the whole system: what it is, how host and workers fit together, what the task engine actually does, what is proven, and where the documentation and code disagree.
 
@@ -412,7 +412,7 @@ The guard deliberately uses Meteor's native modules rather than the addon's prox
 Status words used here:
 
 - **Source-present** — code exists in this working tree; not necessarily run.
-- **Test-covered** — covered by the eight `h5Test` probes or the harness stubs.
+- **Test-covered** — covered by the nine `h5Test` probes or the harness stubs.
 - **Recorded live** — a human-run artifact is cited in the docs; not re-run for this export.
 - **Simulated** — harness contract behavior only; no real client proof.
 - **Unverified** — no evidence located.
@@ -420,8 +420,8 @@ Status words used here:
 | Area | What exists | Status / caveat |
 |---|---|---|
 | Host/worker transport | TCP handshake, status, reconnects, commands | Source-present; H0/H0b recorded live per harness spec |
-| Task queue | Persisted tasks, statuses, assignment, recoveries | Source-present; `TaskQueueRecoveryTest` |
-| Leases/fencing | 30s TTL, 5s sweep, token-checked progress/completion, 60s grace re-attach | Source-present; eight h5 probes, including `LeaseGraceTest`; H5 recorded live on an earlier build, not rerun after the latest gap closure |
+| Task queue | Persisted tasks, statuses, assignment, recoveries, removal | Source-present; `TaskQueueRecoveryTest`, `TaskRemovalTest` |
+| Leases/fencing | 30s TTL, 5s sweep, token-checked progress/completion, 60s grace re-attach | Source-present; nine h5 probes overall, including `LeaseGraceTest`; H5 recorded live on an earlier build, not rerun after the latest gap closure |
 | Gather | Baritone-driven collection, dependency steps, evidence | H1 recorded live on `e62b2f9`, including three consecutive runs |
 | Craft | Recipe/dependency planning, crafting-table path | Source-present; no complete live artifact recorded here |
 | Smelt | Deposit/wait/collect phases, fuel handling | Source-present; H12 tracks a known fuel limitation; do not call it fully solved |
@@ -453,7 +453,7 @@ From the repository's own documents, not from a fresh run for this export. These
 - The panel has been browser-tested only against fake players. No real worker has driven the panel in game.
 - No full one-hour acceptance run is recorded as passed.
 
-The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all eight `h5Test` probes passed, including `FuelReaderTest` and `LeaseGraceTest`; no live Minecraft run was performed.
+The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all nine `h5Test` probes passed, including `FuelReaderTest`, `LeaseGraceTest`, and `TaskRemovalTest`; no live Minecraft run was performed.
 
 ---
 
@@ -554,10 +554,11 @@ For LAN access, change `bind-address` deliberately; otherwise both TCP and panel
 
 ### Test commands
 
-The repository contains eight plain-Java probes under `src/h5Test`:
+The repository contains nine plain-Java probes under `src/h5Test`:
 
 ```text
 TaskQueueRecoveryTest
+TaskRemovalTest
 LeaseLifecycleTest
 FencingReconnectTest
 LeaseGraceTest
@@ -588,7 +589,7 @@ Use these labels consistently:
 
 ### 12.2 What is on `main` now
 
-This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel probe landed as `45467cf` and the lease-grace probe as `272f977`. Current `main` includes:
+This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel probe landed as `45467cf`, the lease-grace probe as `272f977`, and the task-removal probe as `c54ce66`. Current `main` includes:
 
 - lease fields, fencing, lease renewal, expiry, and stale-report rejection;
 - host-restart recovery of `ACTIVE` tasks;
@@ -597,6 +598,7 @@ This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Th
 - harness client-control endpoints (`command`, `chat`, `goto`, `stop-path`, `respawn`, and the shape probe);
 - fuel `fuels[]` / `fuelTicks` in the bot debug snapshot (`45467cf`), with `FuelReaderTest` coverage for known, empty, and unresolved fuel;
 - 60-second lease-grace re-attach and re-claim fencing in `TaskQueue` (`272f977`), with `LeaseGraceTest` coverage;
+- PENDING/ACTIVE row removal and empty-board persistence in `TaskQueue` (`c54ce66`), with `TaskRemovalTest` coverage;
 - `docs/PANEL_V2_SPEC.md`, which is now tracked.
 
 The only dirty-tree change is the unrelated reference-corpus reorganization. Do not use that churn to infer runtime behavior.
@@ -663,7 +665,7 @@ Start here when reading the code:
 | `src/main/java/com/rdh/swarm/web/SwarmWebServer.java` | Embedded HTTP/WS server, API routes |
 | `src/main/java/com/rdh/swarm/web/SwarmWebHandler.java` | Panel request/state handling |
 | `src/main/java/com/rdh/swarm/harness/HarnessBridge.java` | Test-only loopback HTTP bridge |
-| `src/h5Test/java/com/rdh/swarm/` | Eight lease/recovery/protocol/grace/fuel probes |
+| `src/h5Test/java/com/rdh/swarm/` | Nine lease/recovery/protocol/grace/fuel/removal probes |
 | `tools/harness/` | Node runner and live/simulated scenarios |
 | `docs/PANEL_V2_SPEC.md` | Deep panel/API/UI handoff |
 | `docs/FEATURES.md` | Feature prose; stale in places |
@@ -738,7 +740,7 @@ Do not implement these merely because they are listed; confirm scope with the ma
 | Storage index | Host-side per-server record of chest contents/category totals. |
 | ModuleGuard | Snapshot/configure/restore wrapper around native Meteor survival modules. |
 | H0–H12 | The harness scenario catalogue; not all scenarios are live or implemented. |
-| `h5Test` | Plain-Java probes for queue recovery, leases, grace re-attach, fencing, panel JSON, protocol matrix, progress accounting, and fuel accounting. |
+| `h5Test` | Plain-Java probes for queue recovery/removal, leases, grace re-attach, fencing, panel JSON, protocol matrix, progress accounting, and fuel accounting. |
 | Live | A real host/worker run with a recorded artifact. |
 | Simulated | A harness stub result; contract evidence only. |
 | Observed | A human watched it happen in game. Stronger than "the log says so," but still needs context. |

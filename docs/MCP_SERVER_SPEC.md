@@ -188,6 +188,9 @@ a lease sweep, a late owner may re-attach only with its old token, only while
 the row is PENDING with `lease-expired`, and only inside the 60-second grace
 window. A reclaim by another worker replaces the token and fences the old one.
 `LeaseGraceTest` covers inside/boundary/after and reclaim fencing.
+`TaskRemovalTest` covers the queue core behind `task_remove`: PENDING removal,
+sibling preservation, persistence, ACTIVE cleanup, and an empty board. The live
+HTTP request itself is still unobserved.
 
 ### 5.4 Fixtures and time
 

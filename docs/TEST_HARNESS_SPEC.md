@@ -564,7 +564,8 @@ A new connection requeues the old assignment, sends `task reset`, and the next
 dispatch claims a fresh token; a re-leased task completes once.
 `TaskQueueRecoveryTest`, `LeaseLifecycleTest`, `FencingReconnectTest`,
 `PanelLeaseJsonTest`, `ProtocolMatrixTest`, `ProgressAccountingTest`,
-`FuelReaderTest`, and `LeaseGraceTest` are part of the Gradle `check` task. The simulated H5 still only asserts the stub
+`FuelReaderTest`, `LeaseGraceTest`, and `TaskRemovalTest` are part of the
+Gradle `check` task. The simulated H5 still only asserts the stub
 contract. Live H5 (Step 4) passed on `0.1.0+8e2eed6`: the host restart
 converted the ACTIVE row to PENDING attempt 2 with `statusReason:
 host-restart`, then the reconnected worker completed attempt 3 exactly once.

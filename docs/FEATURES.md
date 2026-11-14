@@ -746,7 +746,7 @@ evidence=verified-empty`.
 | Feature | Status | Where it lives |
 |---|---|---|
 | Mining and gathering | `DONE` (live 2026-11-13) | `BotBrain.handleGathering`; `EnhancedSwarmHost.dispatchNextTask`; `TaskQueue` |
-| Task queue | `DONE` (live 2026-11-13 — claims, leases, requeues, outcome gate) | `TaskQueue`; `EnhancedSwarmHost.dispatchNextTask`; `BotBrain` halt state |
+| Task queue | `DONE` (live 2026-11-13 — claims, leases, requeues, outcome gate); PENDING removal test-covered | `TaskQueue`; `EnhancedSwarmHost.dispatchNextTask`; `BotBrain` halt state |
 | Deposits and chests | `DONE` (live 2026-11-13 — chest totals +78 verified by scan) | `DepositDriver`; `DepositConfig`; `StorageIndex`; `EnhancedSwarmWorker.handleScan`/`handleWithdraw` |
 | Fuel | `PARTIAL` — reader fields test-covered 2026-11-14; fuel insertion and live cooking still not observed | `SmeltingManager`; `BotBrain.handleSmeltingDeposit`/`handleSmeltingWait` |
 | Item pickup | `CODE ONLY` | `DropCollector`; `BotBrain.finishTaskWithEvidence` |
@@ -863,8 +863,10 @@ is re-published for the same chest is counted twice. Until the index is a measur
 (live rescan) rather than a running total, `already-in-stock` completions cannot be
 trusted, and any gate that counts them is measuring the index against itself.
 
-**Also found:** `/api/task/cancel` and `/api/task/remove` are no-ops for PENDING rows, so
-a queue cannot be emptied once queued; only terminal rows can be cleared.
+**Also found (fixed for removal):** `/api/task/remove` used to be a no-op for PENDING rows, so
+a queue could not be emptied once queued. `TaskQueue.removeById` now rebuilds the queue, and
+`TaskRemovalTest` proves PENDING removal, sibling preservation, persistence, ACTIVE cleanup, and
+an empty board. The live HTTP request is still unobserved.
 
 ## Deposit chests: why a fifth chest vanished (2026-11-14)
 

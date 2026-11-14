@@ -225,8 +225,9 @@ trusting a cache older than the move reported 51/50 and failed it anyway.
 
 What must be true before the 30 minutes start:
 
-1. **Board empty.** `/api/task/remove` must clear a PENDING row — the endpoint exists, that path is
-   unproven.
+1. **Board empty.** `/api/task/remove` must clear a PENDING row — **queue path DONE/test-covered
+   2026-11-14** (`TaskRemovalTest`: removes a PENDING row, keeps siblings, persists across reload,
+   clears an ACTIVE owner, and empties the board); the live HTTP request itself is still unobserved.
 2. **A reading under 30 s old.** Scan the chests first; `ensure` refuses anything older.
 3. **Food on hand and `SwarmAutoEat` on.** Eating has never been watched live.
 4. **The shift.** One bot, 30 minutes, then open every deposit chest and diff it against the task's
