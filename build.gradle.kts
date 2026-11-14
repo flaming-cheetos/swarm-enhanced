@@ -212,6 +212,16 @@ val h5GraceTest = tasks.register<JavaExec>("h5GraceTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5RemoveTest = tasks.register<JavaExec>("h5RemoveTest") {
+    group = "verification"
+    description = "Verify PENDING task removal, sibling preservation, persistence, and active-row cleanup"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.TaskRemovalTest")
+    workingDir = layout.buildDirectory.dir("h5-remove-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest, h5GraceTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest, h5GraceTest, h5RemoveTest)
 }
