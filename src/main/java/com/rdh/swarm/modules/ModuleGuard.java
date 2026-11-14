@@ -103,8 +103,18 @@ public final class ModuleGuard {
         ), true)
     );
 
+    /**
+     * Operator intent, keyed by module class. Non-empty for a module means the guard
+     * must keep it in that state: on = never disable it, off = never re-enable it.
+     * Static because a BotBrain restart must not forget what the operator wanted, and
+     * because a test or script can force a state without racing the guard.
+     */
+    private static final Map<Class<? extends Module>, Boolean> INTENT = new LinkedHashMap<>();
+
     private final Map<Class<? extends Module>, Module> guarded = new LinkedHashMap<>();
     private final Map<Class<? extends Module>, Boolean> originalState = new LinkedHashMap<>();
+    /** What this guard last forced, so a change we did not make is recognisably manual. */
+    private final Map<Class<? extends Module>, Boolean> enforced = new LinkedHashMap<>();
     private boolean active;
     private boolean killAuraSuppressed;
     private Boolean rawFoodFallback;
@@ -135,14 +145,18 @@ public final class ModuleGuard {
                 ChatUtils.warningPrefix("ModuleGuard", "Could not set hostile-only targets on %s", module.name);
             }
 
-            if (!module.isActive()) {
+            Boolean intended = INTENT.get(spec.type());
+            boolean target = intended != null ? intended : true;
+            if (module.isActive() != target) {
                 try {
-                    module.enable();
-                    enabled++;
+                    if (target) { module.enable(); enabled++; }
+                    else module.disable();
                 } catch (Exception e) {
-                    ChatUtils.warningPrefix("ModuleGuard", "Could not enable %s: %s", module.name, e.getMessage());
+                    ChatUtils.warningPrefix("ModuleGuard", "Could not %s %s: %s",
+                        target ? "enable" : "disable", module.name, e.getMessage());
                 }
             }
+            enforced.put(spec.type(), module.isActive());
         }
         ChatUtils.infoPrefix("ModuleGuard", "Activated %d modules (%d newly enabled, %d settings)", guarded.size(), enabled, settingsApplied);
     }
@@ -151,11 +165,43 @@ public final class ModuleGuard {
         if (!active || tickCounter % 20 != 0) return;
         if (mc.player == null || mc.level == null) return;
 
-        for (Module module : guarded.values()) {
+        for (Map.Entry<Class<? extends Module>, Module> entry : guarded.entrySet()) {
+            Module module = entry.getValue();
             if (killAuraSuppressed && module instanceof KillAura) continue;
+
+            Boolean intended = INTENT.get(entry.getKey());
+            if (intended != null) {
+                // Explicit intent wins over the guard's own preference.
+                if (module.isActive() != intended) {
+                    try {
+                        if (intended) module.enable();
+                        else module.disable();
+                        ChatUtils.infoPrefix("ModuleGuard", "Applied intent: %s %s",
+                            module.name, intended ? "on" : "off");
+                    } catch (Exception e) {
+                        ChatUtils.warningPrefix("ModuleGuard", "Could not apply intent to %s: %s", module.name, e.getMessage());
+                    }
+                }
+                enforced.put(entry.getKey(), intended);
+                continue;
+            }
+
+            Boolean forced = enforced.get(entry.getKey());
+            if (forced != null && module.isActive() != forced) {
+                // The guard did not make this change, so a person or a script did.
+                // Record it as intent instead of fighting it every 20 ticks.
+                boolean now = module.isActive();
+                INTENT.put(entry.getKey(), now);
+                enforced.put(entry.getKey(), now);
+                ChatUtils.infoPrefix("ModuleGuard", "Manual toggle kept: %s %s",
+                    module.name, now ? "on" : "off");
+                continue;
+            }
+
             if (!module.isActive()) {
                 try {
                     module.enable();
+                    enforced.put(entry.getKey(), true);
                     ChatUtils.infoPrefix("ModuleGuard", "Re-enabled %s", module.name);
                 } catch (Exception e) {
                     ChatUtils.warningPrefix("ModuleGuard", "Could not re-enable %s: %s", module.name, e.getMessage());
@@ -167,14 +213,21 @@ public final class ModuleGuard {
     public void deactivate() {
         if (!active) return;
         int restored = 0;
+        int honored = 0;
         for (Map.Entry<Class<? extends Module>, Module> entry : guarded.entrySet()) {
             Module module = entry.getValue();
-            boolean wasActive = originalState.getOrDefault(entry.getKey(), false);
+            Boolean intended = INTENT.get(entry.getKey());
+            // Intent outranks the snapshot taken at activate(): a module the operator
+            // turned on or off while the guard ran must stay that way.
+            boolean target = intended != null
+                ? intended
+                : originalState.getOrDefault(entry.getKey(), module.isActive());
+            if (intended != null) honored++;
             try {
-                if (wasActive && !module.isActive()) {
+                if (target && !module.isActive()) {
                     module.enable();
                     restored++;
-                } else if (!wasActive && module.isActive()) {
+                } else if (!target && module.isActive()) {
                     module.disable();
                     restored++;
                 }
@@ -184,15 +237,52 @@ public final class ModuleGuard {
         }
         guarded.clear();
         originalState.clear();
+        enforced.clear();
         active = false;
-        ChatUtils.infoPrefix("ModuleGuard", "Restored guarded module state (%d changes)", restored);
+        ChatUtils.infoPrefix("ModuleGuard", "Restored guarded module state (%d changes, %d kept by intent)",
+            restored, honored);
+    }
+
+    /**
+     * Force a module on or off. Unlike a bare .toggle this survives guard ticks and
+     * guard teardown, because the state is stored as intent rather than as a momentary
+     * toggle the next guard pass can undo.
+     */
+    public static boolean setIntent(String moduleName, boolean enabled) {
+        Module module = Modules.get().get(moduleName);
+        if (module == null) return false;
+        @SuppressWarnings("unchecked")
+        Class<? extends Module> type = (Class<? extends Module>) module.getClass();
+        INTENT.put(type, enabled);
+        if (module.isActive() != enabled) {
+            if (enabled) module.enable();
+            else module.disable();
+        }
+        ChatUtils.infoPrefix("ModuleGuard", "Intent set: %s %s", module.name, enabled ? "on" : "off");
+        return true;
+    }
+
+    public static Boolean getIntent(String moduleName) {
+        Module module = Modules.get().get(moduleName);
+        return module == null ? null : INTENT.get(module.getClass());
+    }
+
+    public static boolean clearIntent(String moduleName) {
+        Module module = Modules.get().get(moduleName);
+        return module != null && INTENT.remove(module.getClass()) != null;
     }
 
     public void setKillAuraSuppressed(boolean suppressed) {
         killAuraSuppressed = suppressed;
+        Module killAura = guarded.get(KillAura.class);
+        if (killAura == null) return;
         if (suppressed) {
-            Module killAura = guarded.get(KillAura.class);
-            if (killAura != null && killAura.isActive()) killAura.disable();
+            if (killAura.isActive()) killAura.disable();
+            enforced.put(KillAura.class, false);
+            INTENT.remove(KillAura.class); // suppression is functional, not operator intent
+        } else {
+            if (!killAura.isActive()) killAura.enable();
+            enforced.put(KillAura.class, true);
         }
     }
 

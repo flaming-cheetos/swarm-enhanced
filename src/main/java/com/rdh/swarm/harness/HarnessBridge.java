@@ -147,6 +147,7 @@ public final class HarnessBridge {
                     case "/harness/state" -> sendJson(exchange, 200, client(() -> HarnessSnapshots.state(Minecraft.getInstance())));
                     case "/harness/screen" -> sendJson(exchange, 200, client(() -> HarnessSnapshots.screen(Minecraft.getInstance())));
                     case "/harness/menu" -> sendJson(exchange, 200, client(() -> HarnessSnapshots.menu(Minecraft.getInstance())));
+                    case "/harness/module" -> sendModuleState(exchange);
                     default -> sendError(exchange, 404, "not-found", "unknown harness endpoint");
                 }
                 return;
@@ -189,6 +190,11 @@ public final class HarnessBridge {
 
             if ("POST".equals(method) && "/harness/collisions".equals(path)) {
                 sendCollisions(exchange);
+                return;
+            }
+
+            if ("POST".equals(method) && "/harness/force".equals(path)) {
+                sendForceModule(exchange);
                 return;
             }
 
@@ -245,6 +251,37 @@ public final class HarnessBridge {
                     .moveTo(new net.minecraft.core.BlockPos(x, y, z));
                 out.addProperty("ok", true);
                 out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    /**
+     * Reads one module's live state plus its guard intent. A test can poll this to
+     * prove a forced state survives guard ticks and guard teardown.
+     */
+    private void sendModuleState(HttpExchange exchange) throws IOException {
+        String name = queryParam(exchange, "name");
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                meteordevelopment.meteorclient.systems.modules.Module module =
+                    meteordevelopment.meteorclient.systems.modules.Modules.get().get(name);
+                if (module == null) {
+                    out.addProperty("ok", false);
+                    out.addProperty("error", "unknown module: " + name);
+                    return out;
+                }
+                out.addProperty("ok", true);
+                out.addProperty("name", module.name);
+                out.addProperty("active", module.isActive());
+                Boolean intent = com.rdh.swarm.modules.ModuleGuard.getIntent(name);
+                if (intent == null) out.add("intent", com.google.gson.JsonNull.INSTANCE);
+                else out.addProperty("intent", intent);
             } catch (Throwable t) {
                 out.addProperty("ok", false);
                 out.addProperty("error", String.valueOf(t.getMessage()));
@@ -719,6 +756,40 @@ public final class HarnessBridge {
             throw new BridgeException(400, "invalid-slot", "slot must be an integer");
         }
         return slot;
+    }
+
+    /** Forces a module on/off as durable intent, so guard ticks cannot undo it. */
+    private void sendForceModule(HttpExchange exchange) throws IOException {
+        JsonObject body = readJsonBody(exchange);
+        String name = body.has("name") ? body.get("name").getAsString() : "";
+        boolean clear = body.has("clear") && body.get("clear").getAsBoolean();
+        boolean enabled = !body.has("enabled") || body.get("enabled").getAsBoolean();
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            boolean ok = clear
+                ? com.rdh.swarm.modules.ModuleGuard.clearIntent(name)
+                : com.rdh.swarm.modules.ModuleGuard.setIntent(name, enabled);
+            out.addProperty("cleared", clear);
+            out.addProperty("ok", ok);
+            out.addProperty("name", name);
+            out.addProperty("enabled", enabled);
+            if (!ok) out.addProperty("error", "unknown module: " + name);
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    private static String queryParam(HttpExchange exchange, String key) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isEmpty()) return "";
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq < 0) continue;
+            if (!key.equals(pair.substring(0, eq))) continue;
+            return java.net.URLDecoder.decode(pair.substring(eq + 1),
+                java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return "";
     }
 
     private void sendJson(HttpExchange exchange, int status, JsonObject body) throws IOException {
