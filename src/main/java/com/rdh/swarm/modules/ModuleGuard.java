@@ -37,6 +37,9 @@ public final class ModuleGuard {
     private record GuardSpec(Class<? extends Module> type, Map<String, String> settings, boolean hostileMobsOnly) {}
 
     private static final List<GuardSpec> SPECS = List.of(
+        new GuardSpec(SwarmSafeFire.class, Map.of(), false),
+        new GuardSpec(SwarmShield.class, Map.of(), false),
+        new GuardSpec(SwarmFlee.class, Map.of(), false),
         new GuardSpec(AutoEat.class, Map.of(
             "pause-baritone", "true",
             "pause-auras", "false",

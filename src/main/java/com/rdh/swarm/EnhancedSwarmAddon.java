@@ -66,6 +66,9 @@ public class EnhancedSwarmAddon extends MeteorAddon {
         Modules.get().add(new com.rdh.swarm.modules.SwarmAirCrystal());
         Modules.get().add(new com.rdh.swarm.modules.SwarmPearlChase());
         Modules.get().add(new com.rdh.swarm.modules.BotBrain());
+        Modules.get().add(new com.rdh.swarm.modules.SwarmSafeFire());
+        Modules.get().add(new com.rdh.swarm.modules.SwarmShield());
+        Modules.get().add(new com.rdh.swarm.modules.SwarmFlee());
         // Initialize HUD presets after modules registered
         try {
             SwarmHudPresets.init();
