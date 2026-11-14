@@ -29,7 +29,7 @@ is met. `armBreakWatch`/`tickBreakConfirmation` watch for the block becoming air
 and for nearby server-side drops. `DropCollector` sweeps the drops separately.
 
 **How you start it.** `/eswarm gather <item> <quantity>` (additive) or
-`/eswarm ensure [category] <item> <quantity>` (target level), the `/v2` Tasks tab,
+`/eswarm ensure <item> <quantity>` or `ensure in <category> <item> <quantity>` (target level), the `/v2` Tasks tab,
 or `POST /api/task/add` with `mode=gather|ensure` and an optional `scope`.
 `type=auto` chooses `CRAFT` when `RecipeBook.hasRecipe` knows the item, otherwise
 `GATHER`.
@@ -501,8 +501,10 @@ driven it in game yet. The old `/` was not opened in this pass. Sources:
   irrelevant to whether it is done, and it never withdraws from storage or closes on a
   chest count. `gather oak_log 64` with 400 oak_log in a chest still mines and deposits 64.
 - `ensure` is target-level. The host measures the base when the task is created and
-  queues only the shortfall: `ensure 200 cooked_beef` with 137 stored queues 63, and with
-  200 stored it queues nothing and records `already-in-stock` on the spot.
+  queues only the shortfall: `ensure cooked_beef 200` with 137 stored queues 63, and with
+  200 stored it queues nothing and records `already-in-stock` on the spot. It refuses a
+  reading older than 30 s rather than guess, and completes only against a reading taken
+  after its own deposit — or fails `ensure-undergather`.
 
 **Why.** Both old behaviours were the same bug from two sides. A top-level `GATHER` could
 close on stock, so `gather 3 birch` finished in 3 s with 16 logs in a chest and nothing

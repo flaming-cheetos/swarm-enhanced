@@ -466,7 +466,8 @@ Both `/eswarm` and `/swarm` are registered for compatibility. The command tree i
 - `exec <command>` — run a command locally or broadcast it when hosting.
 - `list` — list connected workers.
 - `send <target> <command>` — send a raw worker command; `all` broadcasts.
-- `gather <item> <qty>` / `ensure [in <category>] <item> <qty>` — queue work (additive or target-level).
+- `gather <item> <qty>` / `ensure <item> <qty>` / `ensure in <category> <item> <qty>` — queue work
+  (additive or target-level). The `in` is a literal branch, not an optional category.
 - `task list|remove|clear|cancel|pause|resume` — control the queue. Tasks carry no bot name.
 - `deposit set|remove|list|auto|threshold|self|push` — configure deposit chests and behavior.
 - `scan [category]` — request a storage scan from all workers.
