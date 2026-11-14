@@ -249,6 +249,32 @@ public class SwarmCommand extends Command {
         return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
     };
 
+    /** Waypoint categories the code actually uses, plus any an existing waypoint already has. */
+    private static final SuggestionProvider<ClientSuggestionProvider> WAYPOINT_CATEGORY_SUGGESTIONS = (ctx, builder) -> {
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        for (String c : new String[]{"cave", "wood", "nether_cave", "surface", "portal", "far"}) {
+            if (seen.add(c)) builder.suggest(c);
+        }
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            try {
+                mod.host.getWaypointManager().ensureLoaded();
+                for (var wp : mod.host.getWaypointManager().getAllWaypoints()) {
+                    if (wp.category != null && seen.add(wp.category)) builder.suggest(wp.category,
+                        net.minecraft.network.chat.Component.literal("already used by " + wp.name));
+                }
+            } catch (Exception ignored) {}
+        }
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    /** Auto-deposit threshold: the values worth typing, not all 37. */
+    private static final SuggestionProvider<ClientSuggestionProvider> THRESHOLD_SUGGESTIONS = (ctx, builder) -> {
+        for (int v : new int[]{0, 9, 18, 27, 36}) builder.suggest(Integer.toString(v),
+            net.minecraft.network.chat.Component.literal(v == 0 ? "deposit as soon as something is picked up" : v + " free slots"));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
     @Override
     public void build(LiteralArgumentBuilder<ClientSuggestionProvider> builder) {
         // ---- halt/resume ----
@@ -524,7 +550,7 @@ public class SwarmCommand extends Command {
         })));
 
         // deposit threshold <N>
-        deposit.then(literal("threshold").then(argument("value", IntegerArgumentType.integer(0, 36)).executes(context -> {
+        deposit.then(literal("threshold").then(argument("value", IntegerArgumentType.integer(0, 36)).suggests(THRESHOLD_SUGGESTIONS).executes(context -> {
             int val = IntegerArgumentType.getInteger(context, "value");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
@@ -671,7 +697,7 @@ public class SwarmCommand extends Command {
         // waypoint add <name> <category>
         waypoint.then(literal("add")
             .then(argument("name", StringArgumentType.word()).suggests(WAYPOINT_SUGGESTIONS)
-            .then(argument("category", StringArgumentType.word())
+            .then(argument("category", StringArgumentType.word()).suggests(WAYPOINT_CATEGORY_SUGGESTIONS)
             .executes(context -> {
                 String name = StringArgumentType.getString(context, "name");
                 String category = StringArgumentType.getString(context, "category");
