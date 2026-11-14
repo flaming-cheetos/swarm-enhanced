@@ -536,6 +536,9 @@ public class BotBrain extends Module {
     private int lastProgressCount = 0;
     private UUID completionTaskId = null;
     private int completionAttempts = 0;
+    /** When the drop collector first reported DEFERRED for the task being closed. */
+    private long finalSweepDeferredAt = 0L;
+    private static final long FINAL_SWEEP_DEFER_MAX_MS = 5_000L;
     private long craftingWaitStart = 0;
     private int craftFailCount = 0;
 
@@ -1274,9 +1277,24 @@ public class BotBrain extends Module {
         if (completionTaskId == null || !completionTaskId.equals(task.getId())) {
             completionTaskId = task.getId();
             completionAttempts = 0;
+            finalSweepDeferredAt = 0L;
         }
         var verdict = dropCollector.startFinalSweep(task.getId());
         if (verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.RUNNING) return false;
+        if (verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.DEFERRED) {
+            // The collector was busy (its own 1 s cooldown, still breaking, another sweep).
+            // That is not evidence against the task: wait a bounded moment for it to free
+            // up, then close on the count gate that already accepted have + landed >= need.
+            long nowMs = System.currentTimeMillis();
+            if (finalSweepDeferredAt == 0L) finalSweepDeferredAt = nowMs;
+            long waited = nowMs - finalSweepDeferredAt;
+            if (waited < FINAL_SWEEP_DEFER_MAX_MS) return false;
+            ChatUtils.warningPrefix("BotBrain",
+                "TASK: final sweep deferred %dms for %s — completing on count evidence",
+                waited, task.getId());
+        } else {
+            finalSweepDeferredAt = 0L;
+        }
         if (verdict == com.rdh.swarm.task.DropCollector.FinalSweepVerdict.UNPROVEN) {
             completionAttempts++;
             if (completionAttempts <= 1) {
