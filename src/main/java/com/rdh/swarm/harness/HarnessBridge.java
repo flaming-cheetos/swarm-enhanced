@@ -177,6 +177,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/respawn".equals(path)) {
+                sendRespawn(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -230,6 +235,32 @@ public final class HarnessBridge {
                     .moveTo(new net.minecraft.core.BlockPos(x, y, z));
                 out.addProperty("ok", true);
                 out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    /** Clicks Respawn without a screen: sends the respawn packet the button sends. */
+    private void sendRespawn(HttpExchange exchange) throws IOException {
+        if (!config.allowActions) {
+            throw new BridgeException(403, "actions-disabled", "actions are disabled; set allowActions=true in the harness config");
+        }
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                if (Minecraft.getInstance().getConnection() == null) {
+                    out.addProperty("ok", false);
+                    out.addProperty("error", "not connected");
+                    return out;
+                }
+                Minecraft.getInstance().getConnection().send(
+                    new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
+                        net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
+                out.addProperty("ok", true);
             } catch (Throwable t) {
                 out.addProperty("ok", false);
                 out.addProperty("error", String.valueOf(t.getMessage()));
