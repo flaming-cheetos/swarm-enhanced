@@ -43,7 +43,37 @@ final class HarnessSnapshots {
             root.add("player", JsonNull.INSTANCE);
             root.add("inventory", new JsonArray());
         }
+        modules(root);
         return root;
+    }
+
+    /**
+     * Live combat-module state, so a test can read what the client believes instead
+     * of inferring it from damage alone.
+     */
+    private static void modules(JsonObject root) {
+        root.addProperty("botBrain", active("bot-brain"));
+        root.addProperty("swarmShield", active("swarm-shield"));
+        root.addProperty("swarmSafeFire", active("swarm-safe-fire"));
+        root.addProperty("swarmFlee", active("swarm-flee"));
+        root.addProperty("killAura", active("kill-aura"));
+
+        com.rdh.swarm.modules.SwarmShield shield =
+            meteordevelopment.meteorclient.systems.modules.Modules.get()
+                .get(com.rdh.swarm.modules.SwarmShield.class);
+        root.addProperty("shieldBlocking", shield != null && shield.isBlocking());
+
+        com.rdh.swarm.modules.BotBrain brain =
+            meteordevelopment.meteorclient.systems.modules.Modules.get()
+                .get(com.rdh.swarm.modules.BotBrain.class);
+        String refusal = brain == null ? "" : brain.getLastHuntRefusal();
+        root.addProperty("huntRefusal", refusal == null ? "" : refusal);
+    }
+
+    private static boolean active(String moduleName) {
+        meteordevelopment.meteorclient.systems.modules.Module module =
+            meteordevelopment.meteorclient.systems.modules.Modules.get().get(moduleName);
+        return module != null && module.isActive();
     }
 
     static JsonObject screen(Minecraft mc) {

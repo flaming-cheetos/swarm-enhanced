@@ -156,13 +156,36 @@ public class BotBrain extends Module {
         .build()
     );
 
-    private final Setting<Integer> huntRange = sgGeneral.add(new IntSetting.Builder()
+        private final Setting<Integer> huntRange = sgGeneral.add(new IntSetting.Builder()
         .name("hunt-range")
         .description("Maximum animal search radius for food hunts.")
         .defaultValue(96)
         .range(16, 256)
-        .build()
-    );
+        .build());
+
+    private final Setting<Double> huntMinHealth = sgGeneral.add(new DoubleSetting.Builder()
+        .name("hunt-min-health")
+        .description("Refuse a food hunt below this health; a starved bot that dies has fed nobody.")
+        .defaultValue(14.0)
+        .range(1, 20)
+        .sliderMax(20)
+        .build());
+
+    private final Setting<Integer> huntMinFood = sgGeneral.add(new IntSetting.Builder()
+        .name("hunt-min-food")
+        .description("Refuse a food hunt below this hunger bar level.")
+        .defaultValue(6)
+        .range(0, 20)
+        .sliderMax(20)
+        .build());
+
+    private final Setting<Double> huntMinDamage = sgGeneral.add(new DoubleSetting.Builder()
+        .name("hunt-min-damage")
+        .description("Refuse a food hunt when effective attack damage is below this (a fist is 1.0).")
+        .defaultValue(3.0)
+        .range(1, 30)
+        .sliderMax(15)
+        .build());
 
     private final Setting<Boolean> eatRawFallback = sgGeneral.add(new BoolSetting.Builder()
         .name("eat-raw-fallback")
@@ -682,6 +705,8 @@ public class BotBrain extends Module {
     private long lastAutoHunt = 0;
     private long lastHuntProgress = 0;
     private static final long AUTO_HUNT_COOLDOWN = 120_000L;
+    /** A refused hunt retries sooner than a failed one: conditions can change in seconds. */
+    private static final long HUNT_REFUSAL_BACKOFF = 20_000L;
     private long lastCookAttempt = 0;
     private static final long COOK_COOLDOWN = 300_000L;
     private String lastCookLog = "";
@@ -689,6 +714,8 @@ public class BotBrain extends Module {
     private boolean noCookFuelWarned = false;
     private boolean autoHuntWasEnabled = true;
     private boolean autoHuntSkipLogged = false;
+    /** Last reason a hunt was refused, for logs and the harness. */
+    private String lastHuntRefusal = "";
     private boolean autoCookSkipLogged = false;
     private static final int COOK_FURNACE_RANGE = 45;
     private boolean directSmelt = false;
@@ -3786,6 +3813,16 @@ public class BotBrain extends Module {
     }
 
     private void beginHunt() {
+        String refusal = huntRefusalReason();
+        if (refusal != null) {
+            lastHuntRefusal = refusal;
+            ChatUtils.warningPrefix("BotBrain", "Hunt refused: %s", refusal);
+            failHunt("hunt refused: " + refusal);
+            // failHunt applies the long failure cooldown; a refusal is re-checkable.
+            lastAutoHunt = System.currentTimeMillis() - AUTO_HUNT_COOLDOWN + HUNT_REFUSAL_BACKOFF;
+            return;
+        }
+        lastHuntRefusal = "";
         huntStartTime = System.currentTimeMillis();
         lastHuntProgress = huntStartTime;
         lastHuntExplore = 0;
@@ -3914,6 +3951,57 @@ public class BotBrain extends Module {
             if (canSendBaritone()) sendBaritoneChat("#explore");
             lastHuntExplore = now;
         }
+    }
+
+    /**
+     * Why a food hunt must not start here, or null when it is plausibly survivable.
+     * Three gates: a real weapon, health and hunger to survive the fight, and a way
+     * out. A hunt that fails any of them is how the bot starved and died in a hole.
+     */
+    public String huntRefusalReason() {
+        if (mc.player == null || mc.level == null) return "no world";
+
+        double damage = mc.player.getAttributeValue(
+            net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE);
+        if (damage < huntMinDamage.get()) {
+            return String.format("no effective weapon (attack damage %.1f < %.1f)",
+                damage, huntMinDamage.get());
+        }
+
+        if (mc.player.getHealth() < huntMinHealth.get()) {
+            return String.format("health too low (%.1f < %.1f)",
+                mc.player.getHealth(), huntMinHealth.get());
+        }
+
+        int foodLevel = mc.player.getFoodData().getFoodLevel();
+        if (foodLevel < huntMinFood.get()) {
+            return String.format("food bar too low (%d < %d)", foodLevel, huntMinFood.get());
+        }
+
+        return escapeRouteProblem();
+    }
+
+    private String escapeRouteProblem() {
+        try {
+            if (baritone.api.BaritoneAPI.getProvider() == null) {
+                return "no retreat pathing (Baritone provider missing)";
+            }
+        } catch (Throwable t) {
+            return "no retreat pathing (Baritone unavailable)";
+        }
+
+        int exits = 0;
+        BlockPos feet = mc.player.blockPosition();
+        int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int[] d : dirs) {
+            if (isStandable(feet.offset(d[0], 0, d[1]))) exits++;
+        }
+        if (exits < 2) return String.format("no retreat path (open exits %d < 2)", exits);
+        return null;
+    }
+
+    public String getLastHuntRefusal() {
+        return lastHuntRefusal;
     }
 
     private Entity findHuntTarget() {
