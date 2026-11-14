@@ -16,7 +16,12 @@ TOKEN_FILE="${2:-C:/Users/rdh/Desktop/PineconeMC-Windows-MSVC-Portable-11.1.2/in
 TOKEN="$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['token'])" "$TOKEN_FILE")"
 BASE="http://127.0.0.1:${PORT}/harness"
 
-get()  { curl -s "$BASE/$1?token=$TOKEN"; }
+get()  {
+    case "$1" in
+        *\?*) curl -s "$BASE/$1&token=$TOKEN" ;;
+        *)    curl -s "$BASE/$1?token=$TOKEN" ;;
+    esac
+}
 post() { curl -s -X POST "$BASE/$1?token=$TOKEN" -H 'Content-Type: application/json' -d "$2"; }
 active() { get "module?name=$1" | python -c 'import json,sys;d=json.load(sys.stdin);print(str(d.get("active")).lower())'; }
 wait_s() { sleep "$1"; }
@@ -36,27 +41,36 @@ before="$(active "$TARGET")"
 echo "initial $TARGET = $before"
 
 echo "--- 1. start BotBrain (guard active) ---"
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" != "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 3
 if [ "$(active bot-brain)" != "true" ]; then
     echo "FAIL  could not start BotBrain"; exit 1
 fi
 
 echo "--- 2. operator toggles $TARGET while the guard runs ---"
+# Read live state first: the guard may have enabled it at activation, so the
+# pre-guard snapshot is not a safe basis for predicting a toggle.
+pre="$(active "$TARGET")"
 post command "{\"cmd\":\"toggle $TARGET\"}" >/dev/null
-toggled=$([ "$before" = "true" ] && echo false || echo true)
+toggled=$([ "$pre" = "true" ] && echo false || echo true)
 wait_s 3
 check "$TARGET survives guard tick" "$toggled" "$(active "$TARGET")"
 
 echo "--- 3. stop BotBrain (guard teardown) ---"
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" = "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 3
 check "$TARGET survives guard teardown" "$toggled" "$(active "$TARGET")"
 
 echo "--- 4. force API on, with the guard running ---"
 post force "{\"name\":\"$TARGET\",\"enabled\":true}" >/dev/null
 wait_s 1
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" != "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 3
 check "forced-on $TARGET holds during guard" "true" "$(active "$TARGET")"
 
@@ -66,14 +80,18 @@ wait_s 3
 check "forced-off $TARGET holds during guard" "false" "$(active "$TARGET")"
 
 echo "--- 6. forced-off survives guard teardown ---"
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" = "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 3
 check "forced-off $TARGET survives teardown" "false" "$(active "$TARGET")"
 
 echo "--- 7. forced-on outranks a later manual toggle ---"
 post force "{\"name\":\"$TARGET\",\"enabled\":true}" >/dev/null
 wait_s 1
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" != "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 3
 post command "{\"cmd\":\"toggle $TARGET\"}" >/dev/null
 wait_s 3
@@ -82,7 +100,9 @@ check "forced-on $TARGET survives a manual toggle" "true" "$(active "$TARGET")"
 # Leave no sticky intent behind: clear it and stop the brain.
 post force "{\"name\":\"$TARGET\",\"clear\":true}" >/dev/null
 wait_s 1
-post command '{"cmd":"toggle bot-brain"}' >/dev/null
+if [ "$(active bot-brain)" = "true" ]; then
+    post command '{"cmd":"toggle bot-brain"}' >/dev/null
+fi
 wait_s 2
 
 echo
