@@ -1,7 +1,7 @@
 # Commit policy — full history, pushed as it happens
 
-Owner's standing rule, 2026-11-14. This file is the canonical copy for the repo;
-`AGENTS.md` carries the same rule for an agent's first read. If one changes, change both.
+Owner's standing rule, 2026-11-14. This is the only place the rule is written in full.
+`AGENTS.md` points here rather than restating it, so there is nothing to keep in sync.
 
 ## The rule
 
