@@ -1,12 +1,12 @@
 # Enhanced Swarm — Project Overview (AI Handoff)
 
-- **Snapshot:** 2026-11-13
+- **Snapshot:** 2026-11-14 (originally 2026-11-13)
 - **Repository:** `C:\Projects\swarm\swarm-improved`
-- **Branch:** `fix/phantom-task-types`
-- **HEAD:** `226b1b3bcef5`
-- **`origin/main`:** `d99e7580a97e`
+- **Branch:** `main`
+- **Code snapshot:** `99003d7` (the fuel-debug change; later docs commits are bookkeeping)
+- **`origin/main` at code snapshot:** `99003d7`
 - **Version:** `0.1.0`
-- **Working tree:** dirty. Several source files and `docs/FEATURES.md` are modified; `docs/PANEL_V2_SPEC.md` is untracked. This is an in-flight branch, not a clean release tag.
+- **Working tree:** source is clean. The only uncommitted change is an unrelated reference-corpus reorganization (deleted tracked reference directories and untracked replacements), which is not part of runtime behavior.
 
 This document is a project-level companion to [`PANEL_V2_SPEC.md`](PANEL_V2_SPEC.md). The panel spec explains the web panel in depth. This document explains the whole system: what it is, how host and workers fit together, what the task engine actually does, what is proven, and where the documentation and code disagree.
 
@@ -425,6 +425,7 @@ Status words used here:
 | Gather | Baritone-driven collection, dependency steps, evidence | H1 recorded live on `e62b2f9`, including three consecutive runs |
 | Craft | Recipe/dependency planning, crafting-table path | Source-present; no complete live artifact recorded here |
 | Smelt | Deposit/wait/collect phases, fuel handling | Source-present; H12 tracks a known fuel limitation; do not call it fully solved |
+| Fuel debug | `fuels[]` + `fuelTicks` in `/api/debug/bot` | Source-present; inventory-only, same resolver as cook path; CODE ONLY, no live read yet |
 | Hunt food | Hunting state, AutoEat, auto-cook | Source-present; no dedicated live H-scenario |
 | Smithing | Smithing-table path, auto-netherite | Source-present; live status not established |
 | Shulker | Place/open/empty/break/collect path | Source-present; live status not established |
@@ -452,7 +453,7 @@ From the repository's own documents, not from a fresh run for this export. These
 - The panel has been browser-tested only against fake players. No real worker has driven the panel in game.
 - No full one-hour acceptance run is recorded as passed.
 
-This export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. It is a source-and-docs synthesis.
+The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all six `h5Test` probes passed; no live Minecraft run was performed.
 
 ---
 
@@ -583,29 +584,30 @@ Use these labels consistently:
 | Observed | A human watched the behavior in game. Use sparingly and only with evidence. |
 | Unverified | No evidence located. Say so. |
 
-### 12.2 What this working tree adds beyond `origin/main`
+### 12.2 What is on `main` now
 
-The branch and dirty tree contain work that is **not** on `origin/main`:
+This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel-debug change landed as `99003d7`. Current `main` includes:
 
 - lease fields, fencing, lease renewal, expiry, and stale-report rejection;
 - host-restart recovery of `ACTIVE` tasks;
 - self-deposit for the host player;
 - test-only `test_give`;
-- related task-queue, protocol, panel, and deposit changes;
-- `docs/PANEL_V2_SPEC.md`, which is still untracked.
+- harness client-control endpoints (`command`, `chat`, `goto`, `stop-path`, `respawn`, and the shape probe);
+- fuel `fuels[]` / `fuelTicks` in the bot debug snapshot (`99003d7`);
+- `docs/PANEL_V2_SPEC.md`, which is now tracked.
 
-If another AI reads GitHub `main` and concludes "there are no leases" or "self-deposit does not exist," it is reading the wrong revision.
+The only dirty-tree change is the unrelated reference-corpus reorganization. Do not use that churn to infer runtime behavior.
 
 ### 12.3 Documentation drift that matters
 
-`docs/FEATURES.md` is useful prose but is not a reliable status table for this branch. Concrete examples found while preparing this export:
+`docs/FEATURES.md` is useful prose but is not a reliable status table for `main`. Concrete examples found while preparing this export:
 
 - It still describes the system as having no lease/atomic claim and lists task leasing as future work, while the current tree has lease fields, tests, and H5 evidence.
 - It says `SCAN_CHESTS` is an enum-only value with no execution path, while the current worker has a `handleScan` implementation and the host endpoint forwards `swarm:all scan`.
 - It describes the `/v2` Scan Chests button as disabled; verify the current UI before relying on it.
-- Its live/code-only labels predate the newest branch changes.
+- Its live/code-only labels predate the newest `main` changes.
 
-`docs/PANEL_V2_SPEC.md` is a design/handoff document, not a running app. It is untracked in this snapshot.
+`docs/PANEL_V2_SPEC.md` is a design/handoff document, not a running app. It is now tracked in the repository.
 
 ### 12.4 Packaging and metadata debt
 
@@ -619,7 +621,7 @@ If another AI reads GitHub `main` and concludes "there are no leases" or "self-d
 
 ### 12.5 Known gaps and risks
 
-1. **Docs drift.** `FEATURES.md` is behind the branch on leases and scan. Always cross-check source.
+1. **Docs drift.** `FEATURES.md` is behind `main` on leases and scan. Always cross-check source.
 2. **Incomplete live matrix.** H4/H6/H8–H12 are simulated; H7 is missing; H5 was not rerun after the latest closure.
 3. **No full acceptance run.** The one-hour, iron-gear, no-questions product test is not recorded as passed.
 4. **Panel never driven by a bot.** `/v2` has only fake-player/browser coverage.
@@ -627,7 +629,7 @@ If another AI reads GitHub `main` and concludes "there are no leases" or "self-d
 6. **Scan uncertainty.** Source, UI, and docs disagree; live behavior is unverified.
 7. **Plaintext shared-token security.** No TLS, no accounts, no per-worker authorization.
 8. **HTTP 200 is not acceptance.** Panel actions can report success before downstream validation fails.
-9. **Dirty tree.** Uncommitted source changes are part of the current behavior. Do not reset or clean them to "get a clean checkout."
+9. **Dirty reference tree.** The reference-corpus reorg is uncommitted and unrelated to runtime behavior. Do not reset or clean it to "get a clean checkout."
 10. **Template metadata.** Release metadata is not production-clean.
 
 ---
@@ -678,11 +680,11 @@ Start here when reading the code:
 2. Read this document.
 3. Read `docs/PANEL_V2_SPEC.md` if the task touches the panel.
 4. Read the actual source files for the behavior in question.
-5. Check `git status` and the current branch before assuming `main` is authoritative.
+5. Check `git status` and the current `HEAD` before assuming the documentation's snapshot is still current.
 
 ### Rules that prevent bad work
 
-- **Do not reset, restore, stash, checkout, or clean the working tree.** It contains the user's in-flight lease/self-deposit work.
+- **Do not reset, restore, stash, checkout, or clean the working tree.** It contains an unrelated in-flight reference-corpus reorganization.
 - **Do not merge, tag, or push unless asked.**
 - **Do not turn a source-present feature into a live claim.** Use the verification ladder.
 - **Do not test on an anarchy server.** Use a copied local world.
@@ -747,7 +749,7 @@ If you remember only five things:
 1. **It is a Meteor client addon that coordinates real Minecraft clients, not a server or a hosted service.**
 2. **The host owns the queue, panel, storage index, and leases; workers run `BotBrain` and report evidence.**
 3. **The transport is plaintext custom TCP with a shared token; the panel is embedded HTTP on port 8888.**
-4. **The current branch has leases/fencing and self-deposit that `origin/main` and parts of `FEATURES.md` do not reflect.**
+4. **`main` has leases/fencing and self-deposit; parts of `FEATURES.md` still do not reflect them.**
 5. **A lot is source-present, some is test-covered, less is live-proven, and the full one-hour acceptance test is not recorded as passed.**
 
 When in doubt, read the source and say what is unverified. That is the project's own standard.
