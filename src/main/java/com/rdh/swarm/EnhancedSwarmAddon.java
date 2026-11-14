@@ -25,8 +25,6 @@ public class EnhancedSwarmAddon extends MeteorAddon {
         Modules.get().add(new EnhancedSwarm());
         Modules.get().add(new com.rdh.swarm.modules.SwarmCrystalAura());
         Modules.get().add(new com.rdh.swarm.modules.SwarmKillAura());
-        Modules.get().add(new com.rdh.swarm.modules.SwarmCombat());
-        Modules.get().add(new com.rdh.swarm.modules.SwarmFlee());
         Modules.get().add(new com.rdh.swarm.modules.SwarmAutoTotem());
         Modules.get().add(new com.rdh.swarm.modules.SwarmSurround());
         Modules.get().add(new com.rdh.swarm.modules.SwarmAutoTrap());
