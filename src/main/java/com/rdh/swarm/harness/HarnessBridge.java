@@ -198,6 +198,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/slot".equals(path)) {
+                sendSelectSlot(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -756,6 +761,28 @@ public final class HarnessBridge {
             throw new BridgeException(400, "invalid-slot", "slot must be an integer");
         }
         return slot;
+    }
+
+    /** Selects a hotbar slot, so a test can put a weapon in hand without a human. */
+    private void sendSelectSlot(HttpExchange exchange) throws IOException {
+        JsonObject body = readJsonBody(exchange);
+        int slot = body.has("slot") ? body.get("slot").getAsInt() : 0;
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.player == null) throw new IllegalStateException("not in game");
+                if (slot < 0 || slot > 8) throw new IllegalArgumentException("slot must be 0-8");
+                mc.player.getInventory().setSelectedSlot(slot);
+                out.addProperty("ok", true);
+                out.addProperty("slot", slot);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
     }
 
     /** Forces a module on/off as durable intent, so guard ticks cannot undo it. */

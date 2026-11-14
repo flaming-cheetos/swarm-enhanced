@@ -155,6 +155,10 @@ final class HarnessSnapshots {
         root.addProperty("y", player.getY());
         root.addProperty("z", player.getZ());
         root.addProperty("dimension", mc.level == null ? "" : mc.level.dimension().identifier().toString());
+        root.addProperty("selectedSlot", player.getInventory().getSelectedSlot());
+        root.addProperty("mainHand", player.getMainHandItem().getItem().toString());
+        root.addProperty("attackDamage", player.getAttributeValue(
+            net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE));
         return root;
     }
 
