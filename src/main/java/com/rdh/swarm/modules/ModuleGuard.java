@@ -8,6 +8,7 @@ import meteordevelopment.meteorclient.systems.modules.combat.AutoArmor;
 import meteordevelopment.meteorclient.systems.modules.combat.AutoTotem;
 import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
 import meteordevelopment.meteorclient.systems.modules.movement.NoFall;
+import meteordevelopment.meteorclient.systems.modules.movement.NoSlow;
 import meteordevelopment.meteorclient.systems.modules.player.AntiHunger;
 import meteordevelopment.meteorclient.systems.modules.player.AutoEat;
 import meteordevelopment.meteorclient.systems.modules.player.AutoReplenish;
@@ -38,6 +39,7 @@ public final class ModuleGuard {
 
     private static final List<GuardSpec> SPECS = List.of(
         new GuardSpec(SwarmSafeFire.class, Map.of(), false),
+        new GuardSpec(NoSlow.class, Map.of("items", "true"), false),
         new GuardSpec(SwarmShield.class, Map.of(), false),
         new GuardSpec(SwarmFlee.class, Map.of(), false),
         new GuardSpec(AutoEat.class, Map.of(

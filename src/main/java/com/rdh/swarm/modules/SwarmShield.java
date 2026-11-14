@@ -54,7 +54,7 @@ public class SwarmShield extends Module {
 
     public final Setting<Boolean> releaseWhenMoving = sg.add(new BoolSetting.Builder()
         .name("release-when-moving")
-        .description("Drop the shield while a movement key is held. Blocking caps speed at 20%.")
+        .description("Drop the shield while moving when NoSlow is off. With NoSlow active the shield stays up.")
         .defaultValue(true)
         .build());
 
@@ -118,7 +118,8 @@ public class SwarmShield extends Module {
         if (mc.player.getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem) return false; // right-click would place, not block
         if (isTotemLocked()) return false;                          // totem outranks the shield
         if (isFleeing()) return false;                              // flee owns movement and hands
-        if (releaseWhenMoving.get() && isMoving()) return false;    // 20% speed penalty
+        // NoSlow removes the 20% blocking penalty, so the shield can stay up while walking.
+        if (releaseWhenMoving.get() && isMoving() && !noSlowActive()) return false;
 
         KillAura aura = Modules.get().get(KillAura.class);
         if (aura == null || !aura.isActive()) return false;         // KillAura only, never TriggerBot
@@ -140,6 +141,12 @@ public class SwarmShield extends Module {
     private boolean isMoving() {
         return mc.options.keyUp.isDown() || mc.options.keyDown.isDown()
             || mc.options.keyLeft.isDown() || mc.options.keyRight.isDown();
+    }
+
+    private boolean noSlowActive() {
+        meteordevelopment.meteorclient.systems.modules.Module noSlow =
+            Modules.get().get(meteordevelopment.meteorclient.systems.modules.movement.NoSlow.class);
+        return noSlow != null && noSlow.isActive();
     }
 
     private boolean hasShieldOffhand() {

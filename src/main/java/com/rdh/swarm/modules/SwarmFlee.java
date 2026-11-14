@@ -72,6 +72,9 @@ public class SwarmFlee extends Module {
     private boolean warnedNoBaritone;
     /** Goal captured before fleeing, restored afterwards so the task path survives. */
     private baritone.api.pathing.goals.Goal savedGoal;
+    /** Repath throttle: re-issuing the direction every tick makes Baritone thrash. */
+    private float lastYaw;
+    private long lastIssueMs;
 
     public SwarmFlee() {
         super(com.rdh.swarm.EnhancedSwarmAddon.CATEGORY, "swarm-flee",
@@ -105,7 +108,15 @@ public class SwarmFlee extends Module {
             return;
         }
 
+        // Recompute the escape direction at most once a second, or when the threat
+        // has moved to a genuinely different bearing. Every-tick reissue thrashed.
         float yaw = awayYaw(threat);
+        long now = System.currentTimeMillis();
+        boolean turned = Math.abs(wrapDegrees(yaw - lastYaw)) > 20f;
+        if (!turned && now - lastIssueMs < 1000L) return;
+        lastYaw = yaw;
+        lastIssueMs = now;
+
         try {
             PathManagers.get().moveInDirection(yaw);
         } catch (Throwable t) {
@@ -120,8 +131,27 @@ public class SwarmFlee extends Module {
     private void startFleeing() {
         fleeing = true;
         startedAt = System.currentTimeMillis();
+        lastIssueMs = 0;
         savedGoal = currentGoal();
+        tuneBaritone();
         info("Fleeing — health %.1f", mc.player.getHealth());
+    }
+
+    /** Baritone has no sprint-jump, but these keep it sprinting and sprint-ascending. */
+    private void tuneBaritone() {
+        try {
+            baritone.api.Settings s = baritone.api.BaritoneAPI.getSettings();
+            s.allowSprint.value = true;
+            s.sprintAscends.value = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static float wrapDegrees(float degrees) {
+        float d = degrees % 360f;
+        if (d >= 180f) d -= 360f;
+        if (d < -180f) d += 360f;
+        return d;
     }
 
     private void stopFleeing() {
