@@ -157,6 +157,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/command".equals(path)) {
+                sendClientCommand(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -191,6 +196,43 @@ public final class HarnessBridge {
             root.addProperty("version", BuildInfo.stamp());
             return root;
         });
+    }
+
+    /**
+     * Runs a Meteor client command on the client thread, e.g. ".toggle swarm-safe-fire".
+     * Test-only: loopback + token + allowActions, exactly like the menu click.
+     */
+    private void sendClientCommand(HttpExchange exchange) throws IOException {
+        if (!config.allowActions) {
+            throw new BridgeException(403, "actions-disabled", "actions are disabled; set allowActions=true in the harness config");
+        }
+        if (!actionInFlight.compareAndSet(false, true)) {
+            throw new BridgeException(409, "action-in-flight", "another harness action is already in flight");
+        }
+
+        try {
+            JsonObject body = readJsonBody(exchange);
+            String cmd = body.has("cmd") ? body.get("cmd").getAsString() : "";
+            if (cmd.isBlank()) {
+                throw new BridgeException(400, "missing-cmd", "cmd is required");
+            }
+
+            JsonObject result = client(() -> {
+                JsonObject out = new JsonObject();
+                out.addProperty("cmd", cmd);
+                try {
+                    meteordevelopment.meteorclient.commands.Commands.dispatch(cmd);
+                    out.addProperty("ok", true);
+                } catch (Throwable t) {
+                    out.addProperty("ok", false);
+                    out.addProperty("error", String.valueOf(t.getMessage()));
+                }
+                return out;
+            });
+            sendJson(exchange, 200, result);
+        } finally {
+            actionInFlight.set(false);
+        }
     }
 
     private void sendMenuClick(HttpExchange exchange) throws IOException {
