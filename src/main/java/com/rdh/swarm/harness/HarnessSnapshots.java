@@ -57,6 +57,10 @@ final class HarnessSnapshots {
         root.addProperty("swarmSafeFire", active("swarm-safe-fire"));
         root.addProperty("swarmFlee", active("swarm-flee"));
         root.addProperty("killAura", active("kill-aura"));
+        com.rdh.swarm.modules.SwarmFlee flee =
+            meteordevelopment.meteorclient.systems.modules.Modules.get()
+                .get(com.rdh.swarm.modules.SwarmFlee.class);
+        root.addProperty("fleeing", flee != null && flee.isFleeing());
 
         com.rdh.swarm.modules.SwarmShield shield =
             meteordevelopment.meteorclient.systems.modules.Modules.get()

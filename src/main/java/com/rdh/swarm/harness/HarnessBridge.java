@@ -148,6 +148,7 @@ public final class HarnessBridge {
                     case "/harness/screen" -> sendJson(exchange, 200, client(() -> HarnessSnapshots.screen(Minecraft.getInstance())));
                     case "/harness/menu" -> sendJson(exchange, 200, client(() -> HarnessSnapshots.menu(Minecraft.getInstance())));
                     case "/harness/module" -> sendModuleState(exchange);
+                    case "/harness/nearest" -> sendNearestHostile(exchange);
                     default -> sendError(exchange, 404, "not-found", "unknown harness endpoint");
                 }
                 return;
@@ -256,6 +257,50 @@ public final class HarnessBridge {
                     .moveTo(new net.minecraft.core.BlockPos(x, y, z));
                 out.addProperty("ok", true);
                 out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    /**
+     * Nearest hostile mob and its distance, so a flee test can measure whether the
+     * gap actually grew instead of inferring it from the player's position alone.
+     */
+    private void sendNearestHostile(HttpExchange exchange) throws IOException {
+        int range = 64;
+        String raw = queryParam(exchange, "range");
+        if (!raw.isEmpty()) {
+            try { range = Math.max(1, Math.min(128, Integer.parseInt(raw))); } catch (NumberFormatException ignored) {}
+        }
+        int finalRange = range;
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.player == null || mc.level == null) throw new IllegalStateException("not in game");
+                net.minecraft.world.phys.AABB box = mc.player.getBoundingBox().inflate(finalRange);
+                net.minecraft.world.entity.Entity best = null;
+                double bestDist = Double.MAX_VALUE;
+                for (net.minecraft.world.entity.Entity e : mc.level.getEntities(mc.player, box)) {
+                    if (e == mc.player || !e.isAlive()) continue;
+                    if (e.getType().getCategory() != net.minecraft.world.entity.MobCategory.MONSTER) continue;
+                    double d = mc.player.distanceTo(e);
+                    if (d < bestDist) { bestDist = d; best = e; }
+                }
+                out.addProperty("ok", true);
+                out.addProperty("found", best != null);
+                out.addProperty("distance", best == null ? -1 : bestDist);
+                if (best != null) {
+                    out.addProperty("type", best.getType().getDescription().getString());
+                    out.addProperty("x", best.getX());
+                    out.addProperty("y", best.getY());
+                    out.addProperty("z", best.getZ());
+                    out.addProperty("invulnerable", best.isInvulnerable());
+                }
             } catch (Throwable t) {
                 out.addProperty("ok", false);
                 out.addProperty("error", String.valueOf(t.getMessage()));
