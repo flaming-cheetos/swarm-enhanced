@@ -189,8 +189,34 @@ the row is PENDING with `lease-expired`, and only inside the 60-second grace
 window. A reclaim by another worker replaces the token and fences the old one.
 `LeaseGraceTest` covers inside/boundary/after and reclaim fencing.
 `TaskRemovalTest` covers the queue core behind `task_remove`: PENDING removal,
-sibling preservation, persistence, ACTIVE cleanup, and an empty board. The live
-HTTP request itself is still unobserved.
+sibling preservation, persistence, ACTIVE cleanup, and an empty board.
+`HostHttpRemoveTest` now observes the HTTP path itself: it starts a real
+`EnhancedSwarmHost` on loopback, waits for its `SwarmWebServer`, rejects a
+wrong-token POST with 401, then sends `{"id":"<PENDING-uuid>"}` with the host
+token. It asserts HTTP 200 plus `{"ok":true}`, the target row gone, both
+sibling rows present, and exactly two rows after a fresh `TaskQueue` reload.
+The endpoint-observation gap is therefore closed, not deferred.
+
+One production step remains game-only. `Modules.get().get(EnhancedSwarm.class)`
+cannot initialize on a plain JVM: the first probe attempt failed while
+constructing the module, before any request:
+
+```text
+$ ./gradlew.bat h5HostHttpTest --rerun-tasks --console=plain
+Exception in thread "Thread-0" java.lang.ExceptionInInitializerError
+Caused by: java.lang.IllegalStateException: invoked too early?
+Exception in thread "main" java.lang.NoClassDefFoundError:
+    Could not initialize class meteordevelopment.meteorclient.MeteorClient
+    at com.rdh.swarm.HostHttpRemoveTest.main(HostHttpRemoveTest.java:44)
+```
+
+The final probe bypasses *only* that lookup with
+`SwarmWebServer.bindHostForProbe(host)`; production leaves the binding null and
+still resolves the module. All route code after host resolution is identical.
+The headless run also exposed two real defects that are fixed: every POST used
+to call `handleDebugApi` (and thus initialize `Modules`), so non-debug routes
+now dispatch only under `/api/debug/`; and a `ChatUtils` failure used to abort
+web-server startup/stop, so those log calls are now non-fatal.
 
 ### 5.4 Fixtures and time
 

@@ -225,9 +225,16 @@ trusting a cache older than the move reported 51/50 and failed it anyway.
 
 What must be true before the 30 minutes start:
 
-1. **Board empty.** `/api/task/remove` must clear a PENDING row — **queue path DONE/test-covered
-   2026-11-14** (`TaskRemovalTest`: removes a PENDING row, keeps siblings, persists across reload,
-   clears an ACTIVE owner, and empties the board); the live HTTP request itself is still unobserved.
+1. **Board empty.** `/api/task/remove` must clear a PENDING row — **DONE 2026-11-14.**
+   `TaskRemovalTest` proves the queue core (PENDING removal, sibling preservation, reload
+   persistence, ACTIVE cleanup, empty board). `HostHttpRemoveTest` now starts a real
+   `EnhancedSwarmHost` on loopback and sends a tokenized POST to the real endpoint: a wrong
+   token is rejected with 401, the target row is gone, both siblings survive, and a fresh
+   `TaskQueue` reload still has exactly two rows. The production `Modules.get()` lookup is
+   game-only: a plain-JVM attempt to register `EnhancedSwarm` fails while initializing
+   `MeteorClient` (`invoked too early?`), so the probe binds the same host through
+   `SwarmWebServer.bindHostForProbe`. The route after host resolution is unchanged; exact
+   bootstrap evidence is quoted in `MCP_SERVER_SPEC.md` §5.3.
 2. **A reading under 30 s old.** Scan the chests first; `ensure` refuses anything older.
 3. **Food on hand and `SwarmAutoEat` on.** Eating has never been watched live.
 4. **The shift.** One bot, 30 minutes, then open every deposit chest and diff it against the task's

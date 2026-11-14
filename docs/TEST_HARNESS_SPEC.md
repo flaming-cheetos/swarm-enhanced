@@ -276,7 +276,8 @@ Verified in `SwarmWebServer` / `SwarmWebHandler`:
 - `GET /api/items` — item registry cache.
 - `WS /ws?token=<TOKEN>` — state every 2 seconds and log events.
 - `POST /api/task/add` — `{"item","qty","type","bot"}`.
-- `POST /api/task/remove` — `{"id"}`.
+- `POST /api/task/remove` — `{"id"}`. `HostHttpRemoveTest` exercises this over a
+  real loopback `EnhancedSwarmHost`; see `MCP_SERVER_SPEC.md` §5.3.
 - `POST /api/task/cancel` — `{"bot"}`.
 - `POST /api/task/pause` — `{"bot"}`.
 - `POST /api/task/resume` — `{"bot"}`.
@@ -564,8 +565,9 @@ A new connection requeues the old assignment, sends `task reset`, and the next
 dispatch claims a fresh token; a re-leased task completes once.
 `TaskQueueRecoveryTest`, `LeaseLifecycleTest`, `FencingReconnectTest`,
 `PanelLeaseJsonTest`, `ProtocolMatrixTest`, `ProgressAccountingTest`,
-`FuelReaderTest`, `LeaseGraceTest`, and `TaskRemovalTest` are part of the
-Gradle `check` task. The simulated H5 still only asserts the stub
+`FuelReaderTest`, `LeaseGraceTest`, `TaskRemovalTest`, and
+`HostHttpRemoveTest` are part of the Gradle `check` task. The simulated H5
+still only asserts the stub
 contract. Live H5 (Step 4) passed on `0.1.0+8e2eed6`: the host restart
 converted the ACTIVE row to PENDING attempt 2 with `statusReason:
 host-restart`, then the reconnected worker completed attempt 3 exactly once.

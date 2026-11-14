@@ -65,6 +65,24 @@ public class EnhancedSwarmHost extends Thread {
     };
     private static final long _he = 0x666C616D696E67L;
 
+    private static void chatInfo(String format, Object... args) {
+        try { ChatUtils.infoPrefix("Swarm", format, args); }
+        catch (Throwable t) { fallbackLog(format, args, t); }
+    }
+
+    private static void chatError(String format, Object... args) {
+        try { ChatUtils.errorPrefix("Swarm", format, args); }
+        catch (Throwable t) { fallbackLog(format, args, t); }
+    }
+
+    private static void fallbackLog(String format, Object[] args, Throwable t) {
+        try {
+            System.err.println("[Swarm] " + String.format(format, args) + " (chat unavailable: " + t + ")");
+        } catch (Throwable ignored) {
+            System.err.println("[Swarm] chat logging unavailable: " + t);
+        }
+    }
+
     public EnhancedSwarmHost(String bindAddress, int port, int webPort, String token) {
         this.bindAddress = bindAddress;
         this.port = port;
@@ -74,7 +92,7 @@ public class EnhancedSwarmHost extends Thread {
             socket.bind(new InetSocketAddress(bindAddress, port));
         } catch (IOException e) {
             socket = null;
-            ChatUtils.errorPrefix("Swarm", "Couldn't bind the swarm server to %s:%s.", bindAddress, port);
+            chatError("Couldn't bind the swarm server to %s:%s.", bindAddress, port);
             e.printStackTrace();
         }
 
@@ -89,7 +107,7 @@ public class EnhancedSwarmHost extends Thread {
                 int[] b = depositConfig.getBase(server);
                 if (b != null && b.length >= 3) {
                     baseAnchorX = b[0]; baseAnchorY = b[1]; baseAnchorZ = b[2];
-                    ChatUtils.infoPrefix("Swarm", "Loaded base anchor for %s: %d %d %d", server, b[0], b[1], b[2]);
+                    chatInfo("Loaded base anchor for %s: %d %d %d", server, b[0], b[1], b[2]);
                 }
             } catch (Exception ignored) {}
             try {
@@ -99,7 +117,7 @@ public class EnhancedSwarmHost extends Thread {
                 // the web server exists. Flush those events once the panel is up.
                 logTaskEvents();
             } catch (Throwable e) {
-                ChatUtils.errorPrefix("Swarm", "Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
+                chatError("Web panel failed to start on %s:%s: %s", bindAddress, webPort, e.getMessage());
             }
             leaseMaintenance.scheduleWithFixedDelay(() -> {
                 try {
@@ -143,11 +161,11 @@ public class EnhancedSwarmHost extends Thread {
             int[] c = depositConfig.getChest(server, "all");
             if (c != null && c.length >= 3) {
                 depositChestX = c[0]; depositChestY = c[1]; depositChestZ = c[2];
-                ChatUtils.infoPrefix("Swarm", "Loaded deposit chest for %s: %d %d %d", server, c[0], c[1], c[2]);
+                chatInfo("Loaded deposit chest for %s: %d %d %d", server, c[0], c[1], c[2]);
             }
             if (!depositConfig.getChests(server).isEmpty()) {
                 pushDepositConfigAll();
-                ChatUtils.infoPrefix("Swarm", "Pushed persisted deposit config to workers");
+                chatInfo("Pushed persisted deposit config to workers");
             }
         } catch (Exception ignored) {}
     }
@@ -335,7 +353,8 @@ public class EnhancedSwarmHost extends Thread {
 
     @Override
     public void run() {
-        ChatUtils.infoPrefix("Swarm", "Listening for incoming connections on %s:%s.", bindAddress, socket.getLocalPort());
+        // Headless probes have no chat sink; the TCP listener must still come up.
+        chatInfo("Listening for incoming connections on %s:%s.", bindAddress, socket.getLocalPort());
         // mark running and use running flag for loop control
         running = true;
 
@@ -521,9 +540,7 @@ public class EnhancedSwarmHost extends Thread {
             e.printStackTrace();
         }
 
-        try {
-            ChatUtils.infoPrefix("Swarm", "Server closed on port %s.", socket == null ? "?" : socket.getLocalPort());
-        } catch (Exception ignored) {}
+        chatInfo("Server closed on port %s.", socket == null ? "?" : socket.getLocalPort());
 
         leaseMaintenance.shutdownNow();
 

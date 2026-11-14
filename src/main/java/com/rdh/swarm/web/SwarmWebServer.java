@@ -69,6 +69,10 @@ public class SwarmWebServer {
     private final int port;
     private final String token;
     private final boolean generatedToken;
+    // Headless probes cannot call Modules.get(): that initializes MeteorClient,
+    // which requires a bootstrapped Minecraft client. Binding the already-built
+    // host here exercises the same HTTP routes and queue without that bootstrap.
+    private volatile EnhancedSwarmHost boundHost;
     private NioEventLoopGroup bossGroup;
     private NioEventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -88,6 +92,23 @@ public class SwarmWebServer {
         this.port = port;
         this.generatedToken = token == null || token.isBlank();
         this.token = generatedToken ? generateToken() : token;
+    }
+
+    /**
+     * Probe seam: use a real host that was built outside the Meteor module
+     * system. Production leaves this null and resolves EnhancedSwarm below.
+     */
+    public SwarmWebServer bindHostForProbe(EnhancedSwarmHost host) {
+        this.boundHost = host;
+        return this;
+    }
+
+    private EnhancedSwarmHost apiHost() {
+        EnhancedSwarmHost host = boundHost;
+        if (host != null) return host;
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod == null || !mod.isHost() || mod.host == null) return null;
+        return mod.host;
     }
 
     private static String generateToken() {
@@ -178,8 +199,14 @@ public class SwarmWebServer {
                 });
 
             serverChannel = bootstrap.bind(bindAddress, port).sync().channel();
-            ChatUtils.infoPrefix("Swarm", "Web panel: http://%s:%d/?token=%s", panelHost(), port, token);
-            if (generatedToken) ChatUtils.infoPrefix("Swarm", "Generated web token (shown once).");
+            // A headless JVM has no Meteor chat sink. Logging must not take down an
+            // otherwise healthy HTTP listener; the panel and its routes still work.
+            try { ChatUtils.infoPrefix("Swarm", "Web panel: http://%s:%d/?token=%s", panelHost(), port, token); }
+            catch (Throwable t) { System.err.println("[Swarm] web panel ready; chat unavailable: " + t); }
+            if (generatedToken) {
+                try { ChatUtils.infoPrefix("Swarm", "Generated web token (shown once)."); }
+                catch (Throwable t) { System.err.println("[Swarm] generated token log unavailable: " + t); }
+            }
 
             // Push state to WebSocket clients every 2 seconds
             scheduler.scheduleAtFixedRate(this::broadcastState, 2, 2, TimeUnit.SECONDS);
@@ -195,7 +222,8 @@ public class SwarmWebServer {
         if (serverChannel != null) serverChannel.close();
         if (bossGroup != null) bossGroup.shutdownGracefully();
         if (workerGroup != null) workerGroup.shutdownGracefully();
-        ChatUtils.infoPrefix("Swarm", "Web panel stopped.");
+        try { ChatUtils.infoPrefix("Swarm", "Web panel stopped."); }
+        catch (Throwable t) { System.err.println("[Swarm] web panel stopped; chat unavailable: " + t); }
     }
 
     public void addClient(Channel ch) {
@@ -242,14 +270,16 @@ public class SwarmWebServer {
     }
 
     public String buildStateJson() {
-        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
-        if (mod == null || !mod.isHost() || mod.host == null) {
+        EnhancedSwarmHost host = boundHost;
+        if (host == null) {
+            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+            if (mod != null && mod.isHost()) host = mod.host;
+        }
+        if (host == null) {
             return "{\"type\":\"state\",\"modVersion\":\"" + esc(MOD_VERSION)
                 + "\",\"buildCommit\":\"" + esc(BUILD_COMMIT)
                 + "\",\"hostName\":\"\",\"dimension\":\"\",\"connected\":0,\"bots\":[],\"tasks\":[]}";
         }
-
-        EnhancedSwarmHost host = mod.host;
         StringBuilder sb = new StringBuilder();
         String hostName = "";
         try { hostName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); } catch (Exception ignored) {}
@@ -603,9 +633,8 @@ public class SwarmWebServer {
     }
 
     public void handleApiCommand(String path, String body) {
-        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
-        if (mod == null || !mod.isHost() || mod.host == null) return;
-        EnhancedSwarmHost host = mod.host;
+        EnhancedSwarmHost host = apiHost();
+        if (host == null) return;
 
         try {
             switch (path) {

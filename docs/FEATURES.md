@@ -866,7 +866,12 @@ trusted, and any gate that counts them is measuring the index against itself.
 **Also found (fixed for removal):** `/api/task/remove` used to be a no-op for PENDING rows, so
 a queue could not be emptied once queued. `TaskQueue.removeById` now rebuilds the queue, and
 `TaskRemovalTest` proves PENDING removal, sibling preservation, persistence, ACTIVE cleanup, and
-an empty board. The live HTTP request is still unobserved.
+an empty board. `HostHttpRemoveTest` proves the HTTP path too: a real `EnhancedSwarmHost` on
+loopback rejects a wrong token with 401, then removes one real PENDING row over a tokenized
+POST, keeps both siblings, and persists exactly two rows across reload. Plain-JVM module
+registration is still game-only (`MeteorClient` reports `invoked too early?`); the probe binds
+the same host directly, and `MCP_SERVER_SPEC.md` §5.3 records that exact failure. The endpoint
+is no longer merely queue-tested.
 
 ## Deposit chests: why a fifth chest vanished (2026-11-14)
 
