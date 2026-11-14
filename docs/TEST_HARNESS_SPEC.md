@@ -565,9 +565,11 @@ A new connection requeues the old assignment, sends `task reset`, and the next
 dispatch claims a fresh token; a re-leased task completes once.
 `TaskQueueRecoveryTest`, `LeaseLifecycleTest`, `FencingReconnectTest`,
 `PanelLeaseJsonTest`, `ProtocolMatrixTest`, `ProgressAccountingTest`,
-`FuelReaderTest`, `LeaseGraceTest`, `TaskRemovalTest`, and
-`HostHttpRemoveTest` are part of the Gradle `check` task. The simulated H5
-still only asserts the stub
+`FuelReaderTest`, `LeaseGraceTest`, `TaskRemovalTest`,
+`HostHttpRemoveTest`, and `HostHttpApiTest` are part of the Gradle `check`
+task. `HostHttpApiTest` is the real-host mod HTTP surface probe; its three
+404 GET sketches and exact output are recorded in `MCP_SERVER_SPEC.md` §6.6.
+The simulated H5 still only asserts the stub
 contract. Live H5 (Step 4) passed on `0.1.0+8e2eed6`: the host restart
 converted the ACTIVE row to PENDING attempt 2 with `statusReason:
 host-restart`, then the reconnected worker completed attempt 3 exactly once.

@@ -75,6 +75,11 @@ public class EnhancedSwarmHost extends Thread {
         catch (Throwable t) { fallbackLog(format, args, t); }
     }
 
+    private static void chatWarning(String format, Object... args) {
+        try { ChatUtils.warningPrefix("Swarm", format, args); }
+        catch (Throwable t) { fallbackLog(format, args, t); }
+    }
+
     private static void fallbackLog(String format, Object[] args, Throwable t) {
         try {
             System.err.println("[Swarm] " + String.format(format, args) + " (chat unavailable: " + t + ")");
@@ -156,7 +161,7 @@ public class EnhancedSwarmHost extends Thread {
             int[] b = depositConfig.getBase(server);
             if (b != null && b.length >= 3) {
                 baseAnchorX = b[0]; baseAnchorY = b[1]; baseAnchorZ = b[2];
-                ChatUtils.infoPrefix("Swarm", "Loaded base anchor for %s: %d %d %d", server, b[0], b[1], b[2]);
+                chatInfo("Loaded base anchor for %s: %d %d %d", server, b[0], b[1], b[2]);
             }
             int[] c = depositConfig.getChest(server, "all");
             if (c != null && c.length >= 3) {
@@ -184,11 +189,11 @@ public class EnhancedSwarmHost extends Thread {
             // that only exists in the deposit config is erased by the next push. Register
             // it here, otherwise adding a fifth chest silently leaves the worker with four.
             registerChestPosition(category, x, y, z);
-            ChatUtils.infoPrefix("Swarm", "CHEST: add %s %d %d %d %s", dimension, x, y, z, category);
-            ChatUtils.infoPrefix("Swarm", "Linked %s chest at %d,%d,%d (server: %s)", category, x, y, z, server);
+            chatInfo("CHEST: add %s %d %d %d %s", dimension, x, y, z, category);
+            chatInfo("Linked %s chest at %d,%d,%d (server: %s)", category, x, y, z, server);
             pushDepositConfigAll();
         } else {
-            ChatUtils.infoPrefix("Swarm", "CHEST: duplicate ignored %s %d %d %d %s", dimension, x, y, z, category);
+            chatInfo("CHEST: duplicate ignored %s %d %d %d %s", dimension, x, y, z, category);
         }
     }
 
@@ -213,9 +218,9 @@ public class EnhancedSwarmHost extends Thread {
             e.source = "operator deposit add (" + currentDimension() + ")";
             baseRegistry.add(e);
             baseRegistry.save();
-            ChatUtils.infoPrefix("Swarm", "REGISTRY: registered %s at %d,%d,%d", e.id, x, y, z);
+            chatInfo("REGISTRY: registered %s at %d,%d,%d", e.id, x, y, z);
         } catch (Exception ex) {
-            ChatUtils.warningPrefix("Swarm", "REGISTRY: could not register chest: %s", ex.getMessage());
+            chatWarning("REGISTRY: could not register chest: %s", ex.getMessage());
         }
     }
 
@@ -246,7 +251,7 @@ public class EnhancedSwarmHost extends Thread {
                 removed = true;
             }
             if (removed) {
-                ChatUtils.infoPrefix("Swarm", "CHEST: twin %d,%d,%d folded into %d,%d,%d", x, y, z, keepX, keepY, keepZ);
+                chatInfo("CHEST: twin %d,%d,%d folded into %d,%d,%d", x, y, z, keepX, keepY, keepZ);
                 pushDepositConfigAll();
             }
         } catch (Exception ignored) {}
@@ -275,7 +280,7 @@ public class EnhancedSwarmHost extends Thread {
             }
             if (removed) pushDepositConfigAll();
         } catch (Exception ex) {
-            ChatUtils.warningPrefix("Swarm", "Could not remove chest at %d,%d,%d: %s", x, y, z, ex.getMessage());
+            chatWarning("Could not remove chest at %d,%d,%d: %s", x, y, z, ex.getMessage());
         }
         return removed;
     }
@@ -319,7 +324,7 @@ public class EnhancedSwarmHost extends Thread {
         String server = getCurrentServer();
         try { depositConfig.setBase(server, x, y, z); } catch (Exception ignored) {}
 
-        ChatUtils.infoPrefix("Swarm", "Linked base anchor at %d,%d,%d (server: %s)", x, y, z, server);
+        chatInfo("Linked base anchor at %d,%d,%d (server: %s)", x, y, z, server);
         sendAll(String.format("swarm:all base set %d %d %d", x, y, z));
     }
 
@@ -367,7 +372,7 @@ public class EnhancedSwarmHost extends Thread {
             } catch (IOException e) {
                 // If we've been asked to stop, break out cleanly
                 if (!running) break;
-                ChatUtils.errorPrefix("Swarm", "Error making a connection to worker.");
+                chatError("Error making a connection to worker.");
                 e.printStackTrace();
             }
         }
@@ -460,7 +465,7 @@ public class EnhancedSwarmHost extends Thread {
                 }
             }
 
-            if (!found) ChatUtils.warningPrefix("Swarm", "Worker not found: %s", workerName);
+            if (!found) chatWarning("Worker not found: %s", workerName);
         });
     }
 
@@ -716,10 +721,10 @@ public class EnhancedSwarmHost extends Thread {
             }
             if (added > 0) {
                 depositConfig.save();
-                ChatUtils.infoPrefix("Swarm", "REGISTRY: reconciled %d deposit chest(s) for %s", added, server);
+                chatInfo("REGISTRY: reconciled %d deposit chest(s) for %s", added, server);
             }
         } catch (Exception e) {
-            ChatUtils.warningPrefix("Swarm", "REGISTRY: could not seed deposit chests: %s", e.getMessage());
+            chatWarning("REGISTRY: could not seed deposit chests: %s", e.getMessage());
         }
         return added;
     }
@@ -842,6 +847,10 @@ public class EnhancedSwarmHost extends Thread {
     public void dispatchNextTask(String botName) {
         if (isPanicked()) return; // B1 panic: no new work leaves the host while the lever is down.
         if (botName == null || botName.isEmpty()) return;
+        // A lease handed to a disconnected name is stranded until expiry. The
+        // resume route can be called for an offline bot, so only dispatch to a
+        // worker that actually has a live socket.
+        if (getWorkerConnection(botName) == null) return;
         try {
             // A halted bot accepts no planner work until an explicit resume.
             BotStatus st = botStatuses.get(botName);
@@ -978,11 +987,11 @@ public class EnhancedSwarmHost extends Thread {
         if (shortfall <= 0) {
             t.setStatus(BotTask.Status.COMPLETE);
             t.setStatusReason("already-in-stock");
-            ChatUtils.infoPrefix("Swarm", "ENSURE: %s target %d already met (%s holds %d, read %s); nothing queued",
+            chatInfo("ENSURE: %s target %d already met (%s holds %d, read %s); nothing queued",
                 itemId, target, where, have, scan <= 0 ? "never" : (age / 1000) + "s ago");
         } else {
             t.setStatusReason("ensure-shortfall");
-            ChatUtils.infoPrefix("Swarm", "ENSURE: %s target %d, %s holds %d (read %s), queuing shortfall %d",
+            chatInfo("ENSURE: %s target %d, %s holds %d (read %s), queuing shortfall %d",
                 itemId, target, where, have, scan <= 0 ? "never" : (age / 1000) + "s ago", shortfall);
         }
         getTaskQueue().add(t);

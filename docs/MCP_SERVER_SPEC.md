@@ -333,11 +333,19 @@ scenario that uses one is labelled `FAULT` in its verdict.
 
 ## 6. Mod-side endpoints this needs
 
-All under `/api/debug/`, same token + Origin rules as the panel. All return
+All under `/api/debug/`, same token + Origin rules as the panel. Most return
 `{"ok":true,...}` on success and `{"ok":false,"error":"<code>","detail":"…"}`
-on failure.
+on failure. The exception is `/api/debug/state`: it is the same serializer as
+`/ws`, so it returns `{"type":"state",...}` without an `ok` field.
+`HostHttpApiTest` asserts that exact shape rather than pretending the blanket
+`ok:true` sentence is true.
 
-### 6.1 `GET /api/debug/bot?bot=jamal`
+### 6.1 `GET /api/debug/bot?bot=jamal` — BLOCKED (design sketch)
+
+There is no GET handler for this route. A real request to it returns **404**;
+the implemented shape is the POST route in §6.4. The JSON below is the original
+design sketch, not a live route. `HostHttpApiTest` asserts the 404 and prints
+the blocked evidence quoted in §6.6.
 
 ```json
 {"ok":true,"bot":"jamal","brainActive":true,"state":"SMELTING_WAIT","halted":false,
@@ -362,9 +370,11 @@ Automated coverage: `FuelReaderTest` runs under `h5FuelTest` as part of `check`.
 known coal (42 x 1600 = 67,200 ticks), empty inventory (0 ticks, empty array), and an
 unresolved fuel (reported with its reason, excluded from `fuelTicks`).
 
-### 6.2 `GET /api/debug/trace?bot=jamal&n=20`
+### 6.2 `GET /api/debug/trace?bot=jamal&n=20` — BLOCKED
 
-Ring buffer, newest last. The single most useful tool for a state machine:
+No trace route exists yet; a real GET returns **404**. There is no worker-side
+decision-trace plumbing for the host to read, so this is not a test-only gap and
+no stub is shipped. The shape below is the target design.
 
 ```json
 [{"ms":1736…,"rule":"withdraw.short-delivery-topup",
@@ -372,13 +382,17 @@ Ring buffer, newest last. The single most useful tool for a state machine:
   "decision":"WITHDRAW 8"}]
 ```
 
-### 6.3 `GET /api/debug/world/container?x=&y=&z=`
+### 6.3 `GET /api/debug/world/container?x=&y=&z=` — BLOCKED
 
-Reuses the worker's existing container read (the same path `handleScan` uses).
+No GET container route exists; a real GET returns **404**. The world probe is
+reached through `POST /api/debug/world` (kind + args or a registry id). The GET
+sketch still needs a worker-side container read and a real client.
 
 ### 6.4 `/api/debug/bot` and preflight (as built, 2026-11-13)
 
-Built shape: `POST /api/debug/bot {bot, refresh}`. On `refresh` the host sends
+Built shape: `POST /api/debug/bot {bot, refresh}`. `HostHttpApiTest` drives the
+real POST: empty body returns an empty `bots` map; a named bot with no cached
+reply returns `{ok:false,error:"no_state_yet"}`. On `refresh` the host sends
 `DEBUG_STATE_REQUEST:<nonce>` to that worker, the worker answers
 `DEBUG_STATE:<nonce>|<json>` from `BotBrain.debugStateJson()`, and the host caches it.
 The route returns `{ok, bot, ageMs, data:{...}}`, or `{ok:false,error:"no_state_yet"}`
@@ -425,6 +439,51 @@ existing chat lines (chat stays for humans, JSONL is for assertions):
 Required event names: `task`, `withdraw`, `smelt`, `deposit`, `gate`, `lease`,
 `fault`, `watchdog`, `preflight`. Fields are additive-only within a major
 version.
+
+### 6.6 Real-host HTTP coverage
+
+`HostHttpApiTest` is the mod-side proof. It starts a real `EnhancedSwarmHost` and
+its Netty `SwarmWebServer` on loopback, loads a real `TaskQueue` from disk, and
+sends actual requests. It is wired into `h5HostApiTest` and therefore `check`:
+
+```text
+$ ./gradlew.bat h5HostApiTest --rerun-tasks --console=plain
+BLOCKED GET /api/debug/bot?bot=jamal -> 404 (implemented as POST /api/debug/bot)
+BLOCKED GET /api/debug/trace?bot=jamal&n=20 -> 404 (no worker decision-trace route exists)
+BLOCKED GET /api/debug/world/container?x=1&y=2&z=3 -> 404 (use POST /api/debug/world)
+PASS HostHttpApiTest: assets/auth/ws/tasks/actions/chests/debug
+```
+
+What is asserted over actual HTTP:
+
+| Surface | Routes | Evidence |
+|---|---|---|
+| Panel/assets | `GET /`, `/app.js`, `/v2`, `/v2/`, `/v2/app.css`, `/v2/app.js` | 200; `/` HTML + `swarm_token` cookie; `/api/items` JSON |
+| Auth | all routes; `POST` mutations | no token 401; wrong token 401; foreign Origin 403; header, `?token=`, and cookie all accepted |
+| WebSocket | `GET /ws` | state frame with the seeded tasks + `log_history` frame |
+| Tasks | `POST /api/task/add`, `clear_done`, `clear`, `remove`, `cancel`, `pause`, `resume` | add/remove/cancel/clear persist; clear_done drops COMPLETE; pause/resume do not lease to an offline bot |
+| Actions | `POST /api/action/follow`, `cancel`, `stop`, `resume`, `deposit`, `deposit_ores`, `deposit_shulkers`, `pvp_on`, `pvp_off`, `scan_chests`, `deposit_push`, `test_give`, `deposit_self`, `check_fuel` | 200 `{ok:true}`; `check_fuel` 501 with its named limitation; queue unchanged |
+| Chests | `POST /api/chest/add`, `remove` | coordinate appears/disappears in `/api/debug/deposit` |
+| Command/meta | `POST /api/command`, `nickname` | 200; nickname survives a fresh `TaskQueue` reload |
+| Debug POST | `state`, `bot`, `health`, `logs`, `tasks`, `deposit`, `chest`, `panic`, `resume`, `registry`, `storage`, `world` | state shape, empty/no-state behavior, health pid/isHost, log tail, queue size, deposit/registry/storage JSON, missing args, panic/queue clear |
+
+`HostHttpRemoveTest` separately proves the narrower removal contract
+(wrong-token 401, PENDING row gone, siblings preserved, reload two rows).
+
+Three documented GET sketches remain **blocked**, not silently skipped: the
+probe proved each is HTTP 404, with the exact output above. `POST
+/api/debug/bot` and `POST /api/debug/world` are the implemented alternatives.
+The production `Modules.get()` lookup remains game-only; the exact plain-JVM
+failure is quoted in §5.3. The probe binds the real host with
+`SwarmWebServer.bindHostForProbe` so the HTTP and queue code run without a
+Minecraft client; production leaves the binding null.
+
+The Streamable HTTP MCP transport (`POST /mcp`, legacy `GET /sse` + `POST
+/messages`) is a separate Node process in `tools/mcp/server.mjs`, not part of
+`SwarmWebServer`. Its existing self-test covers initialize, tools/list,
+tools/call, 401/403, and `GET /mcp` 405: `cd tools/mcp && node selftest.mjs`
+reported **20 passed, 0 failed** on 2026-11-14. It is not wired into Gradle
+because `AGENTS.md` forbids invoking Node from `gradlew build`.
 
 ---
 

@@ -232,6 +232,16 @@ val h5HostHttpTest = tasks.register<JavaExec>("h5HostHttpTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5HostApiTest = tasks.register<JavaExec>("h5HostApiTest") {
+    group = "verification"
+    description = "Verify the real host HTTP panel, task, action, chest, command, debug, and WS surface"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.HostHttpApiTest")
+    workingDir = layout.buildDirectory.dir("h5-host-api-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest, h5GraceTest, h5RemoveTest, h5HostHttpTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest, h5GraceTest, h5RemoveTest, h5HostHttpTest, h5HostApiTest)
 }

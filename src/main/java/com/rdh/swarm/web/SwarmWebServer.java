@@ -398,7 +398,11 @@ public class SwarmWebServer {
                 .map(item -> BuiltInRegistries.ITEM.getKey(item).toString())
                 .sorted()
                 .forEach(id -> items.add(id));
-        } catch (Exception ignored) {}
+        } catch (Throwable t) {
+            // A headless panel/spec probe has no bootstrapped registry. The route
+            // still owns a valid JSON response; returning an empty cache is honest.
+            System.err.println("[Swarm] item registry unavailable: " + t);
+        }
         JsonObject root = new JsonObject();
         root.add("items", items);
         cached = GSON.toJson(root);
@@ -412,34 +416,34 @@ public class SwarmWebServer {
      * the fire-and-forget command switch. POST-only, same token/Origin rules.
      */
     public String handleDebugApi(String path, String body) {
-        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        EnhancedSwarmHost host = apiHost();
         try {
             if ("/api/debug/state".equals(path)) {
                 return buildStateJson();
             }
             if ("/api/debug/bot".equals(path)) {
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
                 String bot = extractJson(body, "bot");
                 if (bot == null || bot.isBlank()) {
                     StringBuilder sb = new StringBuilder("{\"ok\":true,\"bots\":{");
                     boolean first = true;
-                    for (String name : mod.host.getDebugStateWorkers()) {
+                    for (String name : host.getDebugStateWorkers()) {
                         if (!first) sb.append(',');
                         first = false;
-                        sb.append('"').append(esc(name)).append("\":").append(mod.host.getDebugState(name));
+                        sb.append('"').append(esc(name)).append("\":").append(host.getDebugState(name));
                     }
                     return sb.append("}}").toString();
                 }
                 boolean refresh = "true".equalsIgnoreCase(String.valueOf(extractJson(body, "refresh")));
-                if (refresh) mod.host.requestDebugState(bot);
-                String json = mod.host.getDebugState(bot);
+                if (refresh) host.requestDebugState(bot);
+                String json = host.getDebugState(bot);
                 if (json == null) {
                     return "{\"ok\":false,\"error\":\"no_state_yet\",\"bot\":\"" + esc(bot)
                         + "\",\"detail\":\"no debug reply cached for this worker yet\"}";
                 }
-                long age = System.currentTimeMillis() - mod.host.getDebugStateAt(bot);
+                long age = System.currentTimeMillis() - host.getDebugStateAt(bot);
                 return "{\"ok\":true,\"bot\":\"" + esc(bot) + "\",\"ageMs\":" + age + ",\"data\":" + json + "}";
             }
             if ("/api/debug/health".equals(path)) {
@@ -451,7 +455,7 @@ public class SwarmWebServer {
                 } catch (Exception ignored) {}
                 return "{\"ok\":true,\"pid\":" + ProcessHandle.current().pid()
                     + ",\"uptimeMs\":" + java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime()
-                    + ",\"isHost\":" + (mod != null && mod.isHost())
+                    + ",\"isHost\":" + (host != null)
                     + ",\"jar\":\"" + esc(jar) + "\"}";
             }
 
@@ -488,29 +492,29 @@ public class SwarmWebServer {
 
             if ("/api/debug/tasks".equals(path)) {
                 // B1 task_watch: the live queue, straight out of the TaskQueue in the tree.
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
-                var q = mod.host.getTaskQueue();
+                var q = host.getTaskQueue();
                 var gson = new com.google.gson.Gson();
                 com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(buildStateJson()).getAsJsonObject();
                 com.google.gson.JsonArray tasks = root.has("tasks") ? root.getAsJsonArray("tasks") : new com.google.gson.JsonArray();
-                return "{\"ok\":true,\"size\":" + q.size() + ",\"panicked\":" + mod.host.isPanicked()
+                return "{\"ok\":true,\"size\":" + q.size() + ",\"panicked\":" + host.isPanicked()
                     + ",\"tasks\":" + gson.toJson(tasks) + "}";
             }
 
             if ("/api/debug/deposit".equals(path)) {
                 // What the host believes the deposit config is, and which storage entries
                 // the registry holds: the two must agree or a push will erase the difference.
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
-                return mod.host.depositConfigJson();
+                return host.depositConfigJson();
             }
 
             if ("/api/debug/chest".equals(path)) {
                 // B1 chest_delta backend: read a registry chest by id, synchronously.
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
                 String bot = extractJson(body, "bot");
@@ -518,15 +522,15 @@ public class SwarmWebServer {
                 if (bot == null || bot.isBlank() || cid == null || cid.isBlank()) {
                     return "{\"ok\":false,\"error\":\"bot_and_id_required\"}";
                 }
-                var entry = mod.host.getBaseRegistry().byId(cid);
+                var entry = host.getBaseRegistry().byId(cid);
                 if (entry == null) {
                     return "{\"ok\":false,\"error\":\"unknown_id\",\"id\":\"" + esc(cid) + "\"}";
                 }
-                mod.host.requestWorldProbe(bot, "container_open", entry.posString());
+                host.requestWorldProbe(bot, "container_open", entry.posString());
                 long deadline = System.currentTimeMillis() + 40000L;
                 while (System.currentTimeMillis() < deadline) {
-                    String json = mod.host.getWorldProbe(bot);
-                    if (json != null && System.currentTimeMillis() - mod.host.getWorldProbeAt(bot) < 35000L) {
+                    String json = host.getWorldProbe(bot);
+                    if (json != null && System.currentTimeMillis() - host.getWorldProbeAt(bot) < 35000L) {
                         return "{\"ok\":true,\"id\":\"" + esc(cid) + "\",\"pos\":\"" + esc(entry.posString())
                             + "\",\"serverMs\":" + (40000L - (deadline - System.currentTimeMillis()))
                             + ",\"data\":" + json + "}";
@@ -537,28 +541,28 @@ public class SwarmWebServer {
             }
 
             if ("/api/debug/panic".equals(path) || "/api/debug/resume".equals(path)) {
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
-                if ("/api/debug/resume".equals(path)) mod.host.resume();
-                else mod.host.panic();
-                return mod.host.panicJson();
+                if ("/api/debug/resume".equals(path)) host.resume();
+                else host.panic();
+                return host.panicJson();
             }
             if ("/api/debug/registry".equals(path)) {
                 // A3: storage and furnace locations as data, readable by any observer.
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
-                return mod.host.getBaseRegistry().toJson();
+                return host.getBaseRegistry().toJson();
             }
             if ("/api/debug/storage".equals(path)) {
                 // A2: the index was invisible, which made "index says 690, world says 768"
                 // unanswerable. Totals + per-chest breakdown, read straight from StorageIndex.
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
-                String server = mod.host.getCurrentServer();
-                var idx = mod.host.getStorageIndex();
+                String server = host.getCurrentServer();
+                var idx = host.getStorageIndex();
                 StringBuilder sb = new StringBuilder("{\"ok\":true,\"server\":\"" + esc(server) + "\",\"totals\":{");
                 var items = idx.getAllItems(server);
                 boolean first = true;
@@ -580,18 +584,18 @@ public class SwarmWebServer {
                 }
                 sb.append("},\"registryChests\":[");
                 boolean firstChest = true;
-                for (var ce : mod.host.getBaseRegistry().storage()) {
+                for (var ce : host.getBaseRegistry().storage()) {
                     if (!firstChest) sb.append(',');
                     firstChest = false;
                     sb.append("{\"id\":\"").append(esc(ce.id)).append("\",\"pos\":\"")
                       .append(esc(ce.posString())).append("\",\"double\":").append(ce.doubleChest).append('}');
                 }
-                int furnaceCount = mod.host.getBaseRegistry().furnaces().size();
+                int furnaceCount = host.getBaseRegistry().furnaces().size();
                 sb.append("],\"registryFurnaces\":").append(furnaceCount);
                 return sb.append('}').toString();
             }
             if ("/api/debug/world".equals(path)) {
-                if (mod == null || !mod.isHost() || mod.host == null) {
+                if (host == null) {
                     return "{\"ok\":false,\"error\":\"not_host\"}";
                 }
                 String bot = extractJson(body, "bot");
@@ -604,7 +608,7 @@ public class SwarmWebServer {
                 // kind come from data rather than from whatever the caller passed.
                 String regId = extractJson(body, "id");
                 if (regId != null && !regId.isBlank()) {
-                    var entry = mod.host.getBaseRegistry().byId(regId);
+                    var entry = host.getBaseRegistry().byId(regId);
                     if (entry == null) {
                         return "{\"ok\":false,\"error\":\"unknown_id\",\"id\":\"" + esc(regId) + "\"}";
                     }
@@ -615,12 +619,12 @@ public class SwarmWebServer {
                     args = entry.posString();
                 }
                 boolean ask = kind != null && !kind.isBlank();
-                if (ask) mod.host.requestWorldProbe(bot, kind.trim(), args == null ? "" : args.trim());
-                String json = mod.host.getWorldProbe(bot);
+                if (ask) host.requestWorldProbe(bot, kind.trim(), args == null ? "" : args.trim());
+                String json = host.getWorldProbe(bot);
                 if (json == null) {
                     return "{\"ok\":false,\"error\":\"waiting\",\"bot\":\"" + esc(bot) + "\"}";
                 }
-                long age = System.currentTimeMillis() - mod.host.getWorldProbeAt(bot);
+                long age = System.currentTimeMillis() - host.getWorldProbeAt(bot);
                 if (!ask && age > 15000L) {
                     return "{\"ok\":false,\"error\":\"stale\",\"ageMs\":" + age + "}";
                 }
@@ -788,7 +792,10 @@ public class SwarmWebServer {
                 }
                 case "/api/action/follow" -> {
                     String myName = "";
-                    try { myName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); } catch (Exception ignored) {}
+                    if (boundHost == null) {
+                        try { myName = net.minecraft.client.Minecraft.getInstance().getUser().getName(); }
+                        catch (Throwable ignored) {}
+                    }
                     host.sendAll("swarm:all follow player " + myName);
                     logInfo("Follow me sent to all bots");
                 }
@@ -810,6 +817,10 @@ public class SwarmWebServer {
                     // task and no worker, so there was no way to put a known stack in their
                     // inventory to deposit. Hands a vanilla /give to the client thread; the
                     // server still decides whether it is allowed. Not a survival feature.
+                    if (boundHost != null) {
+                        logWarn("Test fixture requires a running game client");
+                        return;
+                    }
                     var giveMod = meteordevelopment.meteorclient.systems.modules.Modules.get()
                         .get(com.rdh.swarm.EnhancedSwarm.class);
                     String giveItem = extractJson(body, "item");
@@ -830,6 +841,10 @@ public class SwarmWebServer {
                     // the deposit driver locally instead of relaying a command. It has to
                     // be handed to the client thread — chat output and the driver both
                     // expect it, and from a web thread the whole call dies silently.
+                    if (boundHost != null) {
+                        logWarn("Self-deposit requires a running game client");
+                        return;
+                    }
                     var swarmMod = meteordevelopment.meteorclient.systems.modules.Modules.get()
                         .get(com.rdh.swarm.EnhancedSwarm.class);
                     if (swarmMod == null) {
