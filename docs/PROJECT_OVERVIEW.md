@@ -453,7 +453,7 @@ From the repository's own documents, not from a fresh run for this export. These
 - The panel has been browser-tested only against fake players. No real worker has driven the panel in game.
 - No full one-hour acceptance run is recorded as passed.
 
-The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all eleven `h5Test` probes passed, including `FuelReaderTest`, `LeaseGraceTest`, `TaskRemovalTest`, `HostHttpRemoveTest`, and `HostHttpApiTest`; no live Minecraft run was performed. The HTTP probes are plain-JVM proofs against a real `EnhancedSwarmHost`, not a game session; the production `Modules.get()` lookup remains game-only. The external Node MCP transport was separately checked with `node tools/mcp/selftest.mjs` — 20 passed, 0 failed.
+The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all eleven `h5Test` probes passed, including `FuelReaderTest`, `LeaseGraceTest`, `TaskRemovalTest`, `HostHttpRemoveTest`, and `HostHttpApiTest`; no live Minecraft run was performed. The HTTP probes are plain-JVM proofs against a real `EnhancedSwarmHost`, not a game session; the production `Modules.get()` lookup remains game-only. The external Node MCP transport was separately checked with `node tools/mcp/selftest.mjs` — 24 passed, 0 failed, including the legacy `/sse` + `/messages` handshake.
 
 ---
 

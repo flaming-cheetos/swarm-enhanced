@@ -247,5 +247,5 @@ state + log frames, task add/remove/cancel/clear/pause/resume, every action rout
 add/remove, command/nickname, and every implemented `/api/debug/*` POST route. The three GET
 design sketches in `MCP_SERVER_SPEC.md` §6.1–6.3 are **blocked**: the probe asserts 404 and
 quotes the exact output in §6.6; they are not claimed as live routes. The external Node MCP
-transport is covered separately by `tools/mcp/selftest.mjs` (20 passed, 0 failed) because
-Gradle is forbidden to invoke Node.
+transport is covered separately by `tools/mcp/selftest.mjs` (24 passed, 0 failed, including
+legacy `/sse` + `/messages`) because Gradle is forbidden to invoke Node.

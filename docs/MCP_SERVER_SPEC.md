@@ -480,10 +480,11 @@ Minecraft client; production leaves the binding null.
 
 The Streamable HTTP MCP transport (`POST /mcp`, legacy `GET /sse` + `POST
 /messages`) is a separate Node process in `tools/mcp/server.mjs`, not part of
-`SwarmWebServer`. Its existing self-test covers initialize, tools/list,
-tools/call, 401/403, and `GET /mcp` 405: `cd tools/mcp && node selftest.mjs`
-reported **20 passed, 0 failed** on 2026-11-14. It is not wired into Gradle
-because `AGENTS.md` forbids invoking Node from `gradlew build`.
+`SwarmWebServer`. Its self-test covers initialize, tools/list, tools/call,
+401/403, `GET /mcp` 405, and the legacy `GET /sse` + `POST /messages`
+handshake: `cd tools/mcp && node selftest.mjs` reported **24 passed, 0 failed**
+on 2026-11-14. It is not wired into Gradle because `AGENTS.md` forbids invoking
+Node from `gradlew build`.
 
 ---
 

@@ -82,6 +82,41 @@ try {
   check('ping responds', ping.json?.result !== undefined);
 
   check('GET /mcp is 405', (await fetch(`${url}/mcp`, { headers: { 'X-Swarm-Token': TOKEN } })).status === 405);
+
+  // Legacy HTTP+SSE transport, still promised by the spec.
+  const sse = await fetch(`${url}/sse`, { headers: { 'X-Swarm-Token': TOKEN } });
+  check('GET /sse opens', sse.status === 200, String(sse.status));
+  const reader = sse.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuffer = '';
+  while (!sseBuffer.includes('\n\n')) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    sseBuffer += decoder.decode(value, { stream: true });
+  }
+  const endpoint = sseBuffer.match(/data: (\/messages\?sessionId=[^\n]+)/)?.[1];
+  check('GET /sse sends the messages endpoint', Boolean(endpoint), JSON.stringify(sseBuffer));
+  if (endpoint) {
+    const legacyInit = await fetch(`${url}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Swarm-Token': TOKEN },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 7, method: 'initialize',
+        params: { protocolVersion: '2026-07-28', capabilities: {}, clientInfo: { name: 'selftest-legacy', version: '0' } },
+      }),
+    });
+    check('POST /messages accepts a legacy call', legacyInit.status === 202, String(legacyInit.status));
+    let legacyEvent = '';
+    while (!legacyEvent.includes('\n\n')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      legacyEvent += decoder.decode(value, { stream: true });
+    }
+    check('legacy initialize reply arrives',
+      legacyEvent.includes('event: message') && legacyEvent.includes('"protocolVersion":"2026-07-28"'),
+      JSON.stringify(legacyEvent));
+    await reader.cancel();
+  }
 } catch (e) {
   console.log('FAIL harness error — ' + e.message);
   fail++;
