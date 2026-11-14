@@ -1,6 +1,6 @@
 # 11 — Commands (`/eswarm`, alias `/swarm`)
 
-Root command class `commands/SwarmCommand` (694 lines). Two instances registered:
+Root command class `commands/SwarmCommand` (965 lines). Two instances registered:
 `new SwarmCommand()` → **`/eswarm`**, and `new SwarmCommand("swarm")` → **`/swarm`** (legacy alias, same tree).
 
 ## Literal tree (from `build()`)
@@ -9,7 +9,8 @@ Root command class `commands/SwarmCommand` (694 lines). Two instances registered
 /eswarm list                                  // host.listWorkers()
 /eswarm send <target> <command...>            // "swarm:all <cmd>" or "swarm:<target> <cmd>"
 /eswarm gather <item> <qty>                    // additive; base stock does not count
-/eswarm ensure [in <category>] <item> <qty>    // target-level; host queues the measured shortfall
+/eswarm ensure <item> <qty>                   // target-level; host queues the measured shortfall
+/eswarm ensure in <category> <item> <qty>     // same, stock counted inside one category
 /eswarm task cancel <taskId>                  // "swarm:all task cancel <uuid>"
 /eswarm task pause <bot>                      // "swarm:<bot> task pause"
 /eswarm task resume <bot>                     // "swarm:<bot> task resume"
@@ -58,8 +59,35 @@ updatePersistedCoords(mod, x, y, z);            // writes deposit-x/y/z settings
 ```
 
 ## Notes
-- Every command asserts `mod.isHost()` except `exec` (falls back to local dispatch) and `task add` (host required).
+- Every command asserts `mod.isHost()` except `exec` (falls back to local dispatch).
 - `waypoint goto` sends a raw `#goto`/`goto`-style command string, no waypoint coordinates are resolved host-side for workers
   (workers hold their own WaypointManager).
 - `stock` reads `host.getStorageIndex()` — host-only, no worker round trip.
 - 6 × `catch (Exception ignored)` in this file; `TARGET_SUGGESTIONS` reflection failure silently falls back to a hardcoded list.
+
+## Tab completion (live data)
+
+Every argument that can be known is suggested from what the client currently holds.
+The only free-text argument left is `exec <command...>`.
+
+**Verified in game by the owner on 2026-11-14, jar `0.1.0+206fe95`** — every item below tab-
+completed against a live base. Before that the lists were compiled but never typed, which is
+why this line exists.
+
+| argument | suggested from |
+|---|---|
+| `gather`/`ensure` `<item>` | base stock first, count in the tooltip, then the item registry |
+| `gather <qty>` | 16 / 32 / 64 / 128 / 192 / 256 |
+| `ensure <qty>` | `have+64/128/256/512` with the shortfall; `have` itself marked already-at-target |
+| `ensure in <category>` | categories that have chests here, with chest counts; built-ins after, marked no-chests-yet |
+| `task cancel <taskId>` | live queue: id, type, item, progress, status |
+| `task pause`/`resume <bot>` | connected workers and `all` |
+| `deposit set <category>` | the same live category list |
+| `deposit set <x y z>` | the player's current block position, each of the three |
+| `deposit remove <index>` | 1–8 |
+| `deposit threshold <n>` | 0 / 9 / 18 / 27 / 36, labelled in free slots |
+| `waypoint add <category>` | cave, wood, nether_cave, surface, portal, far, plus any category already in use |
+| `send <target>` | connected workers and `all` |
+
+Suggestion *order* is the honesty mechanism: stock you actually hold outranks the registry,
+and a reading that has gone stale still suggests the stale count until a scan refreshes it.
