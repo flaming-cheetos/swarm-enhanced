@@ -913,3 +913,31 @@ unproven and failed the task — while the very next task, a minute later, compl
 `already-in-stock` evidence. The difference is timing: the first check ran before the deposit's
 chest measurement landed. A race, not a policy problem, but it means an honest gather fails and
 Gate A cannot pass while it exists.
+
+## Completion sweep: a skip is not a failure (verified 2026-11-14, jar 0.1.0+88b38ea)
+
+`DropCollector.startFinalSweep` returned UNPROVEN whenever `startWorkUnit()` refused — a 1 s
+cooldown since the previous sweep, still breaking, another sweep active, or inventory full. An
+honest gather that had just deposited therefore failed one tick after its own deposit sweep.
+
+Now: `DEFERRED` for those scheduler states, `BotBrain` waits up to 5 s and then closes on the
+count gate that already accepted `have + landed >= need`; a disabled collector answers
+`NOTHING_TO_COLLECT`. No code path returns UNPROVEN any more — `grep -n UNPROVEN
+src/main/java/com/rdh/swarm/task/DropCollector.java` finds only the enum constant and its
+comment, so a gather cannot be failed for an unproven sweep at all. The gate that remains is
+the count gate, which compares real numbers.
+
+Live, on the test base:
+
+```
+TASK: complete 5f94586a evidence=inv        (gather -> deposit -> complete, no unproven)
+TASK: complete 9913864b evidence=inv
+[Bot Brain] Setting Collect Drops changed to false.
+[Bot Brain] Setting Collect Drops is false.
+TASK: complete c42ac52b evidence=verified-empty   (collector off, task still closes)
+[Bot Brain] Setting Collect Drops changed to true.
+```
+
+Not reproduced deliberately: the exact one-second cooldown collision. It is structurally gone
+rather than merely unobserved, per the grep above; the three tasks above cover the happy path
+and the disabled path.
