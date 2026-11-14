@@ -48,7 +48,7 @@ against you · `ABSENT` not written
 | M9 | Fleet: several bots, no two going for the same chest | bot | `PARTIAL` — task claims, leases, renew and requeue are `DONE` live 2026-11-13; chest/furnace deconfliction `ABSENT` (gate A2 depends on it) |
 | M10 | In-game chatbot — independent, buildable any time | bot | `ABSENT` |
 | M11 | Hostile-server hardening: pacing, packet rates, reconnects | bot | `ABSENT` |
-| M12 | Threat and evasion — priority sits **above** M4 | bot | `ABSENT` — corpus scan complete and mapped (`29_REFERENCE_CORPUS.md`); build set is decided by the Gate A dry run |
+| M12 | Threat and evasion — priority sits **above** M4 | bot | `PARTIAL` — `SwarmSafeFire`, `SwarmShield`, `SwarmFlee` are `CODE ONLY` as of 2026-11-14 (never watched in game); arrow dodge and anti-knockback still undecided |
 | M13 | Stash and travel: ender chest, stash registry, nether | bot | `ABSENT` |
 | W | Panel v2 at `/v2` — static today; React rewrite planned | panel | `CODE ONLY` — opened on desktop and phone against fake players; no bot in game yet |
 
@@ -65,7 +65,7 @@ being good.
 
 | card | what | why it blocks | exit criterion |
 |---|---|---|---|
-| C1 SafeFire | `CollisionShapeEvent` makes fire/lava solid client-side | the most likely way a 30-minute shift ends early: the bot cannot see lava sitting inside its path | bot refuses to enter a fire/lava block; proven on the test server with a path routed through lava |
+| C1 SafeFire | `CollisionShapeEvent` makes fire/lava solid client-side | the most likely way a 30-minute shift ends early: the bot cannot see lava sitting inside its path | **`CODE ONLY` 2026-11-14 (`SwarmSafeFire`)** — still unproven until a path routed through lava is refused on the test server |
 
 One module, ~40 lines, no interaction with the task loop. That is the entire Gate A delta in code.
 

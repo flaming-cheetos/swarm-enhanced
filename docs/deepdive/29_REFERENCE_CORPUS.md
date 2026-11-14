@@ -45,7 +45,7 @@ Coverage: **1,401 files inventoried, ~40 read in depth (~9,000 lines)**. Backlog
 ## 2. Capability cards
 
 ### C1 — Lava/fire immunity (SafeFire)
-- **Status:** `ADOPT` (first build item)
+- **Status:** `CODE ONLY` — built 2026-11-14 as `SwarmSafeFire` (lava ON by default); not yet watched in game
 - **Source:** `Numby-hack-main/.../general/SafeFire.java` (30 lines)
 - **Mechanism:** handles `CollisionShapeEvent` and substitutes a full cube for fire/lava block states,
   so the client's own collision math refuses to walk you in. No packets, no server interaction.
@@ -73,7 +73,7 @@ Coverage: **1,401 files inventoried, ~40 read in depth (~9,000 lines)**. Backlog
   a straight-line walk + rotate-to-block before trusting it.
 
 ### C3 — Shield / offhand layer
-- **Status:** `CANDIDATE` (approved direction, not yet built)
+- **Status:** `CODE ONLY` — built 2026-11-14 as `SwarmShield`; the three constraints below are enforced in code, none watched in game yet
 - **Sources:**
   - `meteor-client-master/.../combat/Offhand.java` — equips a chosen item to offhand, `InvUtils.move().from(slot).toOffhand()`
   - `Numby-hack-main/.../ShieldSwap.java` — same, shield-specific
@@ -99,7 +99,7 @@ Coverage: **1,401 files inventoried, ~40 read in depth (~9,000 lines)**. Backlog
 - **Risk:** none — this is the "don't duplicate" rule that killed the first combat attempt.
 
 ### C5 — Disengage / flee
-- **Status:** `ADOPT` (step 4)
+- **Status:** `CODE ONLY` — built 2026-11-14 as `SwarmFlee`; saves and restores the Baritone goal so a task path survives a flee
 - **Sources:** `MeteorPlus/.../combat/Hunt.java` (`PathManagers.get().moveTo(entity.blockPosition())`),
   Meteor `AutoWalk` (`PathManagers.get().moveInDirection(yaw)`), `SafetyNet`, `AutoLeave`, `AutoLogPlus`
 - **Mechanism:** approach and retreat are both Baritone goals, not key mashing. `Hunt` shows the whole
