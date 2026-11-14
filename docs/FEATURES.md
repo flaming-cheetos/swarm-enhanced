@@ -667,7 +667,7 @@ identical on both), and restarted: `loadedFromDisk=true`, `count=12`, same `seed
 | `world_container {id:bf1}` | `BlastFurnaceBlockEntity`, `coal x42` |
 | `world_container {id:chest-main}` | `ChestBlockEntity`, **768 iron**, 32/54 slots |
 | `swarm_preflight` | **pass=true, failed=[]** (11 checks) |
-| selftest | **20 passed, 0 failed** |
+| selftest | **20 passed, 0 failed at that time; 24/0 now with legacy SSE** |
 
 ## B1 operator and diagnostic tools (2026-11-13)
 
