@@ -73,7 +73,7 @@ Coverage: **1,401 files inventoried, ~40 read in depth (~9,000 lines)**. Backlog
   a straight-line walk + rotate-to-block before trusting it.
 
 ### C3 — Shield / offhand layer
-- **Status:** `CODE ONLY` — built 2026-11-14 as `SwarmShield`; the three constraints below are enforced in code, none watched in game yet
+- **Status:** `DONE` 2026-11-14 — `SwarmShield` staged in a 1v1 against an invulnerable zombie: control run 18.5 -> 13.0 hp over 5 hits, shield run 20.0 hp flat with `shieldBlocking=true` (`31_GUARD_HUNT_SHIELD_2026-11-14.md`). The three constraints below are enforced in code
 - **Sources:**
   - `meteor-client-master/.../combat/Offhand.java` — equips a chosen item to offhand, `InvUtils.move().from(slot).toOffhand()`
   - `Numby-hack-main/.../ShieldSwap.java` — same, shield-specific

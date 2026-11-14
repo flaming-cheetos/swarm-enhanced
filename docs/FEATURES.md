@@ -754,7 +754,7 @@ evidence=verified-empty`.
 | Commands and keybinds | `CODE ONLY` | `SwarmCommand`; `EnhancedSwarmAddon`; `SwarmHoleFiller.forceFill` |
 | Persistence across restart | `PARTIAL` - base registry proven across a real restart 2026-11-13 (12 entries, no re-seed); tasks/waypoints/death still unproven | `TaskQueue`, `DepositConfig`, `StorageIndex`, `WaypointManager`; `DeathTracker` is memory-only |
 | SafeFire | `DONE` mechanism, 2026-11-14 - collision probe shows lava as a full cube with the module on (`count 1`) and empty with it off (`count 0`); bot refused the lava corridor. Not yet seen saving a real task | `SwarmSafeFire` (`CollisionShapeEvent`) |
-| Shield while fighting | `CODE ONLY` (2026-11-14) - offhand equips (proven), requires KillAura, yields to a locked totem; no clean fight staged yet | `SwarmShield` |
+| Shield while fighting | `DONE` 2026-11-14 - staged 1v1 vs an invulnerable zombie: shield off took 5 hits (18.5 -> 13.0 hp); shield on took 0 hits (20.0 flat) with `shieldBlocking=true`. See `31_GUARD_HUNT_SHIELD_2026-11-14.md` | `SwarmShield` |
 | Flee when low | `CODE ONLY` (2026-11-14) - operator saw it working; repath throttle and sprint settings added afterwards and not re-tested | `SwarmFlee` |
 
 Three rows are `DONE` on live evidence from 2026-11-13: mining and gathering,
@@ -866,12 +866,14 @@ trusted, and any gate that counts them is measuring the index against itself.
 **Also found (fixed for removal):** `/api/task/remove` used to be a no-op for PENDING rows, so
 a queue could not be emptied once queued. `TaskQueue.removeById` now rebuilds the queue, and
 `TaskRemovalTest` proves PENDING removal, sibling preservation, persistence, ACTIVE cleanup, and
-an empty board. `HostHttpRemoveTest` proves the HTTP path too: a real `EnhancedSwarmHost` on
-loopback rejects a wrong token with 401, then removes one real PENDING row over a tokenized
-POST, keeps both siblings, and persists exactly two rows across reload. Plain-JVM module
-registration is still game-only (`MeteorClient` reports `invoked too early?`); the probe binds
-the same host directly, and `MCP_SERVER_SPEC.md` §5.3 records that exact failure. The endpoint
-is no longer merely queue-tested.
+an empty board. `HostHttpRemoveTest` proves the removal path too: a real `EnhancedSwarmHost` on loopback
+rejects a wrong token with 401, then removes one real PENDING row over a tokenized POST, keeps
+both siblings, and persists exactly two rows across reload. `HostHttpApiTest` extends that to
+the rest of the mod surface: panel/assets, header/query/cookie auth, foreign-Origin rejection,
+`/ws`, task/action/chest/command/debug POST routes, and the exact 404s for the three GET design
+sketches. Plain-JVM module registration is still game-only (`MeteorClient` reports `invoked too
+early?`); the probes bind the same host directly, and `MCP_SERVER_SPEC.md` §5.3/§6.6 record that
+exact failure and the blocked routes. The endpoint is no longer merely queue-tested.
 
 ## Deposit chests: why a fifth chest vanished (2026-11-14)
 

@@ -48,7 +48,7 @@ against you · `ABSENT` not written
 | M9 | Fleet: several bots, no two going for the same chest | bot | `PARTIAL` — task claims, leases, renew and requeue are `DONE` live 2026-11-13 and h5-tested; 60-second lease-grace re-attach is h5-tested (`LeaseGraceTest`) but not separately observed live; chest/furnace deconfliction `ABSENT` (gate A2 depends on it) |
 | M10 | In-game chatbot — independent, buildable any time | bot | `ABSENT` |
 | M11 | Hostile-server hardening: pacing, packet rates, reconnects | bot | `ABSENT` |
-| M12 | Threat and evasion — priority sits **above** M4 | bot | `PARTIAL` — SafeFire proven at the collision layer 2026-11-14; Shield and Flee are `CODE ONLY` (see `30_TEST_RUN_2026-11-14.md`); arrow dodge and anti-knockback still undecided |
+| M12 | Threat and evasion — priority sits **above** M4 | bot | `PARTIAL` — SafeFire proven at the collision layer and Shield proven in a staged 1v1, both 2026-11-14 (see `30_...` and `31_GUARD_HUNT_SHIELD_2026-11-14.md`); Flee is `CODE ONLY` after its repath fix; arrow dodge and anti-knockback still undecided |
 | M13 | Stash and travel: ender chest, stash registry, nether | bot | `ABSENT` |
 | W | Panel v2 at `/v2` — static today; React rewrite planned | panel | `CODE ONLY` — opened on desktop and phone against fake players; no bot in game yet |
 
@@ -239,3 +239,13 @@ What must be true before the 30 minutes start:
 3. **Food on hand and `SwarmAutoEat` on.** Eating has never been watched live.
 4. **The shift.** One bot, 30 minutes, then open every deposit chest and diff it against the task's
    claimed quantity. A `COMPLETE 3/3` with 2 in the chest is the failure this gate exists to catch.
+
+**HTTP API evidence (2026-11-14).** `HostHttpApiTest` runs under `h5HostApiTest`/`check` and
+starts a real `EnhancedSwarmHost` plus Netty `SwarmWebServer` on loopback with a real persisted
+`TaskQueue`. It drives panel/assets, header/query/cookie auth, foreign-Origin rejection, `/ws`
+state + log frames, task add/remove/cancel/clear/pause/resume, every action route, chest
+add/remove, command/nickname, and every implemented `/api/debug/*` POST route. The three GET
+design sketches in `MCP_SERVER_SPEC.md` §6.1–6.3 are **blocked**: the probe asserts 404 and
+quotes the exact output in §6.6; they are not claimed as live routes. The external Node MCP
+transport is covered separately by `tools/mcp/selftest.mjs` (20 passed, 0 failed) because
+Gradle is forbidden to invoke Node.
