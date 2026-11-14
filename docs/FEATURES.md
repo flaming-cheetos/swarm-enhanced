@@ -743,9 +743,9 @@ evidence=verified-empty`.
 | Panel (`/v2`, old `/`) | `CODE ONLY` | `SwarmWebServer`; `SwarmWebHandler`; `SwarmWebPanelV2`; `web/v2/*` |
 | Commands and keybinds | `CODE ONLY` | `SwarmCommand`; `EnhancedSwarmAddon`; `SwarmHoleFiller.forceFill` |
 | Persistence across restart | `PARTIAL` - base registry proven across a real restart 2026-11-13 (12 entries, no re-seed); tasks/waypoints/death still unproven | `TaskQueue`, `DepositConfig`, `StorageIndex`, `WaypointManager`; `DeathTracker` is memory-only |
-| SafeFire | `CODE ONLY` (2026-11-14) - lava on by default, unlike the ported original | `SwarmSafeFire` (`CollisionShapeEvent`) |
-| Shield while fighting | `CODE ONLY` (2026-11-14) - requires KillAura, yields to a locked totem, drops while moving | `SwarmShield` |
-| Flee when low | `CODE ONLY` (2026-11-14) - Baritone direction goal, restores the task's goal afterwards | `SwarmFlee` |
+| SafeFire | `DONE` mechanism, 2026-11-14 - collision probe shows lava as a full cube with the module on (`count 1`) and empty with it off (`count 0`); bot refused the lava corridor. Not yet seen saving a real task | `SwarmSafeFire` (`CollisionShapeEvent`) |
+| Shield while fighting | `CODE ONLY` (2026-11-14) - offhand equips (proven), requires KillAura, yields to a locked totem; no clean fight staged yet | `SwarmShield` |
+| Flee when low | `CODE ONLY` (2026-11-14) - operator saw it working; repath throttle and sprint settings added afterwards and not re-tested | `SwarmFlee` |
 
 Three rows are `DONE` on live evidence from 2026-11-13: mining and gathering,
 the task queue, and deposits and chests (`test-runs/live-smelt-day2/` — the

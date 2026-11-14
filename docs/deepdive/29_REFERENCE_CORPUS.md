@@ -45,7 +45,7 @@ Coverage: **1,401 files inventoried, ~40 read in depth (~9,000 lines)**. Backlog
 ## 2. Capability cards
 
 ### C1 — Lava/fire immunity (SafeFire)
-- **Status:** `CODE ONLY` — built 2026-11-14 as `SwarmSafeFire` (lava ON by default); not yet watched in game
+- **Status:** `DONE` (mechanism) — `SwarmSafeFire`, built 2026-11-14. Collision probe: lava is a full cube with the module on and empty with it off; the bot refused the lava corridor. See `30_TEST_RUN_2026-11-14.md`
 - **Source:** `Numby-hack-main/.../general/SafeFire.java` (30 lines)
 - **Mechanism:** handles `CollisionShapeEvent` and substitutes a full cube for fire/lava block states,
   so the client's own collision math refuses to walk you in. No packets, no server interaction.
