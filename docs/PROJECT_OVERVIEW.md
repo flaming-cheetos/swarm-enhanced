@@ -3,8 +3,8 @@
 - **Snapshot:** 2026-11-14 (originally 2026-11-13)
 - **Repository:** `C:\Projects\swarm\swarm-improved`
 - **Branch:** `main`
-- **Code snapshot:** `99003d7` (the fuel-debug change; later docs commits are bookkeeping)
-- **`origin/main` at code snapshot:** `99003d7`
+- **Code snapshot:** `45467cf` (fuel probe; later docs commits are bookkeeping)
+- **`origin/main` at code snapshot:** `45467cf`
 - **Version:** `0.1.0`
 - **Working tree:** source is clean. The only uncommitted change is an unrelated reference-corpus reorganization (deleted tracked reference directories and untracked replacements), which is not part of runtime behavior.
 
@@ -421,11 +421,11 @@ Status words used here:
 |---|---|---|
 | Host/worker transport | TCP handshake, status, reconnects, commands | Source-present; H0/H0b recorded live per harness spec |
 | Task queue | Persisted tasks, statuses, assignment, recoveries | Source-present; `TaskQueueRecoveryTest` |
-| Leases/fencing | 30s TTL, 5s sweep, token-checked progress/completion | Source-present; six h5 probes; H5 recorded live on an earlier build, not rerun after the latest gap closure |
+| Leases/fencing | 30s TTL, 5s sweep, token-checked progress/completion | Source-present; seven h5 probes; H5 recorded live on an earlier build, not rerun after the latest gap closure |
 | Gather | Baritone-driven collection, dependency steps, evidence | H1 recorded live on `e62b2f9`, including three consecutive runs |
 | Craft | Recipe/dependency planning, crafting-table path | Source-present; no complete live artifact recorded here |
 | Smelt | Deposit/wait/collect phases, fuel handling | Source-present; H12 tracks a known fuel limitation; do not call it fully solved |
-| Fuel debug | `fuels[]` + `fuelTicks` in `/api/debug/bot` | Source-present; inventory-only, same resolver as cook path; CODE ONLY, no live read yet |
+| Fuel debug | `fuels[]` + `fuelTicks` in `/api/debug/bot` | Source-present; test-covered by `FuelReaderTest` (known/empty/unresolved); live bot read not observed |
 | Hunt food | Hunting state, AutoEat, auto-cook | Source-present; no dedicated live H-scenario |
 | Smithing | Smithing-table path, auto-netherite | Source-present; live status not established |
 | Shulker | Place/open/empty/break/collect path | Source-present; live status not established |
@@ -453,7 +453,7 @@ From the repository's own documents, not from a fresh run for this export. These
 - The panel has been browser-tested only against fake players. No real worker has driven the panel in game.
 - No full one-hour acceptance run is recorded as passed.
 
-The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all six `h5Test` probes passed; no live Minecraft run was performed.
+The original export did **not** run Minecraft, the Gradle build, the probes, the harness, or the panel. A later forced Gradle build on 2026-11-14 passed, and all seven `h5Test` probes passed, including `FuelReaderTest`; no live Minecraft run was performed.
 
 ---
 
@@ -586,14 +586,14 @@ Use these labels consistently:
 
 ### 12.2 What is on `main` now
 
-This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel-debug change landed as `99003d7`. Current `main` includes:
+This document started as a snapshot of `fix/phantom-task-types` at `226b1b3`. Those changes have since landed on `main`; the fuel probe landed as `45467cf`. Current `main` includes:
 
 - lease fields, fencing, lease renewal, expiry, and stale-report rejection;
 - host-restart recovery of `ACTIVE` tasks;
 - self-deposit for the host player;
 - test-only `test_give`;
 - harness client-control endpoints (`command`, `chat`, `goto`, `stop-path`, `respawn`, and the shape probe);
-- fuel `fuels[]` / `fuelTicks` in the bot debug snapshot (`99003d7`);
+- fuel `fuels[]` / `fuelTicks` in the bot debug snapshot (`45467cf`), with `FuelReaderTest` coverage for known, empty, and unresolved fuel;
 - `docs/PANEL_V2_SPEC.md`, which is now tracked.
 
 The only dirty-tree change is the unrelated reference-corpus reorganization. Do not use that churn to infer runtime behavior.
@@ -660,7 +660,7 @@ Start here when reading the code:
 | `src/main/java/com/rdh/swarm/web/SwarmWebServer.java` | Embedded HTTP/WS server, API routes |
 | `src/main/java/com/rdh/swarm/web/SwarmWebHandler.java` | Panel request/state handling |
 | `src/main/java/com/rdh/swarm/harness/HarnessBridge.java` | Test-only loopback HTTP bridge |
-| `src/h5Test/java/com/rdh/swarm/` | Six lease/recovery/protocol probes |
+| `src/h5Test/java/com/rdh/swarm/` | Seven lease/recovery/protocol/fuel probes |
 | `tools/harness/` | Node runner and live/simulated scenarios |
 | `docs/PANEL_V2_SPEC.md` | Deep panel/API/UI handoff |
 | `docs/FEATURES.md` | Feature prose; stale in places |

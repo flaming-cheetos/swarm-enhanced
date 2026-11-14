@@ -323,6 +323,10 @@ resolver as the cook decision. A furnace's own fuel slot is separate and is only
 while its menu is open. Unresolved fuel appears with `resolved:false`, `ticks:0`, and a
 `reason`; it is never silently counted as usable.
 
+Automated coverage: `FuelReaderTest` runs under `h5FuelTest` as part of `check`. It proves
+known coal (42 x 1600 = 67,200 ticks), empty inventory (0 ticks, empty array), and an
+unresolved fuel (reported with its reason, excluded from `fuelTicks`).
+
 ### 6.2 `GET /api/debug/trace?bot=jamal&n=20`
 
 Ring buffer, newest last. The single most useful tool for a state machine:

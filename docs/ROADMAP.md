@@ -37,7 +37,7 @@ against you · `ABSENT` not written
 | # | What | Lane | Status |
 |---|---|---|---|
 | M0 | Foundation: 26.3 port, modules, task queue, panel, mining, halt, deposit | both | `DONE` (live) |
-| M1 | Survival loop: fuel, cooking, completion, pause, staging | bot | `PARTIAL` — outcome-completion gate, deferred completion, deposit ledger and multi-load smelt are `DONE` live (2026-11-13); fuel, food and pickup remain `CODE ONLY` |
+| M1 | Survival loop: fuel, cooking, completion, pause, staging | bot | `PARTIAL` — outcome-completion gate, deferred completion, deposit ledger and multi-load smelt are `DONE` live (2026-11-13); fuel insertion/cooking, food and pickup remain `CODE ONLY`; the fuel reader fields are test-covered by `h5FuelTest` |
 | M2 | Storage intelligence: chest counts, reserved slots, sorter | both | `PARTIAL` — chest scan + index + keep-filter verified live 2026-11-13; gather/ensure task modes live 2026-11-14 (additive vs measured shortfall, category scope). Still missing: ensure rules + upkeep scheduler, named chest zones (categories are item-class filters, not places), reserved slots, low-stock warnings, sorter |
 | M3 | Bulk jobs: shulkers, counting, multi-trip | bot | `ABSENT` |
 | M4 | Tier progression: iron → diamond | bot | `ABSENT` |
@@ -150,7 +150,8 @@ Phase 0 is close enough that Gate A is the next real proof, so the order is:
 | 3a | **A3/A4/A5 base registry** - locations as data, id-addressed reads, survives restart | **DONE 2026-11-13 04:33** - 12 entries, `loadedFromDisk=true` after a real stop/start, iron 832 = 768 + 64, `bf1` coal x42 |
 | 2b | **B1 operator tools** `log_tail`, `task_watch`, `chest_delta`, `server_restart`, `panic` | **DONE 2026-11-13 05:05** - all five answer live; chest_delta caught a real +5 iron deposit; panic halts dispatch and resumes |
 | 2c | **Deposit loop proven end to end** - gather -> deposit -> ledger -> complete | **DONE 2026-11-13 05:41** - 32 cobblestone gathered, deposited and ledgered (1646 -> 1678), task COMPLETE 32/32 evidence=verified-empty |
-| 3 | Phase 1 leftovers: surface the fuel reader (`G2: cook check`) in `bot_state` as `fuels[]` + `fuelTicks`, then the food loop | Fuel fields are **CODE ONLY** (inventory-only, same resolver as the cook path); food loop and live preflight still pending |
+| 3 | Surface the fuel reader (`G2: cook check`) in `bot_state` as `fuels[]` + `fuelTicks` | **DONE 2026-11-14** - `h5FuelTest` proves known coal 67,200 ticks, empty 0, and unresolved fuel excluded from usable ticks; live bot read still not observed |
+| 3b | Food loop and live preflight | `swarm_preflight` passes every check on a fresh bot |
 | 4 | **Gate A**: one bot, 30 minutes, deposits verified by opening chests, not by chat | verdict PASS with every deposit diffed against the world |
 
 Gate A at 60 TPS needs the RCON password on this machine (`tools/mcp/.rcon-password`);

@@ -282,8 +282,14 @@ that is either in the inventory or already sitting in the appliance.
 **inventory-only**; a furnace's own fuel slot is separate and readable only while
 its menu is open. Unresolved fuel is reported with `resolved:false`, `ticks:0`,
 and the resolver's reason instead of being counted as usable. This makes the
-preflight fuel check possible without opening a furnace. The fields are
-`CODE ONLY` as of 2026-11-14; they have not been read from a live bot yet.
+preflight fuel check possible without opening a furnace.
+
+The fields are covered by `FuelReaderTest`, which runs under `h5FuelTest` as
+part of the normal Gradle `check`: known coal merges duplicate stacks
+(40 + 2 = 42) and computes 67,200 ticks; an empty inventory reports `fuels:[]`
+and `fuelTicks:0`; unresolved fuel keeps `resolved:false`, `ticks:0` and its
+reason, and contributes nothing to `fuelTicks`. The fields have not been read
+from a live bot yet; that live observation is still pending.
 
 **Multiplayer.** Block-entity slots are not synced to a client, so a stocked
 furnace looks empty until its menu is open. `BotBrain.peekApplianceFuel` opens
@@ -738,7 +744,7 @@ evidence=verified-empty`.
 | Mining and gathering | `DONE` (live 2026-11-13) | `BotBrain.handleGathering`; `EnhancedSwarmHost.dispatchNextTask`; `TaskQueue` |
 | Task queue | `DONE` (live 2026-11-13 — claims, leases, requeues, outcome gate) | `TaskQueue`; `EnhancedSwarmHost.dispatchNextTask`; `BotBrain` halt state |
 | Deposits and chests | `DONE` (live 2026-11-13 — chest totals +78 verified by scan) | `DepositDriver`; `DepositConfig`; `StorageIndex`; `EnhancedSwarmWorker.handleScan`/`handleWithdraw` |
-| Fuel | `CODE ONLY` | `SmeltingManager`; `BotBrain.handleSmeltingDeposit`/`handleSmeltingWait` |
+| Fuel | `PARTIAL` — reader fields test-covered 2026-11-14; fuel insertion and live cooking still not observed | `SmeltingManager`; `BotBrain.handleSmeltingDeposit`/`handleSmeltingWait` |
 | Item pickup | `CODE ONLY` | `DropCollector`; `BotBrain.finishTaskWithEvidence` |
 | Panel (`/v2`, old `/`) | `CODE ONLY` | `SwarmWebServer`; `SwarmWebHandler`; `SwarmWebPanelV2`; `web/v2/*` |
 | Commands and keybinds | `CODE ONLY` | `SwarmCommand`; `EnhancedSwarmAddon`; `SwarmHoleFiller.forceFill` |
@@ -751,8 +757,10 @@ Three rows are `DONE` on live evidence from 2026-11-13: mining and gathering,
 the task queue, and deposits and chests (`test-runs/live-smelt-day2/` — the
 64-ingot run plus four 78-ingot runs, the last ending `612 -> 690` ingots,
 +78, with the completion line after the deposit). Fuel, item pickup, panel,
-commands and persistence stay `CODE ONLY`; the `/v2` row's only browser
-evidence is fake players, not a Minecraft client.
+commands and persistence stay `CODE ONLY`; fuel insertion/live cooking, item
+pickup, panel and commands also stay unobserved, while the fuel reader fields
+are covered by `h5FuelTest`. The `/v2` row's only browser evidence is fake
+players, not a Minecraft client.
 
 ## Described but not in the code
 
