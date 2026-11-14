@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 9 November 2026. This is the order of work and the honest status. If this file disagrees with the code, the
+Updated 14 November 2026. This is the order of work and the honest status. If this file disagrees with the code, the
 code wins — then fix this file.
 
 ## The north star
@@ -76,18 +76,19 @@ path in under a minute.
 
 ## What is happening now
 
-**Updated 2026-11-13:** Phase 0 (the dev loop) is the current work. Gate A is next,
-and is not blocked on Phase 0 finishing — fuel can land in parallel.
+**Updated 2026-11-14:** the task model is honest and the arguments autofill. Gate A is the
+next thing, and no code is blocking it — only the run itself.
 
-1. **The fix stack is on `main`** — fuel, deposits, completion, staging. Landed as a fast-forward, builds green.
-2. **Gate A on `main`.** Not run yet, and it is the next thing that matters.
-3. **Panel v2 review** — static `/v2` is on `main` and has been opened
-   on a desktop browser and a phone, against fake players. Layout, tabs
-   and the task queue all render. No bot has driven it in game yet. A
-   React rewrite is a direction, not a commitment, and the panel owner
-   decides. Panel lane.
-4. **B6, the tick-owned request model**, before any tier work. A grind loop on a thread-racy planner produces
-   failures that look like logic bugs.
+1. **Task modes are live.** `gather` is additive, `ensure` measures at enqueue and completes only
+   against a fresh reading taken after its own deposit, or fails `ensure-undergather`. Stock can no
+   longer close a queued task: `completeFromStock` was deleted, not disabled. Proven live
+   2026-11-14 on `0.1.0+206fe95` (`verified — base holds 61 of 60`).
+2. **Tab completion is live.** Every argument that can be known is suggested from base stock, the
+   live queue, the chest categories and the player's position. Owner-verified in game 2026-11-14.
+3. **Gate A.** Not run. It needs a seeded board, a 30-minute clock, and every `COMPLETE`
+   reconciled by opening the chest.
+4. **Eating is wired, never watched.** `SwarmAutoEat` plus Meteor's `AutoEat` under `ModuleGuard`;
+   `maybeInterruptForFood` hunts when food reaches zero. `CODE ONLY`.
 
 ### Tonight's queue (2026-11-14, planned with the operator before bed)
 
@@ -134,7 +135,7 @@ Every default flips once threat and stash land, which is why they come before an
 - **Coordinates never leave the client** — not in chat, not on the panel, not in a screenshot.
 - **No movement exploits.** Flight, speed, blink and timer can cost the account.
 - **Chat never obeys chat.** The bot answers the server; it takes no orders from it.
-- **Ender chest is the only trusted storage.**
+- **Storage is configured, not assumed.** A deposit target is a coordinate the operator set. No storage rule exists that the deposit path does not actually follow.
 
 ## How you'll know it is working
 
@@ -162,19 +163,19 @@ Gate B. They are not rejected and not deleted.
 - `2026-11-13` — Phase 0 added; M1/M2/M9 re-scored from live evidence; Gate A2 added;
   v2 backlog section created from rdh's "defer, do not cut" call.
 
-## Gate A status, 2026-11-13 evening
+## Gate A status, 2026-11-14
 
-**No verdict: not passed.** The failing shift is not a dispatcher problem any more - it
-is an accounting problem. Five tasks completed on `already-in-stock` citing 2807-3800
-dirt in base storage while the chests held 1940.
+The 2026-11-13 failure was an accounting failure, and it is closed at the source. A queued task
+cannot complete on base stock any more (`completeFromStock` deleted, zero callers), and an `ensure`
+completes only after a reading taken *after* its own deposit. Both failure modes were caught live
+before the fix landed: measuring before the deposit reported 46/50 on work that had succeeded, and
+trusting a cache older than the move reported 51/50 and failed it anyway.
 
-Order of work from here:
+What must be true before the 30 minutes start:
 
-1. Make the storage index a measurement: rescan the chest on deposit completion (and
-   before any `already-in-stock` completion) instead of adding a published delta, so a
-   1591 answer cannot survive a 724 chest.
-2. Re-read the four containers immediately before a task may complete as
-   `already-in-stock`, and fail the evidence check (not the task) when they disagree.
-3. Fix `/api/task/cancel|remove` for PENDING rows so a shift starts from an empty board.
-4. Then run the 30-minute Gate A shift again with real deficits; do not count
-   `already-in-stock` as proof of the loop until step 1 is in.
+1. **Board empty.** `/api/task/remove` must clear a PENDING row — the endpoint exists, that path is
+   unproven.
+2. **A reading under 30 s old.** Scan the chests first; `ensure` refuses anything older.
+3. **Food on hand and `SwarmAutoEat` on.** Eating has never been watched live.
+4. **The shift.** One bot, 30 minutes, then open every deposit chest and diff it against the task's
+   claimed quantity. A `COMPLETE 3/3` with 2 in the chest is the failure this gate exists to catch.
