@@ -56,6 +56,15 @@ java {
     }
 }
 
+// The H5 probe is a plain Java main, not a JUnit suite. Keeping it out of the
+// normal test source set avoids changing the project's dependency set.
+val h5Test = sourceSets.create("h5Test") {
+    java.srcDir("src/h5Test/java")
+    // Include main's compile dependencies (Gson is used by the panel JSON test).
+    compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    runtimeClasspath += sourceSets.main.get().runtimeClasspath
+}
+
 val modsFolder1 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/thisistnothi14/.minecraft/mods")
 val modsFolder2 = file("C:/Users/rdh/Desktop/mmc-develop-win32/MultiMC/instances/1.21.4/.minecraft/mods")
 
@@ -120,4 +129,69 @@ val copyJarToInstance2 = tasks.register<Copy>("copyJarToInstance2") {
     into(modsFolder2)
     rename { "swarm-improved.jar" }
     onlyIf { copyToMmc.get() && modsFolder2.exists() }
+}
+
+// H5 regression probes. Plain Java mains, no test-framework dependency.
+val h5RecoveryTest = tasks.register<JavaExec>("h5RecoveryTest") {
+    group = "verification"
+    description = "Verify an orphaned ACTIVE task is recovered and redispatched"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.TaskQueueRecoveryTest")
+    workingDir = layout.buildDirectory.dir("h5-recovery-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5LeaseTest = tasks.register<JavaExec>("h5LeaseTest") {
+    group = "verification"
+    description = "Verify lease claim, renewal, expiry, and host maintenance tick"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.LeaseLifecycleTest")
+    workingDir = layout.buildDirectory.dir("h5-lease-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5FencingTest = tasks.register<JavaExec>("h5FencingTest") {
+    group = "verification"
+    description = "Verify stale-worker fencing, reconnect fresh leases, and exactly-once completion"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.FencingReconnectTest")
+    workingDir = layout.buildDirectory.dir("h5-fencing-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5PanelTest = tasks.register<JavaExec>("h5PanelTest") {
+    group = "verification"
+    description = "Verify panel lease JSON omits the fencing token and both panels render its diagnostics"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.PanelLeaseJsonTest")
+    workingDir = layout.buildDirectory.dir("h5-panel-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5ProtocolTest = tasks.register<JavaExec>("h5ProtocolTest") {
+    group = "verification"
+    description = "Verify the old/new host-worker compatibility matrix"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.ProtocolMatrixTest")
+    workingDir = layout.buildDirectory.dir("h5-protocol-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+val h5ProgressTest = tasks.register<JavaExec>("h5ProgressTest") {
+    group = "verification"
+    description = "Verify fenced progress is clamped and survives completion as 2/2"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.ProgressAccountingTest")
+    workingDir = layout.buildDirectory.dir("h5-progress-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
+tasks.named("check") {
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest)
 }

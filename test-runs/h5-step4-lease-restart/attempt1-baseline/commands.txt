@@ -1,0 +1,7 @@
+# Live baseline attempt (e62b2f9)
+PrismLauncher.exe -l bot -a chris -s 192.168.4.57:25565
+PrismLauncher.exe -l main -a jamal -s 192.168.4.57:25565
+# Host JVM was terminated mid-ACTIVE with Stop-Process -Id <host javaw pids> -Force.
+# Host relaunch: same command above.
+# Panel control: POST /api/task/remove, /api/task/clear_done, /api/task/add
+# Evidence copied directly from both instances' latest.log and task-queue.json.

@@ -22,6 +22,7 @@ import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.BlockHitResult;
@@ -30,6 +31,22 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
 public class EnhancedSwarmWorker extends Thread {
+    /**
+     * Baritone builds world state when it handles a chat command, so a command sent from
+     * the worker thread dies with "BlockStateInterface must be constructed on the main
+     * thread" and the gather silently never starts. Always hand chat to the client thread.
+     */
+    private static void sendChatOnClient(Minecraft mc, String message) {
+        if (mc == null || message == null || message.isEmpty()) return;
+        if (mc.isSameThread()) {
+            if (mc.getConnection() != null) mc.getConnection().sendChat(message);
+        } else {
+            mc.execute(() -> {
+                if (mc.getConnection() != null) mc.getConnection().sendChat(message);
+            });
+        }
+    }
+
     private Socket socket;
     private final String host;
     private final int port;
@@ -103,12 +120,38 @@ public class EnhancedSwarmWorker extends Thread {
     public volatile boolean lastDepositTransferRan = false;
     public volatile boolean lastDepositSucceeded = false;
     public volatile int lastDepositMoved = 0;
+    /** What the last deposit run actually moved, per item id, summed over every chest. */
+    public volatile java.util.Map<String, Long> lastDepositDelta = java.util.Map.of();
     public volatile String lastDepositFailure = "";
 
     private final DepositDriver depositDriver = new DepositDriver(
         () -> mc, this::sendProtocol, this::shouldKeep, this::applyLocalDelta, this::onDepositFinished);
 
+    /**
+     * Metal/stone prefixes in KEEP_PREFIXES exist to protect gear (an iron pickaxe is
+     * "minecraft:iron_*"). Matching the bare resource too kept every smelted ingot in the
+     * bot's inventory forever: a stack and 14 iron ingots never left. Ingots and nuggets
+     * are task output, not gear, so they always deposit.
+     */
+    private static final Set<String> RESOURCE_SUFFIXES = Set.of("ingot", "nugget");
+
+    /**
+     * Public so the host player's own deposit (EnhancedSwarm.depositSelf) filters by the
+     * same rules; two copies of this list would drift.
+     */
+    public static String keepReasonFor(ItemStack stack) {
+        return keepReasonImpl(stack);
+    }
+
+    public static boolean shouldKeepStatic(ItemStack stack) {
+        return keepReasonImpl(stack) != null;
+    }
+
     private String keepReason(ItemStack stack) {
+        return keepReasonImpl(stack);
+    }
+
+    private static String keepReasonImpl(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return "empty";
         // Shulkers are routed to shulker/empty-shulker deposit categories, never kept.
         if (DepositConfig.isShulkerBox(stack)) return null;
@@ -117,12 +160,60 @@ public class EnhancedSwarmWorker extends Thread {
         if (KEEP_IDS.contains(id)) return "keep list";
         for (String suffix : TOOL_SUFFIXES) if (id.endsWith(suffix)) return "tool";
         for (String suffix : ARMOR_SUFFIXES) if (id.endsWith(suffix)) return "armour";
-        for (String p : KEEP_PREFIXES) if (id.startsWith(p)) return "protected prefix";
+        boolean resource = false;
+        for (String suffix : RESOURCE_SUFFIXES) if (id.endsWith(suffix)) { resource = true; break; }
+        if (!resource) for (String p : KEEP_PREFIXES) if (id.startsWith(p)) return "protected prefix";
         return null;
     }
 
     private boolean shouldKeep(ItemStack stack) {
         return keepReason(stack) != null;
+    }
+
+    /**
+     * Say out loud what a deposit is going to leave behind, so "why is this still in my
+     * inventory?" has an answer in the log instead of silence.
+     */
+    private void logKeptForDeposit() {
+        logDepositPlan(mc);
+    }
+
+    /**
+     * What a deposit will move, and what it will leave behind and why. Both halves matter:
+     * "nothing was deposited" is unanswerable without the list of what the inventory holds.
+     */
+    public static void logDepositPlan(net.minecraft.client.Minecraft mc) {
+        try {
+            if (mc == null || mc.player == null) return;
+            Map<String, Integer> kept = new LinkedHashMap<>();
+            Map<String, String> why = new LinkedHashMap<>();
+            Map<String, Integer> moving = new LinkedHashMap<>();
+            for (ItemStack st : mc.player.getInventory()) {
+                if (st == null || st.isEmpty()) continue;
+                String id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
+                String reason = keepReasonImpl(st);
+                if (reason == null) {
+                    moving.merge(id, st.getCount(), Integer::sum);
+                } else {
+                    kept.merge(id, st.getCount(), Integer::sum);
+                    why.put(id, reason);
+                }
+            }
+            ChatUtils.infoPrefix("BotBrain", "DEPOSIT: moving %s",
+                moving.isEmpty() ? "nothing" : summarise(moving));
+            if (!kept.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                kept.forEach((id, n) -> sb.append(sb.length() == 0 ? "" : ", ")
+                    .append(id).append('=').append(n).append(" (").append(why.get(id)).append(')'));
+                ChatUtils.infoPrefix("BotBrain", "DEPOSIT: keeping %s", sb);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static String summarise(Map<String, Integer> counts) {
+        StringBuilder sb = new StringBuilder();
+        counts.forEach((id, n) -> sb.append(sb.length() == 0 ? "" : ", ").append(id).append('=').append(n));
+        return sb.toString();
     }
 
     private void resetDepositTracking() {
@@ -157,6 +248,7 @@ public class EnhancedSwarmWorker extends Thread {
             addLocalChest("all", depositX, depositY, depositZ);
         }
         resetDepositTracking();
+        logKeptForDeposit();
         isDepositing = true;
         resumeTaskAfterDeposit = currentTask;
         depositDriver.request(reason, category);
@@ -174,12 +266,71 @@ public class EnhancedSwarmWorker extends Thread {
         } catch (IOException ignored) {}
     }
 
+    /**
+     * The other half of a double chest, straight from the world's block state: a chest with
+     * ChestType LEFT/RIGHT is one inventory with an adjacent chest, not two containers.
+     */
+    private int[] chestTwin(int x, int y, int z) {
+        try {
+            if (mc == null || mc.level == null) return null;
+            BlockPos pos = new BlockPos(x, y, z);
+            var state = mc.level.getBlockState(pos);
+            if (!(state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock)) return null;
+            var type = state.getValue(net.minecraft.world.level.block.ChestBlock.TYPE);
+            if (type == net.minecraft.world.level.block.state.properties.ChestType.SINGLE) return null;
+            for (net.minecraft.core.Direction d : net.minecraft.core.Direction.values()) {
+                if (d.getAxis().isVertical()) continue;
+                BlockPos np = pos.relative(d);
+                var ns = mc.level.getBlockState(np);
+                if (!(ns.getBlock() instanceof net.minecraft.world.level.block.ChestBlock)) continue;
+                var nt = ns.getValue(net.minecraft.world.level.block.ChestBlock.TYPE);
+                if (nt == net.minecraft.world.level.block.state.properties.ChestType.SINGLE || nt == type) continue;
+                return new int[]{np.getX(), np.getY(), np.getZ()};
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /** Send the contents of a chest we just opened, so the host replaces its record. */
+    private void publishMeasuredChest(int x, int y, int z, int used, int total, java.util.Map<String, Long> counts) {
+        try {
+            StringBuilder container = new StringBuilder("{");
+            if (counts != null) {
+                boolean first = true;
+                for (var e : counts.entrySet()) {
+                    if (!first) container.append(',');
+                    first = false;
+                    container.append('"').append(e.getKey()).append("\":").append(e.getValue());
+                }
+            }
+            container.append('}');
+            String msg = "CHEST_DELTA:measured:" + x + ":" + y + ":" + z + "|{\"counts\":{},"
+                + "\"container\":" + container + ",\"absolute\":true,"
+                + "\"usedSlots\":" + used + ",\"totalSlots\":" + total + ",";
+            int[] twin = chestTwin(x, y, z);
+            if (twin != null) {
+                msg = msg + "\"twin\":[" + twin[0] + "," + twin[1] + "," + twin[2] + "],";
+            }
+            msg = msg + "\"lastScan\":" + System.currentTimeMillis() + "}";
+            sendProtocol(msg);
+        } catch (Exception ignored) {}
+    }
+
+    private static String between(String s, String start, String end) {
+        if (s == null) return null;
+        int i = s.indexOf(start);
+        if (i < 0) return null;
+        i += start.length();
+        int j = s.indexOf(end, i);
+        return j < 0 ? null : s.substring(i, j);
+    }
+
     private void applyLocalDelta(Map<String, Long> delta) {
         if (delta == null || delta.isEmpty()) return;
         try {
             var brain = meteordevelopment.meteorclient.systems.modules.Modules.get()
                 .get(com.rdh.swarm.modules.BotBrain.class);
-            if (brain != null) brain.mergeLocalStorageCounts(delta);
+            if (brain != null) brain.invalidateStorageCounts(delta.keySet());
         } catch (Exception ignored) {}
     }
 
@@ -187,6 +338,7 @@ public class EnhancedSwarmWorker extends Thread {
         lastDepositTransferRan = depositDriver.transferRan();
         lastDepositSucceeded = depositDriver.succeeded();
         lastDepositMoved = depositDriver.moved();
+        lastDepositDelta = depositDriver.runDelta();
         lastDepositFailure = depositDriver.failure();
         isDepositing = false;
         lastAutoDepositTime = System.currentTimeMillis();
@@ -285,39 +437,90 @@ public class EnhancedSwarmWorker extends Thread {
                 }
             } catch (Exception ignored) {}
 
+            // MCP world probe: read-only look at blocks and containers.
+            if (effective != null && effective.startsWith("WORLD_PROBE_REQUEST:")) {
+                String rest = effective.substring("WORLD_PROBE_REQUEST:".length());
+                String nonce = rest;
+                String kind = "";
+                String args = "";
+                int p1 = rest.indexOf('|');
+                if (p1 >= 0) {
+                    nonce = rest.substring(0, p1);
+                    String tail = rest.substring(p1 + 1);
+                    int p2 = tail.indexOf('|');
+                    if (p2 >= 0) { kind = tail.substring(0, p2); args = tail.substring(p2 + 1); }
+                    else kind = tail;
+                }
+                String json = "container_open".equals(kind) ? probeOpenContainer(args) : worldProbeJson(kind, args);
+                writeLine("WORLD_PROBE:" + nonce + "|" + json);
+                return;
+            }
+
+            // MCP debug probe: reply with what only this process knows.
+            if (effective != null && effective.startsWith("DEBUG_STATE_REQUEST:")) {
+                String nonce = effective.substring("DEBUG_STATE_REQUEST:".length()).trim();
+                String json;
+                try {
+                    var probeBrain = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                        .get(com.rdh.swarm.modules.BotBrain.class);
+                    json = probeBrain != null ? probeBrain.debugStateJson() : "{\"error\":\"no_brain\"}";
+                } catch (Exception e) {
+                    json = "{\"error\":\"debug_state_failed\"}";
+                }
+                writeLine("DEBUG_STATE:" + nonce + "|" + json);
+                return;
+            }
+
             // Handle storage query responses from host
             if (effective != null && effective.startsWith("STORAGE_QUERY_RESPONSE:")) {
                 try {
                     String body = effective.substring("STORAGE_QUERY_RESPONSE:".length());
                     if (body != null && !body.isEmpty()) {
-                        String[] parts = body.split(":");
+                        // Format: <itemId>:<count>:<x,y,z>=count;...  items joined by '#'.
+                        // The trailing field is the per-chest breakdown; it is optional so
+                        // a legacy id:count reply still parses.
+                        String[] items = body.split("#");
                         Map<String, Long> resp = new HashMap<>();
-                        int i = 0;
-                        while (i < parts.length) {
-                            if (parts[i].equals("minecraft") && i + 2 < parts.length) {
-                                String itemId = "minecraft:" + parts[i + 1];
-                                try {
-                                    long count = Long.parseLong(parts[i + 2]);
-                                    resp.put(itemId, count);
-                                } catch (NumberFormatException ignored) {}
-                                i += 3;
+                        Map<String, String> sources = new HashMap<>();
+                        for (String rawItem : items) {
+                            String item = rawItem == null ? "" : rawItem.trim();
+                            if (item.isEmpty()) continue;
+                            String[] f = item.split(":", 3);
+                            String itemId;
+                            String countTok;
+                            String chestTok = "";
+                            if (f.length >= 3 && f[0].equals("minecraft")) {
+                                // minecraft:raw_iron:<count>:<breakdown>
+                                String rest = f[2];
+                                int sep = rest.indexOf(':');
+                                itemId = "minecraft:" + f[1];
+                                if (sep >= 0) { countTok = rest.substring(0, sep); chestTok = rest.substring(sep + 1); }
+                                else { countTok = rest; }
+                            } else if (f.length >= 2) {
+                                String rest = f.length >= 3 ? f[1] + ":" + f[2] : f[1];
+                                int sep = rest.indexOf(':');
+                                itemId = f[0];
+                                if (sep >= 0) { countTok = rest.substring(0, sep); chestTok = rest.substring(sep + 1); }
+                                else { countTok = rest; }
                             } else {
-                                if (i + 1 < parts.length) {
-                                    try {
-                                        long count = Long.parseLong(parts[i + 1]);
-                                        resp.put(parts[i], count);
-                                        i += 2;
-                                    } catch (NumberFormatException e) {
-                                        i++;
-                                    }
-                                } else {
-                                    i++;
-                                }
+                                continue;
                             }
+                            try {
+                                long count = Long.parseLong(countTok);
+                                // Key by both spellings: the host echoes the id exactly as
+                                // requested, while lookups use the namespaced form.
+                                resp.put(itemId, count);
+                                resp.put(com.rdh.swarm.StorageIndex.normalizeId(itemId), count);
+                                if (!chestTok.isEmpty()) {
+                                    sources.put(itemId, chestTok);
+                                    sources.put(com.rdh.swarm.StorageIndex.normalizeId(itemId), chestTok);
+                                }
+                            } catch (NumberFormatException ignored) {}
                         }
                         try {
+                            ChatUtils.infoPrefix("Swarm", "STORAGE: %s sources=%s", resp, sources);
                             var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
-                            if (brain != null) brain.receiveStorageQueryResponse(resp);
+                            if (brain != null) brain.receiveStorageQueryResponse(resp, sources);
                         } catch (Exception ignored) {}
                     }
                 } catch (Exception ignored) {}
@@ -337,7 +540,17 @@ public class EnhancedSwarmWorker extends Thread {
                     try {
                         if (args != null && args.startsWith("#")) {
                             Minecraft mc = Minecraft.getInstance();
-                            if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args);
+                            if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, args);
+                        } else if (args != null && args.equals("stagefail")) {
+                            // Test hook: arm one forced staging failure so the base-protection
+                            // guard can be exercised without waiting for a real pathfinding
+                            // failure. Fires once, then disarms itself.
+                            try {
+                                var b = meteordevelopment.meteorclient.systems.modules.Modules.get()
+                                    .get(com.rdh.swarm.modules.BotBrain.class);
+                                if (b != null) b.forceStagingFailureOnce = true;
+                                ChatUtils.infoPrefix("Swarm", "STAGE: forced failure armed (one shot)");
+                            } catch (Exception ignored) {}
                         } else {
                             String cleaned = args;
                             if (cleaned != null && cleaned.startsWith(".")) cleaned = cleaned.substring(1);
@@ -373,15 +586,15 @@ public class EnhancedSwarmWorker extends Thread {
                     break;
 
                 case "say":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(args); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, args); } catch (Exception ignored) {}
                     break;
 
                 case "where":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.player != null && mc.getConnection() != null) mc.getConnection().sendChat(String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.player != null && mc.getConnection() != null) sendChatOnClient(mc, String.format("I'm at %.1f %.1f %.1f", mc.player.getX(), mc.player.getY(), mc.player.getZ())); } catch (Exception ignored) {}
                     break;
 
                 case "help":
-                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
+                    try { Minecraft mc = Minecraft.getInstance(); if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, "Verbs: goto, mine, follow, stop, say, where, deposit, depositall, help"); } catch (Exception ignored) {}
                     break;
 
                 case "deposit":
@@ -451,6 +664,24 @@ public class EnhancedSwarmWorker extends Thread {
                                         task = new com.rdh.swarm.task.BotTask(ttype, item, qty);
                                     }
 
+                                    // Optional trailing lease fields are ignored by
+                                    // old hosts; new hosts use them to fence reports.
+                                    try {
+                                        String leaseToken = f.length > 5 ? f[5] : "";
+                                        int attempt = 0;
+                                        if (f.length > 6) attempt = Integer.parseInt(f[6]);
+                                        task.setLeaseToken(leaseToken);
+                                        task.setAttempt(attempt);
+                                    } catch (Exception ignored) {}
+                                    // Mode travels with the assignment: an ensure task
+                                    // verifies its target against the base before it
+                                    // can complete, and the worker cannot infer that
+                                    // from a shortfall quantity alone.
+                                    try {
+                                        if (f.length > 7) task.setEnsureMode("ensure".equalsIgnoreCase(f[7]));
+                                        if (f.length > 8) task.setEnsureTarget(Integer.parseInt(f[8]));
+                                    } catch (Exception ignored) {}
+
                                     // assign to local BotBrain if present
                                     try {
                                         var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
@@ -467,7 +698,9 @@ public class EnhancedSwarmWorker extends Thread {
                                     // send initial TASK_PROGRESS back to host
                                     try {
                                         if (out != null) {
-                                            String msg = String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), 0, task.getTargetQuantity(), task.getStatus().name(), "");
+                                            String msg = task.getLeaseToken().isEmpty()
+                                                ? String.format("TASK_PROGRESS:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), 0, task.getTargetQuantity(), task.getStatus().name(), "")
+                                                : String.format("TASK_PROGRESS:%s:%s:%s:%d:%d:%s:%s", this.name, task.getId().toString(), task.getLeaseToken(), 0, task.getTargetQuantity(), task.getStatus().name(), "");
                                             writeLine(msg);
                                             out.flush();
                                         }
@@ -479,6 +712,13 @@ public class EnhancedSwarmWorker extends Thread {
                                 try {
                                     var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
                                     if (brain != null) brain.cancel();
+                                } catch (Exception ignored) {}
+                                break;
+                            }
+                            case "reset": {
+                                try {
+                                    var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                                    if (brain != null) brain.resetForReconnect();
                                 } catch (Exception ignored) {}
                                 break;
                             }
@@ -618,6 +858,13 @@ public class EnhancedSwarmWorker extends Thread {
                 // deposit <category>
                 String category = args.trim().toLowerCase();
                 List<int[]> list = depositChests.get(category);
+                // A base with one general pile registers it as "all"; accept a category
+                // request against it instead of answering "No deposit chest for category".
+                if ((list == null || list.isEmpty())
+                    && depositChests.get("all") != null && !depositChests.get("all").isEmpty()) {
+                    category = "all";
+                    list = depositChests.get("all");
+                }
                 if (list != null && !list.isEmpty()) {
                     if (!startDeposit("api", category)) {
                         ChatUtils.warningPrefix("Swarm", "Already depositing");
@@ -783,7 +1030,7 @@ public class EnhancedSwarmWorker extends Thread {
             if (resumeTaskAfterDeposit != null && !resumeTaskAfterDeposit.isEmpty()) {
                 if (resumeTaskAfterDeposit.startsWith("#")) {
                     Minecraft mc = Minecraft.getInstance();
-                    if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat(resumeTaskAfterDeposit);
+                    if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, resumeTaskAfterDeposit);
                 } else {
                     try { Commands.dispatch(resumeTaskAfterDeposit); } catch (Exception ignored) {}
                 }
@@ -866,6 +1113,7 @@ public class EnhancedSwarmWorker extends Thread {
             lastDepositTransferRan = depositDriver.transferRan();
             lastDepositSucceeded = depositDriver.succeeded();
             lastDepositMoved = depositDriver.moved();
+            lastDepositDelta = depositDriver.runDelta();
             lastDepositFailure = depositDriver.failure();
             if (!depositDriver.isBusy()) isDepositing = false;
             return;
@@ -936,7 +1184,7 @@ public class EnhancedSwarmWorker extends Thread {
                         }
                     }
                 } catch (Exception ignored) {}
-                if (mc != null && mc.getConnection() != null) mc.getConnection().sendChat("#" + toSend);
+                if (mc != null && mc.getConnection() != null) sendChatOnClient(mc, "#" + toSend);
                 else Commands.dispatch(toSend);
             } else {
                 Commands.dispatch(effective);
@@ -976,7 +1224,7 @@ public class EnhancedSwarmWorker extends Thread {
                         continue;
                     }
 
-                    if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+                    if (mc.getConnection() != null) sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
                     long start = System.currentTimeMillis();
                     while (System.currentTimeMillis() - start < 60000) {
                         if (mc.player != null) {
@@ -1042,8 +1290,10 @@ public class EnhancedSwarmWorker extends Thread {
                         }
                     } catch (Exception ignored) {}
 
-                    // close
-                    mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
+                    // Close the container properly. Clearing only the screen left
+                    // containerMenu on this chest, so the next chest's open check
+                    // matched the old menu and reported identical contents.
+                    closeContainerAndWait();
 
                     result.addProperty("usedSlots", used);
                     result.addProperty("totalSlots", total);
@@ -1096,7 +1346,7 @@ public class EnhancedSwarmWorker extends Thread {
                 return;
             }
 
-            if (mc.getConnection() != null) mc.getConnection().sendChat(String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+            if (mc.getConnection() != null) sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 60000) {
                 if (mc.player != null) {
@@ -1124,6 +1374,23 @@ public class EnhancedSwarmWorker extends Thread {
                 try {
                     if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
                         var handler = mc.player.containerMenu;
+                        // A furnace/smoker/blast-furnace menu also has non-inventory slots, so
+                        // it used to satisfy the "chest opened" check. The withdraw then
+                        // shift-clicked the appliance's own input slot and reported
+                        // "took 1/1 … from the chest" while the chest never lost an item
+                        // (and the bot's smelt lost the ore it had just inserted).
+                        if (handler instanceof net.minecraft.world.inventory.AbstractFurnaceMenu
+                            || handler instanceof net.minecraft.world.inventory.CraftingMenu
+                            || handler instanceof net.minecraft.world.inventory.InventoryMenu) {
+                            ChatUtils.warningPrefix("Swarm", "Withdraw: %d %d %d not open (busy with %s), not taking from it",
+                                x, y, z, handler.getClass().getSimpleName());
+                            // Tell the host this dispatch was refused, not completed. A
+                            // silent return left the host with a send and no result, so the
+                            // index kept the count, nothing was debited, and the task sat
+                            // behind a withdrawal that never happened.
+                            writeLine(String.format("WITHDRAW_REFUSED:%s:%d:%d:%d", itemId, x, y, z));
+                            return;
+                        }
                         int containerSlots = 0;
                         for (int si = 0; si < handler.slots.size(); si++) {
                             try { Slot s = handler.getSlot(si); if (s.container != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
@@ -1143,6 +1410,10 @@ public class EnhancedSwarmWorker extends Thread {
             var handler = mc.player.containerMenu;
             int transferred = 0;
             int playerStart = handler.slots.size() - 36;
+            int invBefore = countInInventory(handler, itemId, playerStart);
+            int chestBefore = countInContainer(handler, itemId, playerStart);
+            ChatUtils.infoPrefix("Swarm", "Withdraw: before click inventory=%d chest=%d (need %d)",
+                invBefore, chestBefore, needed);
 
             for (int si = 0; si < handler.slots.size() && transferred < needed; si++) {
                 try {
@@ -1152,51 +1423,105 @@ public class EnhancedSwarmWorker extends Thread {
                     if (st == null || st.isEmpty()) continue;
                     String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
                     if (!sid.equals(itemId)) continue;
-                    int available = st.getCount();
-                    InvUtils.shiftClick().slotId(si);
-                    int want = Math.min(available, needed - transferred);
-                    transferred += want;
+                    int beforeCount = st.getCount();
+                    int want = needed - transferred;
+                    if (want < beforeCount) {
+                        // Exact take. A shift-click moves the whole stack, so a 2-item
+                        // need against a 6-ore slot used to pull 6 and over-produce. Pick
+                        // the stack up, right-click the needed singles into the inventory,
+                        // then put the remainder back into the same chest slot.
+                        int dest = findDestSlot(handler, itemId, playerStart);
+                        if (dest < 0) {
+                            ChatUtils.warningPrefix("Swarm", "Withdraw: no inventory slot for the exact take, stopping");
+                            break;
+                        }
+                        clickSlotSync(si, 0);
+                        for (int k = 0; k < want; k++) clickSlotSync(dest, 1);
+                        clickSlotSync(si, 0); // remainder back into the chest slot
+                        ChatUtils.infoPrefix("Swarm", "Withdraw: exact take %d from a %d stack (slot %d -> %d)",
+                            want, beforeCount, si, dest);
+                    } else {
+                        InvUtils.shiftClick().slotId(si);
+                    }
+                    // Count only what the menu actually shows moving. The old code added
+                    // the intended amount, so a click the server ignored still reported
+                    // "took 1/1" and the host debited an index the chest never lost.
+                    try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+                    int afterCount = 0;
+                    try {
+                        ItemStack now = handler.getSlot(si).getItem();
+                        if (now != null && !now.isEmpty()) {
+                            String nid = BuiltInRegistries.ITEM.getKey(now.getItem()).toString();
+                            if (nid.equals(itemId)) afterCount = now.getCount();
+                        }
+                    } catch (Exception ignored) {}
+                    int invNow = countInInventory(handler, itemId, playerStart);
+                    int moved = Math.max(0, beforeCount - afterCount);
+                    int landed = invNow - invBefore - transferred;
+                    if (moved == 0) {
+                        ChatUtils.warningPrefix("Swarm", "Withdraw: slot %d click moved nothing (%d -> %d), not counting it",
+                            si, beforeCount, afterCount);
+                    } else if (landed <= 0) {
+                        // The chest slot emptied but the inventory did not gain it: a
+                        // shift-click that never committed (menu closed mid-move, stale
+                        // snapshot). Counting it is what made the host debit for ore the
+                        // bot never held.
+                        ChatUtils.warningPrefix("Swarm",
+                            "Withdraw: slot %d lost %d (chest %d->%d, inventory %d->%d), not counting it",
+                            si, moved, beforeCount, afterCount, invBefore, invNow);
+                    } else {
+                        transferred += Math.min(moved, landed);
+                        ChatUtils.infoPrefix("Swarm", "Withdraw: slot %d took %d (inventory %d -> %d)",
+                            si, Math.min(moved, landed), invBefore, invNow);
+                    }
+                    invBefore = invNow;
                     try { Thread.sleep(80 + ThreadLocalRandom.current().nextInt(80)); } catch (InterruptedException ignored) {}
                 } catch (Exception ignored) {}
             }
 
-            // Return excess items if we took more than needed by shift-clicking
+            // A shift-click takes the WHOLE stack, so asking for 2 of a 4-ore stack
+            // leaves the bot holding 4. The old "return the excess" loop shift-clicked
+            // that whole stack back into the chest — emptying the bot's inventory after
+            // a transfer that had already landed, which is why the host debited 2 for
+            // ore the bot then held none of. Keep the extra instead (it is the same
+            // item the task is short of) and let the debit follow what was received.
+            int held = countInInventory(handler, itemId, playerStart);
+            if (held > needed) {
+                // Should not happen with the exact take; if it does, say so instead of
+                // quietly over-producing.
+                ChatUtils.warningPrefix("Swarm", "Withdraw: over-delivered %d for a need of %d", held, needed);
+            }
+
+            // close (send the container-close packet, not just the screen)
+            closeContainerAndWait();
+
+            // Final authority is the bot's own inventory once the menu is gone. A
+            // transfer the chest showed leaving but that is not here is reported as
+            // nothing, so the host never debits for ore the bot cannot smelt.
+            int settled = 0;
+            for (int i = 0; i < 10; i++) {
+                settled = countInPlayerInventory(itemId);
+                if (settled >= transferred) break;
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            }
+            // Report exactly what is in the bot's inventory now, never a slot delta.
+            transferred = Math.min(transferred, settled);
+            ChatUtils.infoPrefix("Swarm", "Withdraw: inventory holds %d/%d %s after transfer",
+                settled, transferred, itemId);
+            if (settled < transferred) {
+                ChatUtils.warningPrefix("Swarm", "Withdraw: %d %s never reached the inventory; reporting %d",
+                    transferred - settled, itemId, settled);
+                transferred = settled;
+            }
+
+            // Report what the inventory actually holds, not what was asked for: a
+            // shift-click takes the whole stack, so the two differ and only the
+            // received count is debited.
+            ChatUtils.infoPrefix("Swarm", "Withdraw: took %d (asked %d) %s from %d,%d,%d", transferred, needed, itemId, x, y, z);
             try {
-                int inInventory = 0;
-                for (int si = playerStart; si < handler.slots.size(); si++) {
-                    try {
-                        Slot slot = handler.getSlot(si);
-                        ItemStack st = slot.getItem();
-                        if (st == null || st.isEmpty()) continue;
-                        String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
-                        if (sid.equals(itemId)) inInventory += st.getCount();
-                    } catch (Exception ignored) {}
-                }
-                if (inInventory > needed) {
-                    int excess = inInventory - needed;
-                    for (int si = playerStart; si < handler.slots.size() && excess > 0; si++) {
-                        try {
-                            Slot slot = handler.getSlot(si);
-                            ItemStack st = slot.getItem();
-                            if (st == null || st.isEmpty()) continue;
-                            String sid = BuiltInRegistries.ITEM.getKey(st.getItem()).toString();
-                            if (!sid.equals(itemId)) continue;
-                            int cnt = st.getCount();
-                            InvUtils.shiftClick().slotId(si);
-                            excess -= cnt;
-                            try { Thread.sleep(80); } catch (InterruptedException ignored) {}
-                        } catch (Exception ignored) {}
-                    }
-                }
+                var brain = meteordevelopment.meteorclient.systems.modules.Modules.get().get(com.rdh.swarm.modules.BotBrain.class);
+                if (brain != null) brain.noteWithdraw(itemId, transferred);
             } catch (Exception ignored) {}
-
-            // Adjust transferred to actual amount we intend to keep
-            transferred = Math.min(transferred, needed);
-
-            // close
-            mc.execute(() -> { try { if (mc.player != null) mc.setScreenAndShow(null); } catch (Exception ignored) {} });
-
-            ChatUtils.infoPrefix("Swarm", "Withdraw: took %d/%d %s from %d,%d,%d", Math.min(transferred, needed), needed, itemId, x, y, z);
             // notify host of result
             writeLine(String.format("WITHDRAW_RESULT:%s:%d:%d:%d:%d", itemId, x, y, z, transferred));
 
@@ -1205,9 +1530,284 @@ public class EnhancedSwarmWorker extends Thread {
         }
     }
 
+    /** A player slot that can receive a single item: same item with room, else empty. */
+    private int findDestSlot(AbstractContainerMenu handler, String itemId, int playerStart) {
+        int empty = -1;
+        for (int si = playerStart; si < handler.slots.size(); si++) {
+            try {
+                ItemStack st = handler.getSlot(si).getItem();
+                if (st == null || st.isEmpty()) { if (empty < 0) empty = si; continue; }
+                if (BuiltInRegistries.ITEM.getKey(st.getItem()).toString().equals(itemId)
+                    && st.getCount() < st.getMaxStackSize()) return si;
+            } catch (Exception ignored) {}
+        }
+        return empty;
+    }
+
+    /** One container click on the client thread, then a beat for the server to answer. */
+    private void clickSlotSync(int slotId, int button) {
+        try {
+            mc.execute(() -> {
+                try {
+                    if (mc.player != null && mc.gameMode != null) {
+                        mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, slotId, button,
+                            net.minecraft.world.inventory.ContainerInput.PICKUP, mc.player);
+                    }
+                } catch (Exception ignored) {}
+            });
+            Thread.sleep(120);
+        } catch (InterruptedException ignored) {}
+    }
+
+    private int countInInventory(AbstractContainerMenu handler, String itemId, int playerStart) {
+        int n = 0;
+        for (int si = playerStart; si < handler.slots.size(); si++) {
+            try {
+                ItemStack st = handler.getSlot(si).getItem();
+                if (st == null || st.isEmpty()) continue;
+                if (BuiltInRegistries.ITEM.getKey(st.getItem()).toString().equals(itemId)) n += st.getCount();
+            } catch (Exception ignored) {}
+        }
+        return n;
+    }
+
+    private int countInContainer(AbstractContainerMenu handler, String itemId, int playerStart) {
+        int n = 0;
+        for (int si = 0; si < playerStart; si++) {
+            try {
+                ItemStack st = handler.getSlot(si).getItem();
+                if (st == null || st.isEmpty()) continue;
+                if (BuiltInRegistries.ITEM.getKey(st.getItem()).toString().equals(itemId)) n += st.getCount();
+            } catch (Exception ignored) {}
+        }
+        return n;
+    }
+
+    /** Authoritative read: the bot's own inventory, menu closed. */
+    private int countInPlayerInventory(String itemId) {
+        if (mc.player == null) return 0;
+        int n = 0;
+        var inv = mc.player.getInventory();
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack st = inv.getItem(i);
+            if (st == null || st.isEmpty()) continue;
+            if (BuiltInRegistries.ITEM.getKey(st.getItem()).toString().equals(itemId)) n += st.getCount();
+        }
+        return n;
+    }
+
+    /** Sends the container-close packet and waits for the inventory menu to return. */
+    private void closeContainerAndWait() {
+        try {
+            mc.execute(() -> {
+                try {
+                    if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                        mc.player.closeContainer();
+                    }
+                    mc.setScreenAndShow(null);
+                } catch (Exception ignored) {}
+            });
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline) {
+                if (mc.player == null || mc.player.containerMenu == mc.player.inventoryMenu) return;
+                try { Thread.sleep(50); } catch (InterruptedException ignored) { return; }
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void sendScanResult(String category, int x, int y, int z, JsonObject result) {
         String header = String.format("SCAN_CHEST_RESULT:%s:%d:%d:%d|", category == null ? "all" : category, x, y, z);
         writeLine(header + result.toString());
+    }
+
+    // ---- world probe (MCP v0.1: docs/MCP_SERVER_SPEC.md 5.2) --------------
+    // Read-only. Answers "what is actually in the world" so a claim in the log can
+    // be checked against blocks and containers instead of trusted.
+    private static String jq(String s) { return String.valueOf((char) 34) + s + (char) 34; }
+
+    private String worldProbeJson(String kind, String args) {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{').append(jq("kind")).append(':').append(jq(kind));
+        try {
+            if (mc.level == null || mc.player == null) {
+                return sb.append(',').append(jq("error")).append(':').append(jq("no_world")).append('}').toString();
+            }
+            String[] a = (args == null || args.isBlank()) ? new String[0] : args.split(",");
+
+            if ("container".equals(kind)) {
+                int x = Integer.parseInt(a[0].trim()), y = Integer.parseInt(a[1].trim()), z = Integer.parseInt(a[2].trim());
+                net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
+                sb.append(',').append(jq("pos")).append(":[").append(x).append(',').append(y).append(',').append(z).append(']');
+                var be = mc.level.getBlockEntity(pos);
+                sb.append(',').append(jq("type")).append(':').append(jq(be == null ? "none" : be.getClass().getSimpleName()));
+                if (!(be instanceof net.minecraft.world.Container)) {
+                    sb.append(',').append(jq("error")).append(':').append(jq("not_a_container"));
+                } else {
+                    // The client only learns a container's contents through its
+                    // ContainerMenu. Reporting an empty list here would claim
+                    // "empty" when the truth is "not readable this way".
+                    sb.append(',').append(jq("contentsKnown")).append(":false");
+                    sb.append(',').append(jq("note")).append(':')
+                      .append(jq("a client block entity carries no inventory; call with open=true to read it"));
+                }
+            } else if ("containers".equals(kind)) {
+                int r = Math.min(24, Integer.parseInt(a[0].trim()));
+                var base = mc.player.blockPosition();
+                sb.append(',').append(jq("radius")).append(':').append(r);
+                sb.append(',').append(jq("containers")).append(":[");
+                boolean first = true;
+                for (int dx = -r; dx <= r; dx++) {
+                    for (int dy = -4; dy <= 4; dy++) {
+                        for (int dz = -r; dz <= r; dz++) {
+                            net.minecraft.core.BlockPos pos = base.offset(dx, dy, dz);
+                            var be = mc.level.getBlockEntity(pos);
+                            if (!(be instanceof net.minecraft.world.Container c)) continue;
+                            if (!first) sb.append(',');
+                            first = false;
+                            sb.append('{').append(jq("pos")).append(":[").append(pos.getX()).append(',')
+                              .append(pos.getY()).append(',').append(pos.getZ()).append(']')
+                              .append(',').append(jq("type")).append(':').append(jq(be.getClass().getSimpleName()))
+                              .append(',').append(jq("contentsKnown")).append(":false");
+                            sb.append('}');
+                        }
+                    }
+                }
+                sb.append(']');
+            } else if ("blocks".equals(kind)) {
+                int x = Integer.parseInt(a[0].trim()), y = Integer.parseInt(a[1].trim()), z = Integer.parseInt(a[2].trim());
+                int r = Math.min(8, a.length > 3 ? Integer.parseInt(a[3].trim()) : 4);
+                net.minecraft.core.BlockPos center = new net.minecraft.core.BlockPos(x, y, z);
+                sb.append(',').append(jq("blocks")).append(":[");
+                boolean first = true;
+                for (int dx = -r; dx <= r; dx++) {
+                    for (int dy = -r; dy <= r; dy++) {
+                        for (int dz = -r; dz <= r; dz++) {
+                            net.minecraft.core.BlockPos pos = center.offset(dx, dy, dz);
+                            var st = mc.level.getBlockState(pos);
+                            if (st.isAir()) continue;
+                            if (!first) sb.append(',');
+                            first = false;
+                            sb.append('{').append(jq("pos")).append(":[").append(pos.getX()).append(',')
+                              .append(pos.getY()).append(',').append(pos.getZ()).append(']')
+                              .append(',').append(jq("id")).append(':')
+                              .append(jq(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock()).toString()))
+                              .append('}');
+                        }
+                    }
+                }
+                sb.append(']');
+            } else {
+                sb.append(',').append(jq("error")).append(':').append(jq("unknown_kind"));
+            }
+        } catch (Exception e) {
+            sb.append(',').append(jq("error")).append(':').append(jq(String.valueOf(e.getMessage())));
+        }
+        return sb.append('}').toString();
+    }
+
+    // Authoritative contents. A client-side BlockEntity never holds a chest's
+    // inventory - the contents arrive in the ContainerMenu when it is opened - so
+    // the only honest answer to "what is in this chest" is to walk to it and open
+    // it, exactly the way the scan and deposit paths already do. Blocking on
+    // purpose: this runs on the same payload thread as handleScan.
+    private String probeOpenContainer(String args) {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{').append(jq("kind")).append(':').append(jq("container_open"));
+        try {
+            String[] a = args.split(",");
+            int x = Integer.parseInt(a[0].trim()), y = Integer.parseInt(a[1].trim()), z = Integer.parseInt(a[2].trim());
+            BlockPos chestPos = new BlockPos(x, y, z);
+            sb.append(',').append(jq("pos")).append(":[").append(x).append(',').append(y).append(',').append(z).append(']');
+            var be = mc.level == null ? null : mc.level.getBlockEntity(chestPos);
+            if (be != null) sb.append(',').append(jq("type")).append(':').append(jq(be.getClass().getSimpleName()));
+            if (!(be instanceof net.minecraft.world.Container)) {
+                return sb.append(',').append(jq("error")).append(':').append(jq("not_a_container")).append('}').toString();
+            }
+            BlockPos standPos = findChestStandPos(chestPos);
+            if (standPos == null) {
+                return sb.append(',').append(jq("error")).append(':').append(jq("unreachable")).append('}').toString();
+            }
+            if (mc.getConnection() != null) {
+                sendChatOnClient(mc, String.format("#goto %d %d %d", standPos.getX(), standPos.getY(), standPos.getZ()));
+            }
+            long start = System.currentTimeMillis();
+            boolean arrived = false;
+            while (System.currentTimeMillis() - start < 25000) {
+                if (mc.player != null) {
+                    double dx = mc.player.getX() - standPos.getX();
+                    double dy = mc.player.getY() - standPos.getY();
+                    double dz = mc.player.getZ() - standPos.getZ();
+                    if (dx * dx + dy * dy + dz * dz <= 4.0) { arrived = true; break; }
+                }
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            }
+            sb.append(',').append(jq("arrived")).append(':').append(arrived);
+            if (!arrived) {
+                return sb.append(',').append(jq("error")).append(':').append(jq("no_path")).append('}').toString();
+            }
+            final BlockPos target = chestPos;
+            mc.execute(() -> {
+                try {
+                    if (mc.player == null) return;
+                    try { mc.player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(target)); } catch (Exception ignored) {}
+                    BlockHitResult bhr = new BlockHitResult(Vec3.atCenterOf(target), Direction.UP, target, false);
+                    try { mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, bhr); } catch (Exception ignored) {}
+                } catch (Exception ignored) {}
+            });
+            long ws = System.currentTimeMillis();
+            boolean opened = false;
+            while (System.currentTimeMillis() - ws < 10000) {
+                try {
+                    if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                        var handler = mc.player.containerMenu;
+                        int containerSlots = 0;
+                        for (int si = 0; si < handler.slots.size(); si++) {
+                            try { Slot s = handler.getSlot(si); if (s.container != mc.player.getInventory()) containerSlots++; } catch (Exception ignored) {}
+                        }
+                        if (containerSlots > 0) { opened = true; break; }
+                    }
+                } catch (Exception ignored) {}
+                try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+            }
+            if (!opened) {
+                return sb.append(',').append(jq("error")).append(':').append(jq("did_not_open")).append('}').toString();
+            }
+            var handler = mc.player.containerMenu;
+            int used = 0, total = 0;
+            StringBuilder slots = new StringBuilder();
+            java.util.LinkedHashMap<String, Long> containerCounts = new java.util.LinkedHashMap<>();
+            try {
+                for (int si = 0; si < handler.slots.size(); si++) {
+                    try {
+                        Slot s = handler.getSlot(si);
+                        if (s.container == mc.player.getInventory()) continue;
+                        total++;
+                        var st = s.getItem();
+                        if (st == null || st.isEmpty()) continue;
+                        used++;
+                        if (slots.length() > 0) slots.append(',');
+                        String id = "";
+                        try { id = BuiltInRegistries.ITEM.getKey(st.getItem()).toString(); } catch (Exception ignored) {}
+                        if (!id.isEmpty()) containerCounts.merge(id, (long) st.getCount(), Long::sum);
+                        slots.append('{').append(jq("slot")).append(':').append(si)
+                             .append(',').append(jq("item")).append(':').append(jq(id))
+                             .append(',').append(jq("count")).append(':').append(st.getCount()).append('}');
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+            closeContainerAndWait();
+            // Opening a chest is a measurement of it, so publish what the menu said. The
+            // host index is a record of measurements, never a running total, and this is
+            // the path that keeps it honest outside a deposit.
+            publishMeasuredChest(x, y, z, used, total, containerCounts);
+            sb.append(',').append(jq("usedSlots")).append(':').append(used);
+            sb.append(',').append(jq("totalSlots")).append(':').append(total);
+            sb.append(',').append(jq("slots")).append(":[").append(slots).append(']');
+            sb.append(',').append(jq("authoritative")).append(":true");
+        } catch (Exception e) {
+            sb.append(',').append(jq("error")).append(':').append(jq(String.valueOf(e.getMessage())));
+        }
+        return sb.append('}').toString();
     }
 
     private void writeLine(String line) {

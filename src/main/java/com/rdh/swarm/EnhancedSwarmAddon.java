@@ -74,6 +74,13 @@ public class EnhancedSwarmAddon extends MeteorAddon {
         // Register both enhanced and legacy command names for backward compatibility
         Commands.add(new com.rdh.swarm.commands.SwarmCommand());
         Commands.add(new com.rdh.swarm.commands.SwarmCommand("swarm"));
+
+        // Test-only; inert unless config/enhanced-swarm-harness.json is present.
+        try {
+            com.rdh.swarm.harness.HarnessBridge.startIfConfigured();
+        } catch (Throwable t) {
+            LOG.warn("Harness bridge not started: {}", t.getMessage());
+        }
     }
 
     @Override

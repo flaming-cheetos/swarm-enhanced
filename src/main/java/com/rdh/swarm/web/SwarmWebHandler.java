@@ -69,6 +69,11 @@ public class SwarmWebHandler extends SimpleChannelInboundHandler<Object> {
         // API POST endpoints
         if (req.method() == HttpMethod.POST) {
             String body = req.content().toString(CharsetUtil.UTF_8);
+            String debug = server.handleDebugApi(uri, body);
+            if (debug != null) {
+                sendJson(ctx, debug);
+                return;
+            }
             server.handleApiCommand(uri, body);
             sendJson(ctx, "{\"ok\":true}");
             return;

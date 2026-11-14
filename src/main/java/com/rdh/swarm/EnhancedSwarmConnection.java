@@ -7,6 +7,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
@@ -34,6 +35,30 @@ public class EnhancedSwarmConnection extends Thread {
     private DataInputStream in;
     private static final int _cx = 0x726468;
     private static final long _cn = 0x666C616D696E67L;
+
+    private static UUID parseTaskId(String value) {
+        try { return UUID.fromString(value); } catch (Exception ignored) { return null; }
+    }
+
+    private static boolean isInteger(String value) {
+        if (value == null || value.isEmpty()) return false;
+        try { Integer.parseInt(value); return true; } catch (Exception ignored) { return false; }
+    }
+
+    private static boolean looksLikeUuid(String value) {
+        return parseTaskId(value) != null;
+    }
+
+    private void logRejectedReport(String kind, String taskId, String token) {
+        String shortToken = token == null || token.isEmpty()
+            ? "legacy" : token.substring(0, Math.min(8, token.length()));
+        ChatUtils.warningPrefix("Swarm", "TASK: rejected stale %s %s token=%s", kind, taskId, shortToken);
+        try {
+            if (host != null && host.getWebServer() != null) {
+                host.getWebServer().logWarn("TASK: rejected stale " + kind + " " + taskId + " token=" + shortToken);
+            }
+        } catch (Exception ignored) {}
+    }
 
     public EnhancedSwarmConnection(EnhancedSwarmHost host, Socket socket) {
         this.host = host;
@@ -89,6 +114,18 @@ public class EnhancedSwarmConnection extends Thread {
                 return;
             }
 
+            // Reconnect handshake: fence the old assignment, then tell the
+            // worker to drop its local copy before the next claim is dispatched.
+            try {
+                if (workerName != null && host != null) {
+                    int requeued = host.handleWorkerReconnect(workerName);
+                    if (requeued > 0) {
+                        try { if (host.getWebServer() != null) host.getWebServer().logWarn("Requeued " + requeued + " active task(s) on reconnect for " + workerName); } catch (Exception ignored) {}
+                    }
+                    messageQueue.add("swarm:" + workerName + " task reset");
+                }
+            } catch (Exception ignored) {}
+
             // Request a sync from the worker once we have a name (non-blocking)
             try {
                 if (workerName != null && host != null) {
@@ -105,6 +142,10 @@ public class EnhancedSwarmConnection extends Thread {
                                     try {
                                     var depositConfig = host.getDepositConfig();
                                     String server = host.getCurrentServer();
+                                    // The registry is the source of truth for this base's
+                                    // chests; without this the push below sends nothing and
+                                    // the worker has no category to deposit into.
+                                    host.adoptRegistryChests();
                                     java.util.Map<String, java.util.List<int[]>> chests = depositConfig.getChests(server);
 
                                     int pushed = 0;
@@ -231,39 +272,40 @@ public class EnhancedSwarmConnection extends Thread {
                             }
                         } else if (read.startsWith("TASK_PROGRESS:")) {
                             try {
-                                String[] parts = read.split(":", 7);
+                                String[] parts = read.split(":", 8);
                                 if (parts.length >= 5) {
                                     String wName = parts[1];
                                     String taskId = parts[2];
+                                    // New protocol puts the token before collected; legacy
+                                    // workers start with the numeric collected count.
+                                    boolean hasToken = !isInteger(parts[3]);
+                                    int base = hasToken ? 4 : 3;
+                                    String leaseToken = hasToken ? parts[3] : "";
                                     int collected = 0;
                                     int total = 0;
-                                    try { collected = Integer.parseInt(parts[3]); } catch (Exception ignored) {}
-                                    try { total = Integer.parseInt(parts[4]); } catch (Exception ignored) {}
-                                    String taskState = parts.length > 5 ? parts[5] : "";
-                                    String eta = parts.length > 6 ? parts[6] : "";
+                                    try { collected = Integer.parseInt(parts[base]); } catch (Exception ignored) {}
+                                    try { total = Integer.parseInt(parts[base + 1]); } catch (Exception ignored) {}
+                                    String taskState = parts.length > base + 2 ? parts[base + 2] : "";
+                                    String eta = parts.length > base + 3 ? parts[base + 3] : "";
 
                                     if (host != null) {
-                                        BotStatus bs = host.getBotStatus(wName);
-                                        if (bs != null) {
-                                            bs.collected = collected;
-                                            bs.total = total;
-                                            bs.taskId = taskId;
-                                            bs.state = taskState;
-                                            bs.eta = eta;
-                                            bs.lastUpdate = System.currentTimeMillis();
-                                            bs.online = true;
-                                        }
-
                                         TaskQueue tq = host.getTaskQueue();
-                                        if (tq != null) {
-                                            for (BotTask task : tq.getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(taskId)) {
-                                                        int diff = collected - task.getCollectedQuantity();
-                                                        if (diff > 0) task.addCollected(diff);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
+                                        UUID tid = parseTaskId(taskId);
+                                        boolean accepted = tq != null && tid != null
+                                            && EnhancedSwarmHost.recordWorkerProgress(tq, tid, wName, leaseToken,
+                                                collected, System.currentTimeMillis(), EnhancedSwarmHost.LEASE_TTL_MS);
+                                        if (!accepted) {
+                                            logRejectedReport("progress", taskId, leaseToken);
+                                        } else {
+                                            BotStatus bs = host.getBotStatus(wName);
+                                            if (bs != null) {
+                                                bs.collected = collected;
+                                                bs.total = total;
+                                                bs.taskId = taskId;
+                                                bs.state = taskState;
+                                                bs.eta = eta;
+                                                bs.lastUpdate = System.currentTimeMillis();
+                                                bs.online = true;
                                             }
                                         }
                                     }
@@ -271,87 +313,79 @@ public class EnhancedSwarmConnection extends Thread {
                             } catch (Exception ignored) {}
                         } else if (read.startsWith("TASK_COMPLETE:")) {
                             try {
-                                // TASK_COMPLETE:<workerName>:<taskId>:<itemName>:<quantity>:<elapsed>
-                                String[] parts = read.split(":", 6);
+                                // New: TASK_COMPLETE:<worker>:<id>:<token>:<item>:<qty>:<elapsed>
+                                // Legacy: TASK_COMPLETE:<worker>:<id>:<item>:<qty>:<elapsed>
+                                String[] parts = read.split(":", 7);
                                 if (parts.length >= 6) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String item = parts[3];
-                                    String qty = parts[4];
-                                    String elapsed = parts[5];
-                                    ChatUtils.infoPrefix("Swarm", "✓ %s completed: %s x%s in %s", w, item, qty, elapsed);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logInfo("✓ " + w + " completed: " + item + " x" + qty); } catch (Exception ignored) {}
-
-                                    // Mark the task COMPLETE in the host task queue if present
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.COMPLETE);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
-
-                                    // Try to dispatch next pending task for this worker
-                                    try { if (host != null) host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 7 || (parts.length == 6 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    int base = hasToken ? 4 : 3;
+                                    String item = parts[base];
+                                    String qty = parts[base + 1];
+                                    String elapsed = parts[base + 2];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.COMPLETE, "completed");
+                                    if (!accepted) {
+                                        logRejectedReport("completion", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.infoPrefix("Swarm", "✓ %s completed: %s x%s in %s", w, item, qty, elapsed);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logInfo("✓ " + w + " completed: " + item + " x" + qty); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_COMPLETE: %s", e.getMessage()); }
                         } else if (read.startsWith("TASK_FAILED:")) {
                             try {
-                                // TASK_FAILED:<workerName>:<taskId>:<reason>
-                                String[] parts = read.split(":", 4);
+                                // New: TASK_FAILED:<worker>:<id>:<token>:<reason>
+                                // Legacy: TASK_FAILED:<worker>:<id>:<reason>
+                                String[] parts = read.split(":", 5);
                                 if (parts.length >= 4) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String reason = parts[3];
-                                    ChatUtils.warningPrefix("Swarm", "✗ %s task failed: %s", w, reason);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logWarn("✗ " + w + " task failed: " + reason); } catch (Exception ignored) {}
-
-                                    // Mark task FAILED in queue if present
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null && tid != null && !tid.isEmpty()) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.FAILED);
-                                                        task.setFailureReason(reason);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
-
-                                    // Dispatch next task for this worker
-                                    try { if (host != null) host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 5 || (parts.length == 4 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    String reason = hasToken && parts.length >= 5 ? parts[4] : "";
+                                    if (!hasToken) reason = parts[3];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.FAILED, reason);
+                                    if (!accepted) {
+                                        logRejectedReport("failure", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.warningPrefix("Swarm", "✗ %s task failed: %s", w, reason);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logWarn("✗ " + w + " task failed: " + reason); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_FAILED: %s", e.getMessage()); }
                         } else if (read.startsWith("TASK_CANCELLED:")) {
                             try {
-                                // TASK_CANCELLED:<workerName>:<taskId>:<reason>
-                                String[] parts = read.split(":", 4);
+                                // New: TASK_CANCELLED:<worker>:<id>:<token>:<reason>
+                                // Legacy: TASK_CANCELLED:<worker>:<id>:<reason>
+                                String[] parts = read.split(":", 5);
                                 if (parts.length >= 4) {
                                     String w = parts[1];
                                     String tid = parts[2];
-                                    String reason = parts[3];
-                                    ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
-                                    try { if (host != null && host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
-                                    try {
-                                        if (host != null && host.getTaskQueue() != null && tid != null && !tid.isEmpty()) {
-                                            for (BotTask task : host.getTaskQueue().getAllTasks()) {
-                                                try {
-                                                    if (task.getId().toString().equals(tid)) {
-                                                        task.setStatus(BotTask.Status.CANCELLED);
-                                                        break;
-                                                    }
-                                                } catch (Exception ignored) {}
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
+                                    boolean hasToken = parts.length >= 5 || (parts.length == 4 && looksLikeUuid(parts[3]));
+                                    String leaseToken = hasToken ? parts[3] : "";
+                                    String reason = hasToken && parts.length >= 5 ? parts[4] : "";
+                                    if (!hasToken) reason = parts[3];
+                                    UUID taskId = parseTaskId(tid);
+                                    boolean accepted = host != null && taskId != null
+                                        && EnhancedSwarmHost.finishTaskFromWorker(host.getTaskQueue(), taskId, w,
+                                            leaseToken, BotTask.Status.CANCELLED, reason);
+                                    if (!accepted) {
+                                        logRejectedReport("cancellation", tid, leaseToken);
+                                    } else {
+                                        ChatUtils.infoPrefix("Swarm", "■ %s task cancelled: %s", w, reason);
+                                        try { if (host.getWebServer() != null) host.getWebServer().logInfo("■ " + w + " task cancelled: " + reason); } catch (Exception ignored) {}
+                                        try { host.dispatchNextTask(w); } catch (Exception ignored) {}
+                                    }
                                 }
                             } catch (Exception e) { ChatUtils.errorPrefix("Swarm", "Failed parsing TASK_CANCELLED: %s", e.getMessage()); }
                         } else if (read.startsWith("BOT_STATUS:")) {
@@ -386,7 +420,38 @@ public class EnhancedSwarmConnection extends Thread {
                                             }
                                         }
                                         long when = o.has("lastScan") ? o.get("lastScan").getAsLong() : System.currentTimeMillis();
-                                        host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
+                                        boolean absolute = o.has("absolute") && o.get("absolute").getAsBoolean()
+                                            && o.has("container");
+                                        if (absolute) {
+                                            // The worker opened the chest and read it: replace the record
+                                            // with that measurement instead of adding a delta to it.
+                                            Map<String, Long> contents = new LinkedHashMap<>();
+                                            for (var entry : o.getAsJsonObject("container").entrySet()) {
+                                                try { contents.put(entry.getKey(), entry.getValue().getAsLong()); } catch (Exception ignored) {}
+                                            }
+                                            int used = o.has("usedSlots") ? o.get("usedSlots").getAsInt() : 0;
+                                            int total = o.has("totalSlots") ? o.get("totalSlots").getAsInt() : 0;
+                                            int[] twin = null;
+                                            try {
+                                                if (o.has("twin") && o.getAsJsonArray("twin").size() >= 3) {
+                                                    var tw = o.getAsJsonArray("twin");
+                                                    twin = new int[]{tw.get(0).getAsInt(), tw.get(1).getAsInt(), tw.get(2).getAsInt()};
+                                                }
+                                            } catch (Exception ignored) {}
+                                            host.getStorageIndex().setChestContents(host.getCurrentServer(), category, x, y, z, contents, used, total, when, twin);
+                                            if (twin != null) {
+                                                // Two coordinates, one inventory: the duplicate deposit entry
+                                                // only sends the bot to the same chest twice.
+                                                host.pruneDuplicateChest(x, y, z, twin[0], twin[1], twin[2]);
+                                            }
+                                            System.out.println(String.format(
+                                                "[CHEST MEASURED] %s %d,%d,%d slots=%d/%d twin=%s contents=%s",
+                                                category, x, y, z, used, total,
+                                                twin == null ? "none" : twin[0] + "," + twin[1] + "," + twin[2],
+                                                contents));
+                                        } else {
+                                            host.getStorageIndex().applyChestDelta(host.getCurrentServer(), category, x, y, z, delta, when);
+                                        }
                                     }
                                 }
                             } catch (Exception ignored) {}
@@ -428,6 +493,63 @@ public class EnhancedSwarmConnection extends Thread {
                                     }
                                 }
                             } catch (Exception ignored) {}
+                        } else if (read.startsWith("WITHDRAW_RESULT:")) {
+                            // <itemId...>:x:y:z:moved — the id carries its own ':', so read the
+                            // last four tokens and join the rest back into the id.
+                            try {
+                                String body = read.substring("WITHDRAW_RESULT:".length());
+                                String[] f = body.split(":");
+                                if (f.length >= 5) {
+                                    int moved = Integer.parseInt(f[f.length - 1].trim());
+                                    int z = Integer.parseInt(f[f.length - 2].trim());
+                                    int y = Integer.parseInt(f[f.length - 3].trim());
+                                    int x = Integer.parseInt(f[f.length - 4].trim());
+                                    String itemId = String.join(":", java.util.Arrays.copyOfRange(f, 0, f.length - 4)).trim();
+                                    String norm = com.rdh.swarm.StorageIndex.normalizeId(itemId);
+                                    String server = host.getCurrentServer();
+                                    long before = host.getStorageIndex().getTotal(server, norm);
+                                    host.getStorageIndex().debit(server, x, y, z, norm, moved);
+                                    if (moved <= 0) {
+                                        // The chest gave us nothing, so its recorded count was
+                                        // stale. Without this the phantom stayed and every
+                                        // later query sent the bot back to an empty chest.
+                                        host.getStorageIndex().clear(server, x, y, z, norm);
+                                        System.out.println(String.format(
+                                            "[WITHDRAW STALE] item=%s chest=%d,%d,%d moved=0, cleared its index entry",
+                                            norm, x, y, z));
+                                    }
+                                    long after = host.getStorageIndex().getTotal(server, norm);
+                                    System.out.println(String.format(
+                                        "[WITHDRAW DONE] item=%s chest=%d,%d,%d moved=%d index %d -> %d",
+                                        norm, x, y, z, moved, before, after));
+                                    ChatUtils.infoPrefix("Swarm", "Withdraw confirmed: %d %s from %d,%d,%d (index now %d)",
+                                        moved, norm, x, y, z, after);
+                                }
+                            } catch (Exception ignored) {}
+                        } else if (read.startsWith("WITHDRAW_REFUSED:")) {
+                            // The chest could not be opened (another menu was up). Nothing
+                            // moved, so the index is untouched, but the refusal is logged so
+                            // a send with no matching [WITHDRAW DONE] is explainable.
+                            System.out.println("[WITHDRAW REFUSED] " + read.substring("WITHDRAW_REFUSED:".length()));
+                        } else if (read.startsWith("WORLD_PROBE:")) {
+                            try {
+                                String body = read.substring("WORLD_PROBE:".length());
+                                int bar = body.indexOf('|');
+                                String json = bar >= 0 ? body.substring(bar + 1) : body;
+                                host.acceptWorldProbe(workerName, json);
+                            } catch (Exception ignored) {}
+                        } else if (read.startsWith("DEBUG_STATE:")) {
+                            try {
+                                String body = read.substring("DEBUG_STATE:".length());
+                                int bar = body.indexOf('|');
+                                String nonce = bar >= 0 ? body.substring(0, bar) : "";
+                                String json = bar >= 0 ? body.substring(bar + 1) : body;
+                                host.acceptDebugState(workerName, json);
+                                if (host.getWebServer() != null) {
+                                    host.getWebServer().logInfo("Debug state from " + workerName
+                                        + " (nonce " + nonce + ", " + json.length() + " chars)");
+                                }
+                            } catch (Exception ignored) {}
                         } else if (read.startsWith("SCAN_COMPLETE:")) {
                             try {
                                 String body = read.substring("SCAN_COMPLETE:".length()).trim();
@@ -464,39 +586,57 @@ public class EnhancedSwarmConnection extends Thread {
                                     try {
                                         String norm = com.rdh.swarm.StorageIndex.normalizeId(itemId);
                                         long total = host.getStorageIndex().getTotal(server, norm);
-                                        if (!first) resp.append(":");
+                                        String breakdown = host.getStorageIndex().getBreakdown(server, norm);
+                                        if (!first) resp.append("#");
                                         first = false;
-                                        resp.append(itemId).append(":").append(total);
+                                        // id:total:x,y,z=count;... — the trailing field names the
+                                        // containers the total came from, so the planner's answer is
+                                        // attributable to a specific chest instead of a bare number.
+                                        resp.append(itemId).append(":").append(total).append(":").append(breakdown);
                                     } catch (Exception ignored) {}
                                 }
+                                // Visibility for the storage-query path: what was asked,
+                                // which server key was used and what came back.
+                                System.out.println(String.format(
+                                    "[STORAGE QUERY] server=%s req=%s -> %s",
+                                    server, body, resp.toString()));
                                 try { if (out != null) { out.writeUTF(resp.toString()); out.flush(); } } catch (Exception ignored) {}
                             } catch (Exception ignored) {}
                         } else if (read.startsWith("WITHDRAW_REQUEST:")) {
                             try {
-                                // FROM WORKER: WITHDRAW_REQUEST:<itemId>:<needed>:<category>
+                                // FROM WORKER: WITHDRAW_REQUEST:<itemId>|<needed>|<category>
+                                // '|' separates fields because the id is namespace-qualified:
+                                // the old "id:needed" form split on ':' truncated
+                                // "minecraft:raw_iron" to "minecraft", so the host looked up
+                                // minecraft:minecraft, found no chest and dispatched nothing.
                                 String body = read.substring("WITHDRAW_REQUEST:".length());
-                                String[] parts = body.split(":", 3);
-                                if (parts.length >= 2 && host != null) {
-                                    String itemId = parts[0];
-                                    int needed = 0;
-                                    try { needed = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
-                                    String category = parts.length > 2 ? parts[2] : "all";
-                                    String server = host.getCurrentServer();
-                                    // Normalize simple ids (e.g. "iron_ingot" -> "minecraft:iron_ingot")
-                                    if (itemId != null && !itemId.contains(":")) {
-                                        itemId = "minecraft:" + itemId;
+                                String[] f = body.split("\\|", 3);
+                                String itemId = null;
+                                int needed = 0;
+                                String category = "all";
+                                if (f.length >= 2) {
+                                    itemId = f[0].trim();
+                                    try { needed = Integer.parseInt(f[1].trim()); } catch (Exception ignored) {}
+                                    if (f.length > 2 && !f[2].trim().isEmpty()) category = f[2].trim();
+                                } else {
+                                    // legacy colon form; the id itself may contain ':'
+                                    String[] c = body.split(":");
+                                    int numIdx = c.length - 1;
+                                    for (int k = c.length - 1; k >= 1; k--) {
+                                        try { Integer.parseInt(c[k].trim()); numIdx = k; break; } catch (Exception ignored) {}
                                     }
-                                    // HARD DEBUG: dump requested id and all keys in storage index
-                                    try {
-                                        System.out.println("=== WITHDRAW DEBUG ===");
-                                        System.out.println("Requested: " + itemId);
-                                        System.out.println("Available items in index:");
-                                        for (String key : host.getStorageIndex().getAllItems(server)) {
-                                            System.out.println(" - " + key);
-                                        }
-                                        long totalAvail = host.getStorageIndex().getTotal(server, itemId);
-                                        System.out.println("Total available for " + itemId + ": " + totalAvail);
-                                    } catch (Exception ignored) {}
+                                    itemId = String.join(":", java.util.Arrays.copyOfRange(c, 0, numIdx)).trim();
+                                    try { needed = Integer.parseInt(c[numIdx].trim()); } catch (Exception ignored) {}
+                                    if (numIdx + 1 < c.length) category = c[numIdx + 1].trim();
+                                }
+                                // Normalize simple ids (e.g. "iron_ingot" -> "minecraft:iron_ingot")
+                                if (itemId != null && !itemId.isEmpty() && !itemId.contains(":")) {
+                                    itemId = "minecraft:" + itemId;
+                                }
+                                if (itemId != null && !itemId.isEmpty() && host != null) {
+                                    String server = host.getCurrentServer();
+                                    System.out.println(String.format("[WITHDRAW] req item=%s need=%d category=%s index_total=%d",
+                                        itemId, needed, category, host.getStorageIndex().getTotal(server, itemId)));
 
                                     List<StorageIndex.ChestRecord> chests = host.getStorageIndex().getChests(server, category);
                                     long now = System.currentTimeMillis();
@@ -540,6 +680,13 @@ public class EnhancedSwarmConnection extends Thread {
                                             }
                                         } catch (Exception ignored) {}
                                         remaining -= take;
+                                    }
+                                    if (needed > remaining) {
+                                        System.out.println(String.format("[WITHDRAW] dispatched %d/%d %s from index chests",
+                                            needed - remaining, needed, itemId));
+                                    } else {
+                                        System.out.println(String.format("[WITHDRAW] no index chest holds %s (considered=%d) — nothing dispatched",
+                                            itemId, chests.size()));
                                     }
                                     if (requestedRescan) {
                                         try { host.sendAll("swarm:all scan " + category); } catch (Exception ignored) {}

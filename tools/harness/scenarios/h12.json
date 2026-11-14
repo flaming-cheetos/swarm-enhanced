@@ -1,0 +1,29 @@
+{
+  "id": "H12",
+  "title": "Known limitations reported honestly (simulated)",
+  "priority": "P1",
+  "simulated": true,
+  "simulation": {
+    "trigger": "SMELT with no usable fuel and BUILD with unproven completion",
+    "liveGate": "Run a SMELT with no fuel and a BUILD that cannot prove completion; both must be explicit FAILED/KNOWN lines, never silent success."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "panelSimulate", "name": "knownLimitations", "as": "limitations" },
+    { "action": "panelState", "as": "state" },
+    { "action": "panelTruth", "as": "truth" },
+    { "action": "logs", "as": "limitationLogs" }
+  ],
+  "assert": [
+    { "path": "state.tasks", "lengthEquals": 2 },
+    { "path": "state.tasks.0.type", "equals": "SMELT" },
+    { "path": "state.tasks.0.status", "equals": "FAILED" },
+    { "path": "state.tasks.0.reason", "equals": "no-fuel" },
+    { "path": "state.tasks.1.type", "equals": "BUILD" },
+    { "path": "state.tasks.1.status", "equals": "FAILED" },
+    { "path": "state.tasks.1.reason", "equals": "unproven-completion" },
+    { "path": "limitationLogs", "containsInOrder": ["SMELT: no usable fuel", "reason=no-fuel", "reason=unproven-completion"] },
+    { "path": "truth.liveActiveTaskCount", "equals": 0 }
+  ]
+}

@@ -190,6 +190,22 @@ function renderTasks() {
       (task.progress || '') + ' | ' + (task.bot || 'any'));
     info.append(name, meta);
 
+    const leaseBits = [];
+    if (task.attempt !== undefined && task.attempt !== null) leaseBits.push('attempt ' + task.attempt);
+    if (task.statusReason) leaseBits.push('reason ' + task.statusReason);
+    if (task.leaseOwner) leaseBits.push('lease ' + task.leaseOwner);
+    if (task.leaseExpiresAt) {
+      leaseBits.push('expires ' + new Date(task.leaseExpiresAt).toLocaleTimeString());
+    } else if (task.lastOwner) {
+      leaseBits.push('last ' + task.lastOwner);
+    }
+    if (task.heartbeatAgeMs) leaseBits.push('heartbeat ' + Math.round(task.heartbeatAgeMs / 1000) + 's ago');
+    if (leaseBits.length) {
+      const lease = element('div', 'task-meta', leaseBits.join(' | '));
+      lease.style.color = '#8bb';
+      info.append(lease);
+    }
+
     if (task.reason) {
       const reason = element('div', 'task-meta', task.reason);
       reason.style.color = '#c96';

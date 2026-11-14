@@ -64,7 +64,12 @@ public final class DropCollector {
     private final Set<String> clusterIds = new LinkedHashSet<>();
     private final Map<UUID, Long> blacklist = new HashMap<>();
     private List<ItemEntity> cluster = new ArrayList<>();
-    public enum FinalSweepVerdict { RUNNING, EVIDENCED, NOTHING_TO_COLLECT, UNPROVEN }
+    /**
+     * DEFERRED means the sweep could not start (cooldown, still breaking, another sweep
+     * running, inventory full). It is a scheduler state, not a finding — conflating it with
+     * UNPROVEN failed an honest gather one second after its own deposit sweep.
+     */
+    public enum FinalSweepVerdict { RUNNING, DEFERRED, EVIDENCED, NOTHING_TO_COLLECT, UNPROVEN }
 
     private UUID finalSweepTask;
     private UUID finalSweptTask;
@@ -116,8 +121,9 @@ public final class DropCollector {
      * EVIDENCED/NOTHING_TO_COLLECT are the only completion verdicts.
      */
     public FinalSweepVerdict startFinalSweep(UUID taskId) {
-        if (!Boolean.TRUE.equals(enabled.get())) return FinalSweepVerdict.UNPROVEN;
-        if (taskId == null) return FinalSweepVerdict.UNPROVEN;
+        // Collection switched off: there is nothing to sweep and nothing to prove here.
+        if (!Boolean.TRUE.equals(enabled.get())) return FinalSweepVerdict.NOTHING_TO_COLLECT;
+        if (taskId == null) return FinalSweepVerdict.NOTHING_TO_COLLECT;
         if (taskId.equals(finalSweptTask)) {
             return finalSweepEvidence ? FinalSweepVerdict.EVIDENCED : FinalSweepVerdict.NOTHING_TO_COLLECT;
         }
@@ -129,7 +135,7 @@ public final class DropCollector {
         finalSweepEvidence = false;
         if (!startWorkUnit()) {
             finalSweepTask = null;
-            return FinalSweepVerdict.UNPROVEN;
+            return FinalSweepVerdict.DEFERRED;
         }
         return FinalSweepVerdict.RUNNING;
     }

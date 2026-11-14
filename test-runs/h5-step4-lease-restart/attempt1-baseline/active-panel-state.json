@@ -1,0 +1,38 @@
+{
+  "type": "state",
+  "modVersion": "0.1.0+e62b2f9",
+  "buildCommit": "e62b2f9",
+  "hostName": "chris",
+  "dimension": "minecraft:overworld",
+  "connected": 1,
+  "bots": [
+    {
+      "username": "jamal",
+      "nickname": "",
+      "online": true,
+      "health": 20,
+      "food": 20,
+      "x": -547,
+      "y": 91,
+      "z": 596,
+      "task": "Idle — no task",
+      "progress": "0/0",
+      "eta": "",
+      "tier": "WOOD",
+      "state": "IDLE",
+      "halted": false
+    }
+  ],
+  "tasks": [
+    {
+      "id": "64e1fd2f-0c39-4976-ad2f-96ed65890880",
+      "type": "GATHER",
+      "item": "oak_log",
+      "quantity": 2,
+      "progress": "0/2",
+      "status": "ACTIVE",
+      "reason": "",
+      "bot": "jamal"
+    }
+  ]
+}

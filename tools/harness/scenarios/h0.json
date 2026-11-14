@@ -1,0 +1,17 @@
+{
+  "id": "H0",
+  "title": "Attach and identify",
+  "priority": "P0",
+  "steps": [
+    { "action": "health", "as": "health" },
+    { "action": "state", "as": "state" },
+    { "action": "screenshot", "as": "screenshot", "file": "h0-screenshot.png" }
+  ],
+  "assert": [
+    { "path": "health.ok", "equals": true },
+    { "path": "health.inGame", "equals": true },
+    { "path": "state.inGame", "equals": true },
+    { "path": "state.player", "exists": true },
+    { "path": "state.player.name", "exists": true }
+  ]
+}

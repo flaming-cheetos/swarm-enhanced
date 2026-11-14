@@ -8,7 +8,14 @@ import java.util.UUID;
 
 public class BotTask {
 
-    public enum Type { GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD, GRIND, SMITH, SHULKER, BUILD }
+    public enum Type {
+        GATHER, CRAFT, SMELT, EQUIP, DEPOSIT, SCAN_CHESTS, HUNT_FOOD, GRIND, SMITH, SHULKER, BUILD;
+
+        /** True when BotBrain has an execution path for this type. */
+        public boolean isDispatchable() {
+            return this != EQUIP && this != DEPOSIT && this != SCAN_CHESTS;
+        }
+    }
     public enum Status { PENDING, ACTIVE, BLOCKED, COMPLETE, FAILED, CANCELLED }
 
     private final UUID id;
@@ -24,6 +31,25 @@ public class BotTask {
     private Status status;
     private String assignedBot;
     private String failureReason;
+    private int attempt;
+    private String lastOwner;
+    private String statusReason;
+    private String leaseToken;
+    private long leaseExpiresAt;
+    private long lastHeartbeatAt;
+    // Token the expiring sweep took away, plus when it lapsed. Kept so a worker
+    // that was still working can re-attach inside the grace window instead of
+    // having every later report rejected as stale.
+    private String lastLeaseToken = "";
+    private long leaseLapsedAt;
+
+    // ENSURE is a target-level task: the host measures the base when the task is
+    // queued and stores only the shortfall in targetQuantity. These fields keep the
+    // operator's intent and the reading behind it, so a COMPLETE can say
+    // "12 + 3 = 15" instead of claiming fifteen items moved.
+    private boolean ensureMode;
+    private int ensureTarget;
+    private long ensureBaseline = -1L;
 
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
@@ -74,6 +100,30 @@ public class BotTask {
     public void setAssignedBot(String assignedBot) { this.assignedBot = assignedBot; }
     public String getFailureReason() { return failureReason; }
     public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
+
+    public int getAttempt() { return attempt; }
+    public void setAttempt(int attempt) { this.attempt = Math.max(0, attempt); }
+    public String getLastOwner() { return lastOwner == null ? "" : lastOwner; }
+    public void setLastOwner(String lastOwner) { this.lastOwner = lastOwner == null ? "" : lastOwner; }
+    public String getStatusReason() { return statusReason == null ? "" : statusReason; }
+    public void setStatusReason(String statusReason) { this.statusReason = statusReason == null ? "" : statusReason; }
+    public String getLeaseToken() { return leaseToken == null ? "" : leaseToken; }
+    public void setLeaseToken(String leaseToken) { this.leaseToken = leaseToken == null ? "" : leaseToken; }
+    public long getLeaseExpiresAt() { return leaseExpiresAt; }
+    public void setLeaseExpiresAt(long leaseExpiresAt) { this.leaseExpiresAt = Math.max(0L, leaseExpiresAt); }
+    public long getLastHeartbeatAt() { return lastHeartbeatAt; }
+    public void setLastHeartbeatAt(long lastHeartbeatAt) { this.lastHeartbeatAt = Math.max(0L, lastHeartbeatAt); }
+    public String getLastLeaseToken() { return lastLeaseToken == null ? "" : lastLeaseToken; }
+    public void setLastLeaseToken(String lastLeaseToken) { this.lastLeaseToken = lastLeaseToken == null ? "" : lastLeaseToken; }
+    public long getLeaseLapsedAt() { return leaseLapsedAt; }
+
+    public boolean isEnsureMode() { return ensureMode; }
+    public void setEnsureMode(boolean ensureMode) { this.ensureMode = ensureMode; }
+    public int getEnsureTarget() { return ensureTarget; }
+    public void setEnsureTarget(int ensureTarget) { this.ensureTarget = Math.max(0, ensureTarget); }
+    public long getEnsureBaseline() { return ensureBaseline; }
+    public void setEnsureBaseline(long ensureBaseline) { this.ensureBaseline = ensureBaseline; }
+    public void setLeaseLapsedAt(long leaseLapsedAt) { this.leaseLapsedAt = Math.max(0L, leaseLapsedAt); }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }
 

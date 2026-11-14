@@ -467,6 +467,10 @@ public class RecipeBook {
         if (item == null || item == Items.AIR) return false;
         if (hasRecipe(item)) return true;
         if (getOreForIngot(item) != null) return true;
+        // Cooking is a real source: raw food -> cooked food through a smoker or
+        // furnace. Without this, maybeQueueCooking's task was rejected by
+        // setTask() with "no known source" before it could ever start.
+        if (isCookedFood(item)) return true;
         try {
             Identifier id = BuiltInRegistries.ITEM.getKey(item);
             if (id == null) return false;
@@ -474,6 +478,14 @@ public class RecipeBook {
             String path = id.getPath();
             return path.endsWith("_ore") || path.endsWith("_log") || path.endsWith("_stem")
                 || path.endsWith("_wood") || KNOWN_GATHER_DROPS.contains(path);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isCookedFood(Item item) {
+        try {
+            return FoodManager.COOKING.containsValue(item);
         } catch (Exception e) {
             return false;
         }

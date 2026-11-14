@@ -1,0 +1,56 @@
+
+> Configure project :
+Fabric Loom: 1.18.4
+
+> Task :compileJava
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:72: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+    private NioEventLoopGroup bossGroup;
+            ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:73: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+    private NioEventLoopGroup workerGroup;
+            ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:162: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+        bossGroup = new NioEventLoopGroup(1);
+                        ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:163: warning: [deprecation] NioEventLoopGroup in io.netty.channel.nio has been deprecated
+        workerGroup = new NioEventLoopGroup(2);
+                          ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\web\SwarmWebServer.java:175: warning: [deprecation] WebSocketServerCompressionHandler() in WebSocketServerCompressionHandler has been deprecated
+                        p.addLast(new WebSocketServerCompressionHandler());
+                                  ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\DepositDriver.java:677: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+                        if ((state.isAir() || !state.canOcclude()) && !below.isAir() && below.isSolid()) {
+                                                                                             ^
+C:\Projects\swarm\swarm-improved\src\main\java\com\rdh\swarm\modules\BotBrain.java:2091: warning: [deprecation] isSolid() in BlockStateBase has been deprecated
+                        if (state.isAir() && below.isSolid()) return candidate;
+                                                  ^
+7 warnings
+
+> Task :processResources
+> Task :classes
+> Task :compileH5TestJava UP-TO-DATE
+> Task :processH5TestResources NO-SOURCE
+> Task :h5TestClasses UP-TO-DATE
+
+> Task :h5ProtocolTest FAILED
+Exception in thread "main" java.lang.AssertionError: stale completion after reconnect was accepted
+	at com.rdh.swarm.ProtocolMatrixTest.check(ProtocolMatrixTest.java:245)
+	at com.rdh.swarm.ProtocolMatrixTest.staleTokenAfterRequeue(ProtocolMatrixTest.java:123)
+	at com.rdh.swarm.ProtocolMatrixTest.main(ProtocolMatrixTest.java:39)
+
+[Incubating] Problems report is available at: file:///C:/Projects/swarm/swarm-improved/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':h5ProtocolTest' (registered in build file 'build.gradle.kts').
+> Process 'command 'C:\Program Files\Java\jdk-25.0.2\bin\java.exe'' finished with non-zero exit value 1
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1s
+4 actionable tasks: 3 executed, 1 up-to-date

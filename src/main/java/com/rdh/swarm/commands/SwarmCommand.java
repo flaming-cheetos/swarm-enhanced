@@ -50,8 +50,24 @@ public class SwarmCommand extends Command {
         return CompletableFuture.completedFuture(builder.build());
     };
 
+    /** Categories that exist *on this base* first, built-in item classes after them. */
     private static final SuggestionProvider<ClientSuggestionProvider> CATEGORY_SUGGESTIONS = (CommandContext<ClientSuggestionProvider> ctx, SuggestionsBuilder builder) -> {
-        for (String cat : DepositConfig.getCategoryNames()) builder.suggest(cat);
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        builder.suggest("all", net.minecraft.network.chat.Component.literal("every chest in the base"));
+        seen.add("all");
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            try {
+                for (var e : mod.host.getDepositConfig().getChests(mod.host.getCurrentServer()).entrySet()) {
+                    if (seen.add(e.getKey())) builder.suggest(e.getKey(),
+                        net.minecraft.network.chat.Component.literal(e.getValue().size() + " chest(s) here"));
+                }
+            } catch (Exception ignored) {}
+        }
+        for (String cat : DepositConfig.getCategoryNames()) {
+            if (seen.add(cat)) builder.suggest(cat,
+                net.minecraft.network.chat.Component.literal("built-in item class, no chests yet"));
+        }
         return CompletableFuture.completedFuture(builder.build());
     };
 
@@ -114,6 +130,125 @@ public class SwarmCommand extends Command {
         return new String[]{"goto", "mine", "follow", "stop", "say", "where", "tp", "help", "scatter", "gather", "stay", "resume", "deposit", "depositall", "exec"};
     }
 
+    /** Item ids: what the base actually holds first, then the registry, filtered by prefix. */
+    private static final SuggestionProvider<ClientSuggestionProvider> ITEM_SUGGESTIONS = (ctx, builder) -> {
+        String rem = builder.getRemaining().toLowerCase(java.util.Locale.ROOT);
+        java.util.LinkedHashSet<String> offered = new java.util.LinkedHashSet<>();
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            try {
+                for (var e : mod.host.getStorageIndex().allTotals(mod.host.getCurrentServer()).entrySet()) {
+                    String id = shortId(e.getKey());
+                    if (!rem.isEmpty() && !id.startsWith(rem)) continue;
+                    if (offered.add(id)) builder.suggest(id,
+                        net.minecraft.network.chat.Component.literal(e.getValue() + " in base"));
+                }
+            } catch (Exception ignored) {}
+        }
+        for (var key : net.minecraft.core.registries.BuiltInRegistries.ITEM.keySet()) {
+            String id = shortId(key.toString());
+            if (!rem.isEmpty() && !id.startsWith(rem)) continue;
+            if (offered.add(id)) builder.suggest(id);
+        }
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    private static String shortId(String id) {
+        return id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
+    }
+
+    /** Common stack counts for an additive gather. */
+    private static final SuggestionProvider<ClientSuggestionProvider> GATHER_QTY_SUGGESTIONS = (ctx, builder) -> {
+        for (int q : new int[]{16, 32, 64, 128, 192, 256}) builder.suggest(Integer.toString(q));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    /** Ensure targets anchored on what the base holds right now, so every option is a real gap. */
+    private static final SuggestionProvider<ClientSuggestionProvider> ENSURE_QTY_SUGGESTIONS = (ctx, builder) -> {
+        long have = 0L;
+        try {
+            String item = StringArgumentType.getString(ctx, "item");
+            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+            if (mod != null && mod.isHost() && mod.host != null) {
+                String id = com.rdh.swarm.StorageIndex.normalizeId(item.contains(":") ? item : "minecraft:" + item);
+                String cat = null;
+                try { cat = StringArgumentType.getString(ctx, "category"); } catch (Exception ignored) {}
+                if (cat != null && !cat.equalsIgnoreCase("all")) {
+                    have = mod.host.getStorageIndex().categoryTotals(mod.host.getCurrentServer(), cat).getOrDefault(id, 0L);
+                } else {
+                    have = mod.host.getStorageIndex().getTotal(mod.host.getCurrentServer(), id);
+                }
+            }
+        } catch (Exception ignored) {}
+        for (int step : new int[]{64, 128, 256, 512}) {
+            builder.suggest(Long.toString(have + step),
+                net.minecraft.network.chat.Component.literal("base holds " + have + ", shortfall " + step));
+        }
+        if (have > 0) builder.suggest(Long.toString(have),
+            net.minecraft.network.chat.Component.literal("already at target - nothing queued"));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    /** Task ids still on the board, with what each one is actually doing. */
+    private static final SuggestionProvider<ClientSuggestionProvider> TASK_ID_SUGGESTIONS = (ctx, builder) -> {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            try {
+                for (BotTask t : mod.host.getTaskQueue().toList()) {
+                    if (t.getStatus() == BotTask.Status.COMPLETE || t.getStatus() == BotTask.Status.FAILED) continue;
+                    builder.suggest(t.getId().toString(), net.minecraft.network.chat.Component.literal(
+                        t.getType() + " " + t.getItemName() + " " + t.getProgressString() + " " + t.getStatus()));
+                }
+            } catch (Exception ignored) {}
+        }
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    /** Where you are standing: the only three numbers that matter when adding a chest. */
+    private static final SuggestionProvider<ClientSuggestionProvider> X_SUGGESTIONS = (ctx, builder) -> {
+        var p = Minecraft.getInstance().player;
+        if (p != null) builder.suggest(Integer.toString(p.blockPosition().getX()));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+    private static final SuggestionProvider<ClientSuggestionProvider> Y_SUGGESTIONS = (ctx, builder) -> {
+        var p = Minecraft.getInstance().player;
+        if (p != null) builder.suggest(Integer.toString(p.blockPosition().getY()));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+    private static final SuggestionProvider<ClientSuggestionProvider> Z_SUGGESTIONS = (ctx, builder) -> {
+        var p = Minecraft.getInstance().player;
+        if (p != null) builder.suggest(Integer.toString(p.blockPosition().getZ()));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    private static final SuggestionProvider<ClientSuggestionProvider> INDEX_SUGGESTIONS = (ctx, builder) -> {
+        for (int i = 1; i <= 8; i++) builder.suggest(Integer.toString(i));
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    private static final SuggestionProvider<ClientSuggestionProvider> TOGGLE_SUGGESTIONS = (ctx, builder) -> {
+        builder.suggest("on");
+        builder.suggest("off");
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
+    private static final SuggestionProvider<ClientSuggestionProvider> WAYPOINT_SUGGESTIONS = (ctx, builder) -> {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod != null && mod.isHost() && mod.host != null) {
+            try {
+                mod.host.getWaypointManager().ensureLoaded();
+                for (var wp : mod.host.getWaypointManager().getAllWaypoints()) {
+                    int[] c = wp.hasOverworldCoords() ? wp.getCoords(false)
+                        : (wp.hasNetherCoords() ? wp.getCoords(true) : null);
+                    String where = c == null ? "unset" : (c[0] + " " + c[1] + " " + c[2]);
+                    builder.suggest(wp.name, net.minecraft.network.chat.Component.literal(
+                        wp.category + " @ " + where));
+                }
+            } catch (Exception ignored) {}
+        }
+        return java.util.concurrent.CompletableFuture.completedFuture(builder.build());
+    };
+
     @Override
     public void build(LiteralArgumentBuilder<ClientSuggestionProvider> builder) {
         // ---- halt/resume ----
@@ -173,75 +308,80 @@ public class SwarmCommand extends Command {
         builder.then(send);
 
         // ---- task ----
-        LiteralArgumentBuilder<ClientSuggestionProvider> task = literal("task");
+        // Task modes, queued without a bot name: the lease decides which bot runs a
+        // task, so a name here only ever pre-assigned work the queue should own.
+        //   gather <item> <qty>             additive: move qty MORE, stock is irrelevant
+        //   ensure <item> <qty>             target: the base holds qty, anywhere
+        //   ensure <category> <item> <qty>  target: that category holds qty
+        LiteralArgumentBuilder<ClientSuggestionProvider> gather = literal("gather");
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> gatherItem =
+            argument("item", StringArgumentType.word()).suggests(ITEM_SUGGESTIONS);
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> gatherQty =
+            argument("quantity", IntegerArgumentType.integer(1)).suggests(GATHER_QTY_SUGGESTIONS);
 
-        // add: .eswarm task add <item> <quantity> [bot]
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> itemArg = argument("item", StringArgumentType.word());
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> qtyArg = argument("quantity", IntegerArgumentType.integer(1));
-
-        qtyArg.executes(context -> {
+        gatherQty.executes(context -> {
             String item = StringArgumentType.getString(context, "item");
             int qty = IntegerArgumentType.getInteger(context, "quantity");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
-
-            try {
-                net.minecraft.world.item.Item it = resolveKnownItem(item);
-                if (it == null) {
-                    error("unknown item '%s', not queued", item);
-                    return SINGLE_SUCCESS;
-                }
-                BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
-                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
-                    t.setStatus(BotTask.Status.FAILED);
-                    t.setFailureReason("no known source");
-                    mod.host.getTaskQueue().add(t);
-                    info("TASK: %s failed — no known source", t.getId());
-                    return SINGLE_SUCCESS;
-                }
+            net.minecraft.world.item.Item it = resolveKnownItem(item);
+            if (it == null) { error("unknown item '%s', not queued", item); return SINGLE_SUCCESS; }
+            BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
+            t.setStatusReason("gather: additive");
+            if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
+                t.setStatus(BotTask.Status.FAILED);
+                t.setFailureReason("no known source");
                 mod.host.getTaskQueue().add(t);
-                info("Added task %s (%s x%d)", t.getId().toString(), item, qty);
-            } catch (Exception e) { error("Invalid item: %s", item); }
-
+                info("TASK: %s failed — no known source", t.getId());
+                return SINGLE_SUCCESS;
+            }
+            mod.host.getTaskQueue().add(t);
+            mod.host.dispatchPending();
+            info("GATHER: queued %s %s x%d (additive: base stock does not count)", t.getId(), item, qty);
             return SINGLE_SUCCESS;
         });
 
-        qtyArg.then(argument("bot", StringArgumentType.word()).suggests(TARGET_SUGGESTIONS).executes(context -> {
-            String item = StringArgumentType.getString(context, "item");
-            int qty = IntegerArgumentType.getInteger(context, "quantity");
-            String bot = StringArgumentType.getString(context, "bot");
-            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
-            if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
+        gatherItem.then(gatherQty);
+        gather.then(gatherItem);
+        builder.then(gather);
 
-            try {
-                net.minecraft.world.item.Item it = resolveKnownItem(item);
-                if (it == null) {
-                    error("unknown item '%s', not queued", item);
-                    return SINGLE_SUCCESS;
-                }
-                BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
-                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
-                    t.setStatus(BotTask.Status.FAILED);
-                    t.setFailureReason("no known source");
-                    t.setAssignedBot(bot);
-                    mod.host.getTaskQueue().add(t);
-                    info("TASK: %s failed — no known source", t.getId());
-                    return SINGLE_SUCCESS;
-                }
-                t.setAssignedBot(bot);
-                mod.host.getTaskQueue().add(t);
-                mod.host.assignTask(bot, t);
-                info("Added and assigned task %s to %s", t.getId().toString(), bot);
-            } catch (Exception e) { error("Invalid item: %s", item); }
+        LiteralArgumentBuilder<ClientSuggestionProvider> ensure = literal("ensure");
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> ensureItem =
+            argument("item", StringArgumentType.word()).suggests(ITEM_SUGGESTIONS);
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> ensureQty =
+            argument("quantity", IntegerArgumentType.integer(1)).suggests(ENSURE_QTY_SUGGESTIONS);
 
-            return SINGLE_SUCCESS;
-        }));
+        ensureQty.executes(context -> queueEnsure(
+            StringArgumentType.getString(context, "item"),
+            IntegerArgumentType.getInteger(context, "quantity"), "all"));
+        ensureItem.then(ensureQty);
+        ensure.then(ensureItem);
 
-        itemArg.then(qtyArg);
-        task.then(literal("add").then(itemArg));
+        // "in <category>" is its own literal: with two shapes the first token could be an
+        // item or a category, and no suggestion list can know which slot is being typed.
+        LiteralArgumentBuilder<ClientSuggestionProvider> ensureIn = literal("in");
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> inCategory =
+            argument("category", StringArgumentType.word()).suggests(CATEGORY_SUGGESTIONS);
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> inItem =
+            argument("item", StringArgumentType.word()).suggests(ITEM_SUGGESTIONS);
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> inQty =
+            argument("quantity", IntegerArgumentType.integer(1)).suggests(ENSURE_QTY_SUGGESTIONS);
+        inQty.executes(context -> queueEnsure(
+            StringArgumentType.getString(context, "item"),
+            IntegerArgumentType.getInteger(context, "quantity"),
+            StringArgumentType.getString(context, "category")));
+        inItem.then(inQty);
+        inCategory.then(inItem);
+        ensureIn.then(inCategory);
+        ensure.then(ensureIn);
+        builder.then(ensure);
+
+        // cancel/list/pause/resume keep working exactly as before; they name a task or a
+        // bot, never an assignment.
+        LiteralArgumentBuilder<ClientSuggestionProvider> task = literal("task");
 
         // cancel: .eswarm task cancel <taskId>
-        task.then(literal("cancel").then(argument("taskId", StringArgumentType.word()).executes(context -> {
+        task.then(literal("cancel").then(argument("taskId", StringArgumentType.word()).suggests(TASK_ID_SUGGESTIONS).executes(context -> {
             String idStr = StringArgumentType.getString(context, "taskId");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
@@ -309,9 +449,9 @@ public class SwarmCommand extends Command {
                 return setDepositFromCrosshair(context, cat);
             });
 
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> coords = argument("x", IntegerArgumentType.integer())
-            .then(argument("y", IntegerArgumentType.integer())
-            .then(argument("z", IntegerArgumentType.integer())
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> coords = argument("x", IntegerArgumentType.integer()).suggests(X_SUGGESTIONS)
+            .then(argument("y", IntegerArgumentType.integer()).suggests(Y_SUGGESTIONS)
+            .then(argument("z", IntegerArgumentType.integer()).suggests(Z_SUGGESTIONS)
             .executes(context -> {
                 String cat = StringArgumentType.getString(context, "category");
                 int x = IntegerArgumentType.getInteger(context, "x");
@@ -342,7 +482,7 @@ public class SwarmCommand extends Command {
             return SINGLE_SUCCESS;
         });
 
-        remCat.then(argument("index", IntegerArgumentType.integer(1)).executes(context -> {
+        remCat.then(argument("index", IntegerArgumentType.integer(1)).suggests(INDEX_SUGGESTIONS).executes(context -> {
             String cat = StringArgumentType.getString(context, "category");
             int idx = IntegerArgumentType.getInteger(context, "index");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -372,7 +512,7 @@ public class SwarmCommand extends Command {
         }));
 
         // deposit auto on|off
-        deposit.then(literal("auto").then(argument("toggle", StringArgumentType.word()).executes(context -> {
+        deposit.then(literal("auto").then(argument("toggle", StringArgumentType.word()).suggests(TOGGLE_SUGGESTIONS).executes(context -> {
             String toggle = StringArgumentType.getString(context, "toggle");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
@@ -393,6 +533,14 @@ public class SwarmCommand extends Command {
             info("Auto-deposit threshold set to %d", val);
             return SINGLE_SUCCESS;
         })));
+
+        // deposit self (deposit the host player's own inventory)
+        deposit.then(literal("self").executes(context -> {
+            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+            if (mod == null) { error("Swarm module not loaded"); return SINGLE_SUCCESS; }
+            if (!mod.depositSelf("command")) error("Self-deposit refused (see log)");
+            return SINGLE_SUCCESS;
+        }));
 
         // deposit push (push config to workers)
         deposit.then(literal("push").executes(context -> {
@@ -468,9 +616,9 @@ public class SwarmCommand extends Command {
             return SINGLE_SUCCESS;
         }));
 
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> bx = argument("x", IntegerArgumentType.integer())
-            .then(argument("y", IntegerArgumentType.integer())
-            .then(argument("z", IntegerArgumentType.integer())
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> bx = argument("x", IntegerArgumentType.integer()).suggests(X_SUGGESTIONS)
+            .then(argument("y", IntegerArgumentType.integer()).suggests(Y_SUGGESTIONS)
+            .then(argument("z", IntegerArgumentType.integer()).suggests(Z_SUGGESTIONS)
             .executes(context -> {
                 int x = IntegerArgumentType.getInteger(context, "x");
                 int y = IntegerArgumentType.getInteger(context, "y");
@@ -485,7 +633,7 @@ public class SwarmCommand extends Command {
                 return SINGLE_SUCCESS;
             })));
 
-        bx.then(argument("y", IntegerArgumentType.integer()));
+        bx.then(argument("y", IntegerArgumentType.integer()).suggests(Y_SUGGESTIONS));
         base.then(bx);
 
         base.then(literal("clear").executes(context -> {
@@ -522,7 +670,7 @@ public class SwarmCommand extends Command {
 
         // waypoint add <name> <category>
         waypoint.then(literal("add")
-            .then(argument("name", StringArgumentType.word())
+            .then(argument("name", StringArgumentType.word()).suggests(WAYPOINT_SUGGESTIONS)
             .then(argument("category", StringArgumentType.word())
             .executes(context -> {
                 String name = StringArgumentType.getString(context, "name");
@@ -545,7 +693,7 @@ public class SwarmCommand extends Command {
 
         // waypoint portal <name> — marks current location as portal (auto-detects dimension)
         waypoint.then(literal("portal")
-            .then(argument("name", StringArgumentType.word())
+            .then(argument("name", StringArgumentType.word()).suggests(WAYPOINT_SUGGESTIONS)
             .executes(context -> {
                 String name = StringArgumentType.getString(context, "name");
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -593,7 +741,7 @@ public class SwarmCommand extends Command {
 
         // waypoint remove <name>
         waypoint.then(literal("remove")
-            .then(argument("name", StringArgumentType.word())
+            .then(argument("name", StringArgumentType.word()).suggests(WAYPOINT_SUGGESTIONS)
             .executes(context -> {
                 String name = StringArgumentType.getString(context, "name");
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -610,7 +758,7 @@ public class SwarmCommand extends Command {
 
         // waypoint goto <name> — sends bot to waypoint (for testing)
         waypoint.then(literal("goto")
-            .then(argument("name", StringArgumentType.word())
+            .then(argument("name", StringArgumentType.word()).suggests(WAYPOINT_SUGGESTIONS)
             .executes(context -> {
                 String name = StringArgumentType.getString(context, "name");
                 EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
@@ -769,4 +917,23 @@ public class SwarmCommand extends Command {
             mod.baseZSetting.set(z);
         } catch (Exception ignored) {}
     }
+
+    /** queueEnsure is what both the chat verb and the panel use: measure, then queue the gap. */
+    private int queueEnsure(String item, int target, String scope) {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
+        net.minecraft.world.item.Item it = resolveKnownItem(item);
+        if (it == null) { error("unknown item '%s', not queued", item); return SINGLE_SUCCESS; }
+        var res = mod.host.queueEnsure(it, item, target, scope);
+        if (res.error != null) { error("ENSURE: %s", res.error); return SINGLE_SUCCESS; }
+        String where = (scope == null || scope.isBlank() || scope.equalsIgnoreCase("all")) ? "base" : "zone " + scope;
+        if (res.alreadyMet) {
+            info("ENSURE: %s already at %d (%s holds %d) — nothing queued", item, target, where, res.have);
+        } else {
+            info("ENSURE: %s target %d, %s holds %d, queued %s for the shortfall of %d",
+                item, target, where, res.have, res.task.getId(), res.task.getTargetQuantity());
+        }
+        return SINGLE_SUCCESS;
+    }
+
 }

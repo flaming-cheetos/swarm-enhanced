@@ -1,0 +1,30 @@
+{
+  "id": "H4",
+  "title": "Worker disconnect and reconnect (simulated)",
+  "priority": "P0",
+  "simulated": true,
+  "simulation": {
+    "trigger": "worker connection loss and 5s reconnect",
+    "liveGate": "Stop the worker client for at least 5s while a task is ACTIVE; confirm the reconnect log and that the task is requeued or failed with a reason."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 2, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelSimulate", "name": "disconnect", "args": { "bot": "${BOT}" }, "as": "disconnect" },
+    { "action": "waitForTask", "item": "oak_log", "status": "PENDING", "timeoutSec": 10, "as": "task" },
+    { "action": "logs", "as": "disconnectLogs" },
+    { "action": "panelSimulate", "name": "reconnect", "args": { "bot": "${BOT}" }, "as": "reconnect" },
+    { "action": "panelState", "as": "afterReconnect" }
+  ],
+  "assert": [
+    { "path": "active.status", "equals": "ACTIVE" },
+    { "path": "task.status", "equals": "PENDING" },
+    { "path": "task.bot", "equals": "" },
+    { "path": "disconnectLogs", "containsInOrder": ["Worker disconnected", "Worker will attempt reconnect in 5s", "Requeued 1 active task(s)"] },
+    { "path": "afterReconnect.bots.0.online", "equals": true }
+  ]
+}

@@ -1,0 +1,14 @@
+# H5 build used for attempt 2
+# build-info.properties: version=0.1.0+8e2eed6, commit=8e2eed6,
+# built=2026-11-12T07:45:34.179538700Z
+# Built by: ./gradlew.bat build (branch fix/phantom-task-types)
+sha256sum build/libs/enhanced-swarm-0.1.0+8e2eed6.jar
+cp build/libs/enhanced-swarm-0.1.0+8e2eed6.jar <instances>/bot/.minecraft/mods/enhanced-swarm-0.1.0.jar
+cp build/libs/enhanced-swarm-0.1.0+8e2eed6.jar <instances>/main/.minecraft/mods/enhanced-swarm-0.1.0.jar
+# Launch:
+PrismLauncher.exe -l bot -a chris -s 192.168.4.57:25565
+PrismLauncher.exe -l main -a jamal -s 192.168.4.57:25565
+# Host JVM was terminated mid-ACTIVE with Stop-Process -Id <host javaw pids> -Force.
+# Worker JVM was stopped to hold the post-startup snapshot, then relaunched.
+# Host relaunch: same command above.
+# Panel control: POST /api/task/remove, /api/task/clear_done, /api/task/add

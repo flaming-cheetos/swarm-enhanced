@@ -1,0 +1,17 @@
+{
+  "tasks": [
+    {
+      "id": "09be0a4c-bb05-4df8-bf94-baf8c6b45223",
+      "type": "GATHER",
+      "priority": 0,
+      "item": "oak_log",
+      "targetQuantity": 1,
+      "collected": 0,
+      "status": "ACTIVE",
+      "assignedBot": "jamal"
+    }
+  ],
+  "nicknames": {
+    "jamal": ""
+  }
+}

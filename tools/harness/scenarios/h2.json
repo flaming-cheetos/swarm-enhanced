@@ -1,0 +1,20 @@
+{
+  "id": "H2",
+  "title": "Cancel while gathering",
+  "priority": "P0",
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 1, "type": "GATHER", "bot": "${BOT}", "as": "added" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "taskCancel", "bot": "${BOT}", "as": "cancel" },
+    { "action": "waitForTask", "item": "oak_log", "status": "CANCELLED", "timeoutSec": 10, "as": "task" },
+    { "action": "logs", "as": "taskLogs" },
+    { "action": "state", "as": "state" }
+  ],
+  "assert": [
+    { "path": "task.status", "equals": "CANCELLED" },
+    { "path": "taskLogs", "contains": "task cancelled" },
+    { "path": "state.inGame", "equals": true }
+  ]
+}

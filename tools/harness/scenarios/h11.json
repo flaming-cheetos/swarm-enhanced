@@ -1,0 +1,44 @@
+{
+  "id": "H11",
+  "title": "Two workers, one task (simulated)",
+  "priority": "P1",
+  "simulated": true,
+  "simulation": {
+    "trigger": "two online workers race to claim one PENDING task",
+    "liveGate": "Use a third Prism client if available and submit one task; confirm exactly one claim and one completion, or mark ENV and do not fake a second worker."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "panelSimulate", "name": "secondWorker", "args": { "name": "StubBotTwo" }, "as": "secondWorker" },
+    { "action": "panelSimulate", "name": "holdTasks", "args": { "held": true }, "as": "hold" },
+    { "action": "taskClearDone", "as": "cleared" },
+    { "action": "taskAdd", "item": "oak_log", "qty": 2, "type": "GATHER", "bot": "any", "as": "added" },
+    { "action": "panelSimulate", "name": "raceClaim", "as": "firstClaim" },
+    { "action": "waitForTask", "item": "oak_log", "status": "ACTIVE", "timeoutSec": 10, "as": "active" },
+    { "action": "panelState", "as": "claimed" },
+    { "action": "panelTruth", "as": "claimTruth" },
+    { "action": "logs", "as": "claimLogs" },
+    { "action": "panelSimulate", "name": "raceClaim", "as": "secondClaim" },
+    { "action": "panelState", "as": "duplicate" },
+    { "action": "panelTruth", "as": "duplicateTruth" },
+    { "action": "logs", "as": "duplicateLogs" },
+    { "action": "panelSimulate", "name": "completeClaimed", "as": "complete" },
+    { "action": "waitForTask", "item": "oak_log", "status": "COMPLETE", "timeoutSec": 10, "as": "task" },
+    { "action": "panelTruth", "as": "finalTruth" },
+    { "action": "logs", "as": "finalLogs" }
+  ],
+  "assert": [
+    { "path": "claimed.bots", "lengthMin": 2 },
+    { "path": "claimed.tasks", "lengthEquals": 1 },
+    { "path": "claimed.tasks.0.bot", "equals": "StubBot" },
+    { "path": "claimTruth.claimCount", "equals": 1 },
+    { "path": "claimTruth.completionCount", "equals": 0 },
+    { "path": "duplicateTruth.rejectedClaims", "equals": 1 },
+    { "path": "duplicateLogs", "contains": "TASK: claim rejected" },
+    { "path": "finalTruth.completionCount", "equals": 1 },
+    { "path": "task.status", "equals": "COMPLETE" },
+    { "path": "finalLogs", "contains": "completed" },
+    { "path": "finalTruth.liveActiveTaskCount", "equals": 0 }
+  ]
+}

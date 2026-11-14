@@ -1,5 +1,6 @@
 package com.rdh.swarm;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
@@ -40,7 +41,9 @@ import java.util.function.Supplier;
 public final class DepositDriver {
     private enum Phase { IDLE, OPENING, VERIFYING, TRANSFERRING, CLOSING, DONE, FAILED }
 
-    private static final long OPEN_TIMEOUT_MS = 3_000L;
+    private static final long OPEN_TIMEOUT_MS = 5_000L;
+    private static final long OPEN_RETRY_MS = 400L;
+    private long lastOpenAttemptMs = 0L;
     private static final long VERIFY_TIMEOUT_MS = 1_000L;
     private static final long TRANSFER_TIMEOUT_MS = 30_000L;
     private static final long CLOSE_TIMEOUT_MS = 3_000L;
@@ -93,6 +96,12 @@ public final class DepositDriver {
     private String failure = "";
     private String targetFailure = "";
     private final Map<String, Long> targetDelta = new LinkedHashMap<>();
+    /** The chest's measured contents, read from the open menu just before closing it. */
+    private final Map<String, Long> containerSnapshot = new LinkedHashMap<>();
+    private int containerUsedSlots = 0;
+    private int containerTotalSlots = 0;
+    /** The other half of a double chest, so the host can collapse the two into one record. */
+    private int[] containerTwin = null;
 
     public DepositDriver(Supplier<Minecraft> mcSupplier,
                          Consumer<String> protocol,
@@ -182,7 +191,7 @@ public final class DepositDriver {
         Minecraft mc = mcSupplier.get();
         if (ownedMenu && mc != null && mc.player != null && menu != null
             && mc.player.containerMenu == menu) {
-            try { mc.setScreenAndShow(null); } catch (Exception ignored) {}
+            try { mc.player.closeContainer(); mc.setScreenAndShow(null); } catch (Exception ignored) {}
         }
         ownedMenu = false;
         menu = null;
@@ -219,6 +228,9 @@ public final class DepositDriver {
     private void begin(Minecraft mc) {
         requested = false;
         active = true;
+        synchronized (runDelta) {
+            runDelta.clear();
+        }
         phase = Phase.IDLE;
         targets.clear();
         targetIndex = 0;
@@ -241,7 +253,14 @@ public final class DepositDriver {
         Set<String> seen = new LinkedHashSet<>();
         List<String> categories = new ArrayList<>();
         if (onlyCategory != null) {
+            List<int[]> forCategory = depositChestsSnapshot().get(onlyCategory);
             categories.add(onlyCategory);
+            // A base with one general pile registers it as "all". A category request
+            // that only looks under its own key finds no target and refuses the whole
+            // deposit even though the base has chests, so fall back to the general pile.
+            if ((forCategory == null || forCategory.isEmpty()) && depositChestsSnapshot().containsKey("all")) {
+                categories.add("all");
+            }
         } else {
             for (String key : depositChestsSnapshot().keySet()) {
                 if (key != null && !key.equalsIgnoreCase("all")) categories.add(key.toLowerCase());
@@ -251,8 +270,10 @@ public final class DepositDriver {
         }
 
         for (String category : categories) {
+            // Skipping a category that merely lacks a chest would leave an empty
+            // target set for the real request; the loop below then reports no-target.
             List<int[]> positions = depositChestsSnapshot().get(category);
-            if (positions == null) continue;
+            if (positions == null || positions.isEmpty()) continue;
             for (int[] p : new ArrayList<>(positions)) {
                 if (p == null || p.length < 3) continue;
                 String key = dimension + "|" + category.toLowerCase() + "|" + p[0] + "|" + p[1] + "|" + p[2];
@@ -269,7 +290,18 @@ public final class DepositDriver {
         selectNext(mc);
     }
 
+    /**
+     * Chests supplied by the caller instead of the worker. The host player runs its own
+     * driver (nothing else deposits that inventory) and has no worker to ask.
+     */
+    private Map<String, List<int[]>> chestsOverride;
+
+    public void useChests(Map<String, List<int[]>> chests) {
+        this.chestsOverride = chests;
+    }
+
     private Map<String, List<int[]>> depositChestsSnapshot() {
+        if (chestsOverride != null && !chestsOverride.isEmpty()) return chestsOverride;
         try {
             var worker = currentWorker();
             if (worker != null) return worker.depositChests;
@@ -288,6 +320,8 @@ public final class DepositDriver {
         }
     }
 
+    private int menuClearWaits = 0;
+
     private void selectNext(Minecraft mc) {
         if (targetIndex >= targets.size()) {
             finish();
@@ -303,6 +337,7 @@ public final class DepositDriver {
         targetDelta.clear();
         gotoIssued = false;
         openAttempted = false;
+        lastOpenAttemptMs = 0L;
         closeSent = false;
         ownedMenu = false;
         menu = null;
@@ -314,10 +349,30 @@ public final class DepositDriver {
         ChatUtils.infoPrefix("BotBrain", "DEPOSIT: start chest=%s %d %d %d reason=%s",
             target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ(), reason);
 
+        // A previous target can leave its chest GUI on screen. The guard below
+        // then rejected every later target instantly ("failed … after=1 steps"),
+        // which is why a four-chest base never completed a deposit.
+        try {
+            if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) {
+                mc.player.closeContainer();
+                mc.setScreenAndShow(null);
+            }
+        } catch (Exception ignored) {}
+
         if (mc.player.containerMenu != mc.player.inventoryMenu) {
+            // The close is only observed on the next tick, so failing here rejected
+            // every chest in a base the moment one menu was still closing. Wait a
+            // few ticks for it to settle before giving up on the target.
+            if (menuClearWaits < 10) {
+                menuClearWaits++;
+                targetIndex--; // re-select this target on the next tick
+                return;
+            }
+            menuClearWaits = 0;
             failTarget("menu-mismatch");
             return;
         }
+        menuClearWaits = 0;
 
         BlockState state = mc.level.getBlockState(target.pos);
         if (!isContainerBlock(state)) {
@@ -374,8 +429,8 @@ public final class DepositDriver {
     }
 
     private void openTarget(Minecraft mc) {
-        if (openAttempted) return;
         openAttempted = true;
+        lastOpenAttemptMs = System.currentTimeMillis();
         try {
             mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES,
                 Vec3.atCenterOf(target.pos));
@@ -386,6 +441,13 @@ public final class DepositDriver {
     }
 
     private void tickOpening(Minecraft mc, long now) {
+        // One interaction packet is easy to lose — reach, a lid animation, a
+        // transient block. The driver used to try exactly once and then report
+        // "timeout", so a single missed click aborted the whole deposit. Retry
+        // on a short cadence inside the same deadline.
+        if (!openAttempted || now - lastOpenAttemptMs >= OPEN_RETRY_MS) {
+            openTarget(mc);
+        }
         if (now > phaseDeadline) {
             failTarget("timeout");
             return;
@@ -488,8 +550,16 @@ public final class DepositDriver {
     private void tickClosing(Minecraft mc, long now) {
         if (ownedMenu && !closeSent) {
             closeSent = true;
+            // Measure before the menu goes away; after close the contents are gone.
+            snapshotContainer(mc);
             try {
-                if (mc.player.containerMenu == menu) mc.setScreenAndShow(null);
+                if (mc.player.containerMenu == menu) {
+                // Clearing only the screen left the server (and containerMenu)
+                // still on the chest, so the close never confirmed and every
+                // deposit ended in "refused reason=timeout".
+                mc.player.closeContainer();
+                mc.setScreenAndShow(null);
+            }
             } catch (Exception ignored) {
             }
         }
@@ -512,7 +582,7 @@ public final class DepositDriver {
             String reasonFailed = targetFailure;
             failure = reasonFailed;
             targetFailure = "";
-            if (targetMoved > 0) publishDelta(target, targetDelta);
+            publishChest(target);
             ChatUtils.warningPrefix("BotBrain", "DEPOSIT: refused reason=%s", reasonFailed);
             target = null;
             selectNext(mc);
@@ -523,16 +593,38 @@ public final class DepositDriver {
             targetMoved, targetStacks, targetDelta);
         if (targetMoved > 0) {
             succeeded = true;
-            publishDelta(target, targetDelta);
         } else {
             ChatUtils.infoPrefix("BotBrain", "DEPOSIT: no-op chest=%s %d %d %d",
                 target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ());
         }
+        // Publish the measured contents even for a no-op: an empty reading is still a
+        // reading, and it is what stops an old inflated count from surviving.
+        publishChest(target);
         target = null;
         selectNext(mc);
     }
 
     private void failTarget(String reason) {
+        if ("no-target".equals(reason) && !ownedMenu) {
+            // A chest list can name a block the world no longer has. One dead entry must
+            // not fail a run that already reached the other chests, so skip it and go on.
+            if (target != null) {
+                ChatUtils.warningPrefix("BotBrain", "DEPOSIT: skipped chest=%s %d %d %d (not a container)",
+                    target.dimension, target.pos.getX(), target.pos.getY(), target.pos.getZ());
+            }
+            target = null;
+            Minecraft skipped = mcSupplier.get();
+            if (skipped != null) selectNext(skipped); else finish();
+            return;
+        }
+        if ("timeout".equals(reason)) {
+            long nowMs = System.currentTimeMillis();
+            Minecraft d = mcSupplier.get();
+            ChatUtils.infoPrefix("BotBrain", "DEPOSIT: timeout detail phase=%s gotoIn=%d phaseIn=%d dist=%s",
+                phase, gotoDeadline - nowMs, phaseDeadline - nowMs,
+                (d != null && d.player != null && standPos != null)
+                    ? String.format("%.2f", d.player.blockPosition().distSqr(standPos)) : "none");
+        }
         if (targetFailure.isEmpty()) targetFailure = reason;
         if (ownedMenu) {
             phase = Phase.CLOSING;
@@ -559,6 +651,13 @@ public final class DepositDriver {
     private void finish() {
         active = false;
         requested = false;
+        if (!succeeded && (failure == null || failure.isEmpty()) && runDelta().isEmpty() && totalSteps == 0) {
+            // Reaching every chest and moving nothing is not an error: the inventory held
+            // only keep-list items. Reporting it as failed made the task gate retry a
+            // deposit that has nothing to do, forever.
+            succeeded = true;
+            ChatUtils.infoPrefix("BotBrain", "DEPOSIT: nothing to deposit (keep-list items only)");
+        }
         phase = succeeded ? Phase.DONE : Phase.FAILED;
         if (!succeeded) {
             if (failure == null || failure.isEmpty()) failure = "no-op";
@@ -573,21 +672,105 @@ public final class DepositDriver {
         }
     }
 
-    private void publishDelta(Target target, Map<String, Long> delta) {
-        if (delta == null || delta.isEmpty()) return;
+    /**
+     * Everything this whole run moved, summed across targets. The per-target delta only
+     * ever describes one chest, so a caller that needs "what did the deposit actually
+     * move" (the task-completion gate) had no honest source before this.
+     */
+    private final Map<String, Long> runDelta = new LinkedHashMap<>();
+
+    public Map<String, Long> runDelta() {
+        synchronized (runDelta) {
+            return new LinkedHashMap<>(runDelta);
+        }
+    }
+
+    /**
+     * Read the container's real contents out of the menu that is still open. This is a
+     * measurement, taken immediately before the chest is closed, and it is what the host
+     * index is built from.
+     */
+    private void snapshotContainer(Minecraft mc) {
+        containerSnapshot.clear();
+        containerUsedSlots = 0;
+        containerTotalSlots = 0;
+        if (menu == null || mc == null || mc.player == null) return;
+        var playerInv = mc.player.getInventory();
+        int containerSlots = 0;
+        for (Slot slot : menu.slots) {
+            if (slot == null) continue;
+            if (slot.container == playerInv) continue;
+            containerSlots++;
+            ItemStack stack = slot.getItem();
+            if (stack == null || stack.isEmpty()) continue;
+            containerUsedSlots++;
+            String id = itemId(stack);
+            if (!id.isEmpty()) containerSnapshot.merge(id, (long) stack.getCount(), Long::sum);
+        }
+        containerTotalSlots = containerSlots;
+        containerTwin = target != null ? chestTwin(mc, target.pos) : null;
+    }
+
+    /** A chest whose block state says LEFT/RIGHT shares one inventory with its neighbour. */
+    private int[] chestTwin(Minecraft mc, BlockPos pos) {
+        try {
+            if (mc == null || mc.level == null || pos == null) return null;
+            var state = mc.level.getBlockState(pos);
+            if (!(state.getBlock() instanceof ChestBlock)) return null;
+            var type = state.getValue(ChestBlock.TYPE);
+            if (type == net.minecraft.world.level.block.state.properties.ChestType.SINGLE) return null;
+            for (Direction d : Direction.values()) {
+                if (d.getAxis().isVertical()) continue;
+                BlockPos np = pos.relative(d);
+                var ns = mc.level.getBlockState(np);
+                if (!(ns.getBlock() instanceof ChestBlock)) continue;
+                var nt = ns.getValue(ChestBlock.TYPE);
+                if (nt == net.minecraft.world.level.block.state.properties.ChestType.SINGLE || nt == type) continue;
+                return new int[]{np.getX(), np.getY(), np.getZ()};
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * Publish what the chest holds, not what we think it gained. The payload carries the
+     * measured contents so a receiver can replace its record; the transfer delta rides
+     * along only as run bookkeeping.
+     */
+    private void publishChest(Target target) {
+        if (target == null) return;
+        if (!targetDelta.isEmpty()) {
+            synchronized (runDelta) {
+                targetDelta.forEach((id, n) -> runDelta.merge(id, n, Long::sum));
+            }
+        }
+        if (containerSnapshot.isEmpty() && containerTotalSlots == 0) return;
         JsonObject counts = new JsonObject();
-        for (Map.Entry<String, Long> entry : delta.entrySet()) {
+        for (Map.Entry<String, Long> entry : targetDelta.entrySet()) {
             counts.addProperty(entry.getKey(), entry.getValue());
+        }
+        JsonObject container = new JsonObject();
+        for (Map.Entry<String, Long> entry : containerSnapshot.entrySet()) {
+            container.addProperty(entry.getKey(), entry.getValue());
         }
         JsonObject root = new JsonObject();
         root.add("counts", counts);
+        root.add("container", container);
+        root.addProperty("absolute", true);
+        root.addProperty("usedSlots", containerUsedSlots);
+        root.addProperty("totalSlots", containerTotalSlots);
+        if (containerTwin != null) {
+            JsonArray twin = new JsonArray();
+            twin.add(containerTwin[0]); twin.add(containerTwin[1]); twin.add(containerTwin[2]);
+            root.add("twin", twin);
+        }
         root.addProperty("lastScan", System.currentTimeMillis());
         try {
             if (protocol != null) {
                 protocol.accept("CHEST_DELTA:" + target.category + ":" + target.pos.getX() + ":"
                     + target.pos.getY() + ":" + target.pos.getZ() + "|" + root);
             }
-            if (localDelta != null) localDelta.accept(new LinkedHashMap<>(delta));
+            if (localDelta != null) localDelta.accept(new LinkedHashMap<>(containerSnapshot));
         } catch (Exception ignored) {
         }
     }
@@ -646,8 +829,19 @@ public final class DepositDriver {
             || state.getBlock() instanceof EnderChestBlock;
     }
 
+    /**
+     * Storage containers accepted as a deposit target. The driver already
+     * treats barrels (and hoppers/dispensers) as valid container blocks, but
+     * the old check only accepted ChestMenu and ShulkerBoxMenu, so any
+     * barrel-based deposit chest failed with "menu-mismatch" and could never
+     * complete. Matching on the menu's simple name keeps this mapping-proof.
+     */
     private boolean isExpectedMenu(AbstractContainerMenu menu) {
-        return menu instanceof ChestMenu || menu instanceof ShulkerBoxMenu;
+        if (menu == null) return false;
+        if (menu instanceof ChestMenu || menu instanceof ShulkerBoxMenu) return true;
+        String name = menu.getClass().getSimpleName();
+        return name.equals("BarrelMenu") || name.equals("HopperMenu")
+            || name.equals("DispenserMenu") || name.equals("CrafterMenu");
     }
 
     private String menuName(AbstractContainerMenu menu) {

@@ -1,0 +1,21 @@
+{
+  "id": "H0b",
+  "title": "Attach truth: state, screen, and menu",
+  "priority": "P0",
+  "requires": ["bridge"],
+  "steps": [
+    { "action": "health", "as": "health" },
+    { "action": "state", "as": "state" },
+    { "action": "screen", "as": "screen" },
+    { "action": "menu", "as": "menu" },
+    { "action": "screenshot", "as": "screenshot", "file": "h0b-screenshot.png" }
+  ],
+  "assert": [
+    { "path": "health.ok", "equals": true },
+    { "path": "state.inGame", "equals": true },
+    { "path": "state.player.name", "exists": true },
+    { "path": "state.inventory", "lengthMin": 1 },
+    { "path": "state.menu.open", "equalsPath": "menu.open" },
+    { "path": "screen.open", "equalsPath": "state.screen.open" }
+  ]
+}

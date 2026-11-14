@@ -39,3 +39,9 @@ logs/
 
 # jars
 *.jar
+test-runs/
+
+# MCP server local state
+tools/mcp/config.json
+tools/mcp/.rcon-password
+tools/mcp/logs/

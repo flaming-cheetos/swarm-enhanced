@@ -1,0 +1,32 @@
+{
+  "id": "H8",
+  "title": "Deposit with the wrong menu (simulated)",
+  "priority": "P0",
+  "simulated": true,
+  "simulation": {
+    "trigger": "crafting menu open when a chest deposit is attempted",
+    "liveGate": "Open a crafting table, attempt a deposit, and confirm DEPOSIT: refused reason=menu-mismatch with no DEPOSIT: complete line."
+  },
+  "requires": ["bridge", "panel"],
+  "steps": [
+    { "action": "panelSimulate", "name": "reset", "as": "reset" },
+    { "action": "bridgeSimulate", "name": "reset", "as": "bridgeReset" },
+    { "action": "bridgeSimulate", "name": "menuMismatch", "as": "menuMismatch" },
+    { "action": "menu", "as": "menu" },
+    { "action": "state", "as": "state" },
+    { "action": "panelSimulate", "name": "depositMismatch", "as": "deposit" },
+    { "action": "panelState", "as": "panel" },
+    { "action": "logs", "as": "depositLogs" },
+    { "action": "screenshot", "as": "screenshot", "file": "h8-screenshot.png" }
+  ],
+  "assert": [
+    { "path": "menu.class", "contains": "CraftingMenu" },
+    { "path": "menu.title", "equals": "Crafting" },
+    { "path": "state.menu.class", "equalsPath": "menu.class" },
+    { "path": "panel.deposit.status", "equals": "REFUSED" },
+    { "path": "panel.deposit.reason", "equals": "menu-mismatch" },
+    { "path": "depositLogs", "contains": "DEPOSIT: refused reason=menu-mismatch" },
+    { "path": "depositLogs", "notContains": "DEPOSIT: complete" },
+    { "path": "screenshot.contentType", "equals": "image/png" }
+  ]
+}
