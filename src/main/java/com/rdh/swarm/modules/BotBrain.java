@@ -179,13 +179,7 @@ public class BotBrain extends Module {
         .sliderMax(20)
         .build());
 
-    private final Setting<Double> huntMinDamage = sgGeneral.add(new DoubleSetting.Builder()
-        .name("hunt-min-damage")
-        .description("Refuse a food hunt when effective attack damage is below this (a fist is 1.0).")
-        .defaultValue(3.0)
-        .range(1, 30)
-        .sliderMax(15)
-        .build());
+
 
     private final Setting<Boolean> eatRawFallback = sgGeneral.add(new BoolSetting.Builder()
         .name("eat-raw-fallback")
@@ -3961,11 +3955,12 @@ public class BotBrain extends Module {
     public String huntRefusalReason() {
         if (mc.player == null || mc.level == null) return "no world";
 
-        double damage = mc.player.getAttributeValue(
-            net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE);
-        if (damage < huntMinDamage.get()) {
-            return String.format("no effective weapon (attack damage %.1f < %.1f)",
-                damage, huntMinDamage.get());
+        // The client's ATTACK_DAMAGE attribute does not include held-item modifiers on
+        // this version (measured 1.0 while holding an iron sword), so the gate reads the
+        // held stack's weapon component instead.
+        net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
+        if (held.isEmpty() || held.get(net.minecraft.core.component.DataComponents.WEAPON) == null) {
+            return "no effective weapon (held: " + held.getItem() + ")";
         }
 
         if (mc.player.getHealth() < huntMinHealth.get()) {
