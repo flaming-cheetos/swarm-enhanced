@@ -48,9 +48,54 @@ against you · `ABSENT` not written
 | M9 | Fleet: several bots, no two going for the same chest | bot | `PARTIAL` — task claims, leases, renew and requeue are `DONE` live 2026-11-13; chest/furnace deconfliction `ABSENT` (gate A2 depends on it) |
 | M10 | In-game chatbot — independent, buildable any time | bot | `ABSENT` |
 | M11 | Hostile-server hardening: pacing, packet rates, reconnects | bot | `ABSENT` |
-| M12 | Threat and evasion — priority sits **above** M4 | bot | `ABSENT` |
+| M12 | Threat and evasion — priority sits **above** M4 | bot | `ABSENT` — corpus scan complete and mapped (`29_REFERENCE_CORPUS.md`); build set is decided by the Gate A dry run |
 | M13 | Stash and travel: ender chest, stash registry, nether | bot | `ABSENT` |
 | W | Panel v2 at `/v2` — static today; React rewrite planned | panel | `CODE ONLY` — opened on desktop and phone against fake players; no bot in game yet |
+
+## Reference corpus integration (added 2026-11-14)
+
+Source of truth for every claim below: `docs/deepdive/29_REFERENCE_CORPUS.md` — 11 addons, 1,401 files
+inventoried, ~40 read in depth. Cards are cited by ID (`C1`–`C14`), and every card names the file it came
+from. Nothing in this section is invented.
+
+**Rule:** a card enters a milestone only when that milestone needs it. Good ideas do not get built for
+being good.
+
+### Blocking Gate A — build before the 30-minute clock
+
+| card | what | why it blocks | exit criterion |
+|---|---|---|---|
+| C1 SafeFire | `CollisionShapeEvent` makes fire/lava solid client-side | the most likely way a 30-minute shift ends early: the bot cannot see lava sitting inside its path | bot refuses to enter a fire/lava block; proven on the test server with a path routed through lava |
+
+One module, ~40 lines, no interaction with the task loop. That is the entire Gate A delta in code.
+
+### Gate A insurance — promoted by the first dry run, not by theory
+
+| card | promoted when |
+|---|---|
+| C2 rotation move-fix | mining rotates and drifts — wasted breaks and rubberbanding |
+| C5 flee | the shift takes damage it cannot answer |
+| C8 NoFall config | the shift paths near a ledge; `Packet` is already set, confirm it appears in `bot_state` |
+| C3 shield companion | a death is logged with a mob cause |
+
+If a clean dry run needs none of these, they wait. Gate A is a 30-minute observation, not a feature sprint.
+
+### Mapped to milestones — not Gate A
+
+| card | milestone | note |
+|---|---|---|
+| C9 input wrapper + pause hooks | M0/M1 tooling | small; fixes stuck keys after a crash. Adopt when movement is next touched |
+| C9 double-mine | M3 bulk jobs | ~2x gather throughput; measure it, never claim it |
+| C10 Baritone API instead of chat | M5 base utilities | removes command-parse and "did it land" ambiguity |
+| C11 placement pre-validation | M6 blueprints | `FakePlacementContext.canPlace()` before touching the world |
+| C12 fleet ally check | M9 / Gate A2 | bots must never target each other; friend-list path is reliable, scoreboard is not |
+| C13 villager roller | V7 | enchant pipeline; its observed-state machine also models our task executor |
+| C3/C5/C6/C7 combat set | M12 threat | shield, flee, arrow dodge, anti-knockback |
+
+### Not being built
+
+`CrystalAura`, `BaseMacro`/6Bees chat macros, packet-only placement, any second aura implementation, and
+wholesale HighwayBuilder paving/blockade. Reasons in `29_REFERENCE_CORPUS.md` §4.
 
 ## Phase 0 — the dev loop (current work, added 2026-11-13)
 
@@ -77,7 +122,8 @@ path in under a minute.
 ## What is happening now
 
 **Updated 2026-11-14:** the task model is honest and the arguments autofill. Gate A is the
-next thing, and no code is blocking it — only the run itself.
+next thing: one module blocks it (C1 SafeFire, see the corpus section above), and nothing else
+does — the rest is the run itself.
 
 1. **Task modes are live.** `gather` is additive, `ensure` measures at enqueue and completes only
    against a fresh reading taken after its own deposit, or fails `ensure-undergather`. Stock can no
@@ -89,6 +135,8 @@ next thing, and no code is blocking it — only the run itself.
    reconciled by opening the chest.
 4. **Eating is wired, never watched.** `SwarmAutoEat` plus Meteor's `AutoEat` under `ModuleGuard`;
    `maybeInterruptForFood` hunts when food reaches zero. `CODE ONLY`.
+5. **The reference work is finished and mapped.** 11 addons, 1,401 files, ~40 read in depth; every usable
+   finding now has a milestone, a Gate A decision, or a recorded rejection. See `29_REFERENCE_CORPUS.md`.
 
 ### Tonight's queue (2026-11-14, planned with the operator before bed)
 
@@ -163,6 +211,8 @@ Gate B. They are not rejected and not deleted.
 
 - `2026-11-13` — Phase 0 added; M1/M2/M9 re-scored from live evidence; Gate A2 added;
   v2 backlog section created from rdh's "defer, do not cut" call.
+- `2026-11-14` — reference corpus mapped into the plan: exactly one blocking Gate A item (C1 SafeFire),
+  an insurance tier promoted by the dry run, and a milestone home for every remaining card.
 
 ## Gate A status, 2026-11-14
 
