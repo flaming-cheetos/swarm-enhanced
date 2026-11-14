@@ -402,6 +402,25 @@ public class BotBrain extends Module {
         appendIntMap(sb, "keep", keep);
         appendIntMap(sb, "deposit", junk);
 
+        // Fuel the cook path can actually use, read through the same resolver.
+        // Inventory only: a furnace slot is separate and is only readable while open.
+        java.util.List<com.rdh.swarm.task.SmeltingManager.FuelEntry> fuels =
+            com.rdh.swarm.task.SmeltingManager.inventoryFuels();
+        sb.append(",\"fuels\":[");
+        int fuelTicks = 0;
+        for (int i = 0; i < fuels.size(); i++) {
+            var f = fuels.get(i);
+            if (i > 0) sb.append(',');
+            sb.append("{\"id\":\"").append(escJson(f.id()))
+              .append("\",\"count\":").append(f.count())
+              .append(",\"ticksPerItem\":").append(f.ticksPerItem())
+              .append(",\"ticks\":").append(f.ticks())
+              .append(",\"resolved\":").append(f.resolved())
+              .append(",\"reason\":\"").append(escJson(f.reason())).append("\"}");
+            fuelTicks += f.ticks();
+        }
+        sb.append("],\"fuelTicks\":").append(fuelTicks);
+
         // storage cache age + contents
         sb.append(",\"storage\":{\"ageMs\":").append(lastStorageCacheAt == 0L ? -1 : (now - lastStorageCacheAt));
         sb.append(",\"items\":{");

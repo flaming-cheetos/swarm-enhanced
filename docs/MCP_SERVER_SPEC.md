@@ -312,8 +312,16 @@ on failure.
          "have":78,"deposited":0,"baseline":0},
  "withdraw":{"taskId":"859525a4-…","item":"minecraft:raw_iron","delivered":70,
              "attempts":1,"inFlight":null,"inFlightAgeMs":0},
- "smelt":{"baseline":0,"load":2,"oreHeld":64,"loads":["14","64"]}}
+ "smelt":{"baseline":0,"load":2,"oreHeld":64,"loads":["14","64"]},
+ "fuels":[{"id":"minecraft:coal","count":42,"ticksPerItem":1600,"ticks":67200,
+            "resolved":true,"reason":"constant"}],
+ "fuelTicks":67200}
 ```
+
+`fuels` and `fuelTicks` are inventory-only; they use the same `SmeltingManager.fuelValue()`
+resolver as the cook decision. A furnace's own fuel slot is separate and is only readable
+while its menu is open. Unresolved fuel appears with `resolved:false`, `ticks:0`, and a
+`reason`; it is never silently counted as usable.
 
 ### 6.2 `GET /api/debug/trace?bot=jamal&n=20`
 

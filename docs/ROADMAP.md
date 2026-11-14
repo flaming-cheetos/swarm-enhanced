@@ -150,7 +150,7 @@ Phase 0 is close enough that Gate A is the next real proof, so the order is:
 | 3a | **A3/A4/A5 base registry** - locations as data, id-addressed reads, survives restart | **DONE 2026-11-13 04:33** - 12 entries, `loadedFromDisk=true` after a real stop/start, iron 832 = 768 + 64, `bf1` coal x42 |
 | 2b | **B1 operator tools** `log_tail`, `task_watch`, `chest_delta`, `server_restart`, `panic` | **DONE 2026-11-13 05:05** - all five answer live; chest_delta caught a real +5 iron deposit; panic halts dispatch and resumes |
 | 2c | **Deposit loop proven end to end** - gather -> deposit -> ledger -> complete | **DONE 2026-11-13 05:41** - 32 cobblestone gathered, deposited and ledgered (1646 -> 1678), task COMPLETE 32/32 evidence=verified-empty |
-| 3 | Phase 1 leftovers: surface the fuel reader (`G2: cook check`) in `bot_state` as `fuels[]` + `fuelTicks`, then the food loop | `swarm_preflight` passes every check on a fresh bot |
+| 3 | Phase 1 leftovers: surface the fuel reader (`G2: cook check`) in `bot_state` as `fuels[]` + `fuelTicks`, then the food loop | Fuel fields are **CODE ONLY** (inventory-only, same resolver as the cook path); food loop and live preflight still pending |
 | 4 | **Gate A**: one bot, 30 minutes, deposits verified by opening chests, not by chat | verdict PASS with every deposit diffed against the world |
 
 Gate A at 60 TPS needs the RCON password on this machine (`tools/mcp/.rcon-password`);

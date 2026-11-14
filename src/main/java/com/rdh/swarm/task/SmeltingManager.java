@@ -25,7 +25,9 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.util.context.ContextMap;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -45,6 +47,9 @@ public class SmeltingManager {
             return state == FuelState.RESOLVED;
         }
     }
+
+    /** One fuel type in the player's inventory, resolved through the cook path's reader. */
+    public record FuelEntry(String id, int count, int ticksPerItem, int ticks, boolean resolved, String reason) {}
 
     private static final Set<String> UNRESOLVABLE_WARNED = ConcurrentHashMap.newKeySet();
     private static final Map<String, Integer> LAST_FUEL_LOG = new ConcurrentHashMap<>();
@@ -346,6 +351,52 @@ public class SmeltingManager {
                     id, counts.getOrDefault(entry.getKey(), 0), ticks);
             }
         }
+        return total;
+    }
+
+    /** Structured fuel inventory for the debug snapshot; same reader as the cook path. */
+    public static List<FuelEntry> inventoryFuels() {
+        return inventoryFuels(null);
+    }
+
+    public static List<FuelEntry> inventoryFuels(BlockPos furnacePos) {
+        if (mc.player == null) return List.of();
+
+        Map<Item, Integer> counts = new LinkedHashMap<>();
+        Map<Item, FuelValue> values = new LinkedHashMap<>();
+        for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (!isFuel(stack)) continue;
+            counts.merge(stack.getItem(), stack.getCount(), Integer::sum);
+            FuelValue value = fuelValue(stack, furnacePos);
+            FuelValue previous = values.get(stack.getItem());
+            if (previous == null || (!previous.resolved() && value.resolved())) {
+                values.put(stack.getItem(), value);
+            }
+        }
+
+        List<FuelEntry> entries = new ArrayList<>();
+        for (Map.Entry<Item, Integer> entry : counts.entrySet()) {
+            Item item = entry.getKey();
+            int count = entry.getValue();
+            FuelValue value = values.get(item);
+            boolean resolved = value != null && value.resolved();
+            int ticks = resolved ? value.ticksPerItem() * count : 0;
+            entries.add(new FuelEntry(
+                itemId(item),
+                count,
+                value == null ? 0 : value.ticksPerItem(),
+                ticks,
+                resolved,
+                value == null ? "unknown" : value.reason()
+            ));
+        }
+        return entries;
+    }
+
+    public static int inventoryFuelTicks() {
+        int total = 0;
+        for (FuelEntry entry : inventoryFuels()) total += entry.ticks();
         return total;
     }
 

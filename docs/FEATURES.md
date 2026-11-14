@@ -275,6 +275,16 @@ the cooking task. The panel's Quick Action `Check Fuel` is not a fuel check:
 food, blast furnace for ore work), the ore/raw food in the inventory, and fuel
 that is either in the inventory or already sitting in the appliance.
 
+**Debug visibility.** `BotBrain.debugStateJson()` publishes `fuels[]` and
+`fuelTicks` in `/api/debug/bot` (`bot_state`). Each entry is
+`{id,count,ticksPerItem,ticks,resolved,reason}` and is resolved through the same
+`SmeltingManager.fuelValue()` path as the cook decision. The list is
+**inventory-only**; a furnace's own fuel slot is separate and readable only while
+its menu is open. Unresolved fuel is reported with `resolved:false`, `ticks:0`,
+and the resolver's reason instead of being counted as usable. This makes the
+preflight fuel check possible without opening a furnace. The fields are
+`CODE ONLY` as of 2026-11-14; they have not been read from a live bot yet.
+
 **Multiplayer.** Block-entity slots are not synced to a client, so a stocked
 furnace looks empty until its menu is open. `BotBrain.peekApplianceFuel` opens
 the appliance, reads all three slots through the menu
