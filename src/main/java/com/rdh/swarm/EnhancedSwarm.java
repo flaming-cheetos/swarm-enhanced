@@ -871,20 +871,8 @@ public class EnhancedSwarm extends Module {
     private static final int _zc = 0x726468;
 
     // Helper to add a labeled integer row using WIntEdit; sends value on release
-    private void addNumberRow(WSection sec, GuiTheme theme, String name) {
-        // Baritone number setting removed — placeholder row kept for layout
-        WHorizontalList row = sec.add(theme.horizontalList()).expandX().widget();
-        row.add(theme.label(name + ": (removed) ")).widget();
-    }
-
-    // Helper to add a labeled double row using WDoubleEdit; sends value on release
-    private void addDoubleRow(WSection sec, GuiTheme theme, String name) {
-        // Baritone double setting removed — placeholder row kept for layout
-        WHorizontalList row = sec.add(theme.horizontalList()).expandX().widget();
-        row.add(theme.label(name + ": (removed) ")).widget();
-    }
-
-    private void createQuickTask(String itemStr, int qty) {
+        // Helper to add a labeled double row using WDoubleEdit; sends value on release
+        private void createQuickTask(String itemStr, int qty) {
         if (host == null) return;
         try {
             Identifier id = Identifier.tryParse(itemStr);

@@ -1086,28 +1086,7 @@ public class EnhancedSwarmWorker extends Thread {
     }
 
     // Returns true if player's inventory contains items that can be deposited
-    private boolean hasAnyDepositableItems() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.player == null) return false;
-        try {
-            for (int i = 0; i < 36; i++) {
-                try {
-                    ItemStack st = mc.player.getInventory().getItem(i);
-                    if (st == null || st.isEmpty()) continue;
-                    if (shouldKeep(st)) continue;
-                    if (depositChests.containsKey("all")) return true;
-                    for (String cat : depositChests.keySet()) {
-                        if (cat.equalsIgnoreCase("all")) continue;
-                        if (DepositConfig.matchesCategory(cat, st)) return true;
-                    }
-                    if (depositX != null) return true;
-                } catch (Exception ignored) {}
-            }
-        } catch (Exception ignored) {}
-        return false;
-    }
-
-    public void tick() {
+        public void tick() {
         if (depositDriver.isBusy()) {
             depositDriver.tick();
             lastDepositTransferRan = depositDriver.transferRan();

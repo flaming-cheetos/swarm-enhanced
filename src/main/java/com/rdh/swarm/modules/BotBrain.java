@@ -48,14 +48,6 @@ public class BotBrain extends Module {
         .build()
     );
 
-    private final Setting<Integer> craftingTableRange = sgGeneral.add(new IntSetting.Builder()
-        .name("crafting-table-range")
-        .description("Range to search for crafting tables.")
-        .defaultValue(5)
-        .range(3, 15)
-        .build()
-    );
-
     private final Setting<Integer> depositThreshold = sgGeneral.add(new IntSetting.Builder()
         .name("deposit-threshold")
         .description("Empty slots remaining to trigger deposit run.")
@@ -5719,13 +5711,7 @@ public class BotBrain extends Module {
     /**
      * Check if current gather resource requires nether dimension
      */
-    private boolean currentTaskRequiresNether() {
-        if (currentGatherResource == null) return false;
-        String category = WaypointManager.getCategoryForResource(currentGatherResource);
-        return WaypointManager.isNetherCategory(category);
-    }
-
-    /**
+        /**
      * Get the portal waypoint for transit.
      * Returns first portal waypoint, or null if none configured.
      */

@@ -272,18 +272,4 @@ public class DependencyResolver {
         return CraftingManager.countInInventory(item) > 0;
     }
 
-    private static boolean isMineable(Item item) {
-        String id = BuiltInRegistries.ITEM.getKey(item).toString();
-        return id.contains("ore") || id.contains("stone") || id.contains("cobblestone") ||
-               id.contains("coal") || id.contains("diamond") || id.contains("emerald") ||
-               id.contains("lapis") || id.contains("redstone") || id.contains("copper") ||
-               id.contains("gold") || id.contains("iron") || id.contains("ancient_debris") ||
-               id.contains("gravel") || id.contains("sand") || id.contains("dirt") ||
-               id.contains("clay") || id.contains("obsidian") || id.contains("netherrack");
-    }
-
-    private static boolean isLog(Item item) {
-        String id = BuiltInRegistries.ITEM.getKey(item).toString();
-        return id.contains("log") || id.contains("wood");
-    }
-}
+        }

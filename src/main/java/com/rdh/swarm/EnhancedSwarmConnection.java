@@ -718,19 +718,7 @@ public class EnhancedSwarmConnection extends Thread {
         }
     }
 
-    private void parseBaritoneSettings(String data) {
-        // Baritone settings push removed - no-op
-    }
-
-    private void parseModuleStates(String data) {
-        // Module state sync removed - no-op
-    }
-
-    private void parseModuleSettings(String data) {
-        // Module settings sync removed - no-op
-    }
-
-    private void parseSettings(String payload) {
+                private void parseSettings(String payload) {
         try {
             // Payload form: SETTINGS:workerName:entry|entry|...
             String[] parts = payload.split(":", 3);
