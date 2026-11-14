@@ -202,6 +202,16 @@ val h5FuelTest = tasks.register<JavaExec>("h5FuelTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5GraceTest = tasks.register<JavaExec>("h5GraceTest") {
+    group = "verification"
+    description = "Verify lease grace re-attach, boundary rejection, and reclaim fencing"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.LeaseGraceTest")
+    workingDir = layout.buildDirectory.dir("h5-grace-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest, h5GraceTest)
 }
