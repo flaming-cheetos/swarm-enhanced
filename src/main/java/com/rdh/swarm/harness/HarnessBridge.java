@@ -167,6 +167,16 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/goto".equals(path)) {
+                sendGoto(exchange);
+                return;
+            }
+
+            if ("POST".equals(method) && "/harness/stop-path".equals(path)) {
+                sendStopPath(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -201,6 +211,50 @@ public final class HarnessBridge {
             root.addProperty("version", BuildInfo.stamp());
             return root;
         });
+    }
+
+    /** Paths to a block using the path manager (Baritone), bypassing chat. */
+    private void sendGoto(HttpExchange exchange) throws IOException {
+        if (!config.allowActions) {
+            throw new BridgeException(403, "actions-disabled", "actions are disabled; set allowActions=true in the harness config");
+        }
+        JsonObject body = readJsonBody(exchange);
+        int x = body.has("x") ? body.get("x").getAsInt() : 0;
+        int y = body.has("y") ? body.get("y").getAsInt() : 0;
+        int z = body.has("z") ? body.get("z").getAsInt() : 0;
+
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                meteordevelopment.meteorclient.pathing.PathManagers.get()
+                    .moveTo(new net.minecraft.core.BlockPos(x, y, z));
+                out.addProperty("ok", true);
+                out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    private void sendStopPath(HttpExchange exchange) throws IOException {
+        if (!config.allowActions) {
+            throw new BridgeException(403, "actions-disabled", "actions are disabled; set allowActions=true in the harness config");
+        }
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                meteordevelopment.meteorclient.pathing.PathManagers.get().stop();
+                out.addProperty("ok", true);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
     }
 
     /**
