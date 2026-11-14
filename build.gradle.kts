@@ -192,6 +192,16 @@ val h5ProgressTest = tasks.register<JavaExec>("h5ProgressTest") {
     doFirst { workingDir.mkdirs() }
 }
 
+val h5FuelTest = tasks.register<JavaExec>("h5FuelTest") {
+    group = "verification"
+    description = "Verify known, empty, and unresolved fuel accounting"
+    dependsOn(tasks.named("h5TestClasses"))
+    classpath = sourceSets["h5Test"].runtimeClasspath
+    mainClass.set("com.rdh.swarm.FuelReaderTest")
+    workingDir = layout.buildDirectory.dir("h5-fuel-test").get().asFile
+    doFirst { workingDir.mkdirs() }
+}
+
 tasks.named("check") {
-    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest)
+    dependsOn(h5RecoveryTest, h5LeaseTest, h5FencingTest, h5PanelTest, h5ProtocolTest, h5ProgressTest, h5FuelTest)
 }

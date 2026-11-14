@@ -1,5 +1,7 @@
 package com.rdh.swarm.task;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.client.Minecraft;
@@ -37,9 +39,6 @@ import static meteordevelopment.meteorclient.MeteorClient.mc;
 
 public class SmeltingManager {
 
-    /** Raw food -> cooked result; the existing furnace states consume the raw input. */
-    public static final java.util.Map<Item, Item> COOKING = java.util.Map.copyOf(FoodManager.COOKING);
-
     public enum FuelState { ABSENT, UNRESOLVABLE, RESOLVED }
 
     public record FuelValue(FuelState state, int ticksPerItem, String reason) {
@@ -51,16 +50,22 @@ public class SmeltingManager {
     /** One fuel type in the player's inventory, resolved through the cook path's reader. */
     public record FuelEntry(String id, int count, int ticksPerItem, int ticks, boolean resolved, String reason) {}
 
+    /** One observed stack before duplicate item ids are merged. */
+    public record FuelObservation(String id, int count, int ticksPerItem, boolean resolved, String reason) {}
+
+    /** Aggregated fuel inventory plus the usable tick total. */
+    public record FuelLedger(List<FuelEntry> entries, int fuelTicks) {}
+
     private static final Set<String> UNRESOLVABLE_WARNED = ConcurrentHashMap.newKeySet();
     private static final Map<String, Integer> LAST_FUEL_LOG = new ConcurrentHashMap<>();
     private static volatile String lastFuelProblem = null;
 
     public static boolean isCookable(Item item) {
-        return item != null && COOKING.containsKey(item);
+        return item != null && FoodManager.COOKING.containsKey(item);
     }
 
     public static Item cookedResult(Item item) {
-        return item == null ? null : COOKING.get(item);
+        return item == null ? null : FoodManager.COOKING.get(item);
     }
 
     public static boolean depositFood(Item raw) {
@@ -354,50 +359,95 @@ public class SmeltingManager {
         return total;
     }
 
-    /** Structured fuel inventory for the debug snapshot; same reader as the cook path. */
-    public static List<FuelEntry> inventoryFuels() {
-        return inventoryFuels(null);
-    }
-
-    public static List<FuelEntry> inventoryFuels(BlockPos furnacePos) {
-        if (mc.player == null) return List.of();
-
-        Map<Item, Integer> counts = new LinkedHashMap<>();
-        Map<Item, FuelValue> values = new LinkedHashMap<>();
-        for (int i = 0; i < mc.player.getInventory().getContainerSize(); i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (!isFuel(stack)) continue;
-            counts.merge(stack.getItem(), stack.getCount(), Integer::sum);
-            FuelValue value = fuelValue(stack, furnacePos);
-            FuelValue previous = values.get(stack.getItem());
-            if (previous == null || (!previous.resolved() && value.resolved())) {
-                values.put(stack.getItem(), value);
+    /** Merge observations by item id and count only resolved burn time as usable. */
+    public static FuelLedger summarizeFuels(List<FuelObservation> observations) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        Map<String, FuelObservation> selected = new LinkedHashMap<>();
+        if (observations != null) {
+            for (FuelObservation observation : observations) {
+                if (observation == null || observation.count() <= 0) continue;
+                counts.merge(observation.id(), observation.count(), Integer::sum);
+                FuelObservation previous = selected.get(observation.id());
+                if (previous == null || (!previous.resolved() && observation.resolved())) {
+                    selected.put(observation.id(), observation);
+                }
             }
         }
 
         List<FuelEntry> entries = new ArrayList<>();
-        for (Map.Entry<Item, Integer> entry : counts.entrySet()) {
-            Item item = entry.getKey();
+        int total = 0;
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            FuelObservation observation = selected.get(entry.getKey());
             int count = entry.getValue();
-            FuelValue value = values.get(item);
-            boolean resolved = value != null && value.resolved();
-            int ticks = resolved ? value.ticksPerItem() * count : 0;
+            boolean resolved = observation != null && observation.resolved();
+            int ticks = resolved ? observation.ticksPerItem() * count : 0;
             entries.add(new FuelEntry(
-                itemId(item),
+                entry.getKey(),
                 count,
-                value == null ? 0 : value.ticksPerItem(),
+                observation == null ? 0 : observation.ticksPerItem(),
                 ticks,
                 resolved,
-                value == null ? "unknown" : value.reason()
+                observation == null ? "unknown" : observation.reason()
+            ));
+            total += ticks;
+        }
+        return new FuelLedger(List.copyOf(entries), total);
+    }
+
+    /** Structured fuel inventory for the debug snapshot; same reader as the cook path. */
+    public static List<FuelEntry> inventoryFuels() {
+        return inventoryFuelLedger().entries();
+    }
+
+    public static FuelLedger inventoryFuelLedger() {
+        return inventoryFuelLedger(null);
+    }
+
+    public static FuelLedger inventoryFuelLedger(BlockPos furnacePos) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.player == null) return summarizeFuels(List.of());
+
+        List<FuelObservation> observations = new ArrayList<>();
+        for (int i = 0; i < client.player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = client.player.getInventory().getItem(i);
+            if (!isFuel(stack)) continue;
+            FuelValue value = fuelValue(stack, furnacePos);
+            observations.add(new FuelObservation(
+                itemId(stack),
+                stack.getCount(),
+                value.ticksPerItem(),
+                value.resolved(),
+                value.reason()
             ));
         }
-        return entries;
+        return summarizeFuels(observations);
     }
 
     public static int inventoryFuelTicks() {
-        int total = 0;
-        for (FuelEntry entry : inventoryFuels()) total += entry.ticks();
-        return total;
+        return inventoryFuelLedger().fuelTicks();
+    }
+
+    /** JSON fragment shared by the debug snapshot and the fuel probe. */
+    public static String fuelStateJson() {
+        return fuelStateJson(inventoryFuelLedger());
+    }
+
+    public static String fuelStateJson(FuelLedger ledger) {
+        JsonObject root = new JsonObject();
+        JsonArray fuels = new JsonArray();
+        for (FuelEntry entry : ledger.entries()) {
+            JsonObject fuel = new JsonObject();
+            fuel.addProperty("id", entry.id());
+            fuel.addProperty("count", entry.count());
+            fuel.addProperty("ticksPerItem", entry.ticksPerItem());
+            fuel.addProperty("ticks", entry.ticks());
+            fuel.addProperty("resolved", entry.resolved());
+            fuel.addProperty("reason", entry.reason());
+            fuels.add(fuel);
+        }
+        root.add("fuels", fuels);
+        root.addProperty("fuelTicks", ledger.fuelTicks());
+        return root.toString();
     }
 
     /** Human-readable fuel inventory for the cook decision log. */
