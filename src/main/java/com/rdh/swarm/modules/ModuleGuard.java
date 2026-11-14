@@ -87,11 +87,15 @@ public final class ModuleGuard {
             "on-ground", "true"
         ), false),
         new GuardSpec(AutoRespawn.class, Map.of(), false),
-        // Meteor's KillAura picks and swings fine, but it cannot shield or give
-        // ground; SwarmCombat does both. Only one aura may run, or every target
-        // takes two attack packets per tick.
-        new GuardSpec(SwarmCombat.class, Map.of(), true),
-        new GuardSpec(SwarmFlee.class, Map.of(), true)
+        new GuardSpec(KillAura.class, Map.of(
+            "pause-baritone", "true",
+            "ignore-passive", "true",
+            "attack-when-holding", "Weapons",
+            "rotate", "Always",
+            "auto-switch", "false",
+            "max-targets", "1",
+            "range", "4.5"
+        ), true)
     );
 
     private final Map<Class<? extends Module>, Module> guarded = new LinkedHashMap<>();
@@ -143,7 +147,7 @@ public final class ModuleGuard {
         if (mc.player == null || mc.level == null) return;
 
         for (Module module : guarded.values()) {
-            if (killAuraSuppressed && isAura(module)) continue;
+            if (killAuraSuppressed && module instanceof KillAura) continue;
             if (!module.isActive()) {
                 try {
                     module.enable();
@@ -179,18 +183,11 @@ public final class ModuleGuard {
         ChatUtils.infoPrefix("ModuleGuard", "Restored guarded module state (%d changes)", restored);
     }
 
-    /** Auras and the flee module are the modules the planner may take the body back from. */
-    private static boolean isAura(Module module) {
-        return module instanceof KillAura || module instanceof SwarmCombat || module instanceof SwarmFlee;
-    }
-
     public void setKillAuraSuppressed(boolean suppressed) {
         killAuraSuppressed = suppressed;
-        SwarmCombat.setSuppressed(suppressed);
-        if (!suppressed) return;
-        for (Map.Entry<Class<? extends Module>, Module> entry : guarded.entrySet()) {
-            Module module = entry.getValue();
-            if (isAura(module) && module.isActive()) module.disable();
+        if (suppressed) {
+            Module killAura = guarded.get(KillAura.class);
+            if (killAura != null && killAura.isActive()) killAura.disable();
         }
     }
 
