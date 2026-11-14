@@ -162,6 +162,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/chat".equals(path)) {
+                sendChat(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -196,6 +201,45 @@ public final class HarnessBridge {
             root.addProperty("version", BuildInfo.stamp());
             return root;
         });
+    }
+
+    /**
+     * Sends chat, or a command if the text starts with '/', as the local player.
+     * Used by tests to run vanilla commands from an opped host client.
+     */
+    private void sendChat(HttpExchange exchange) throws IOException {
+        if (!config.allowActions) {
+            throw new BridgeException(403, "actions-disabled", "actions are disabled; set allowActions=true in the harness config");
+        }
+        JsonObject body = readJsonBody(exchange);
+        String message = body.has("message") ? body.get("message").getAsString() : "";
+        if (message.isBlank()) {
+            throw new BridgeException(400, "missing-message", "message is required");
+        }
+
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                if (Minecraft.getInstance().player == null) {
+                    out.addProperty("ok", false);
+                    out.addProperty("error", "not in game");
+                    return out;
+                }
+                if (message.startsWith("/")) {
+                    Minecraft.getInstance().player.connection.sendCommand(message.substring(1));
+                    out.addProperty("sent", "command");
+                } else {
+                    Minecraft.getInstance().player.connection.sendChat(message);
+                    out.addProperty("sent", "chat");
+                }
+                out.addProperty("ok", true);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
     }
 
     /**
