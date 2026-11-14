@@ -187,6 +187,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/collisions".equals(path)) {
+                sendCollisions(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -240,6 +245,42 @@ public final class HarnessBridge {
                     .moveTo(new net.minecraft.core.BlockPos(x, y, z));
                 out.addProperty("ok", true);
                 out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    /**
+     * Counts entity-collision shapes inside one block. This goes through
+     * BlockCollisions, which is where Meteor fires CollisionShapeEvent, so a
+     * collision-override module can be proven from the outside.
+     */
+    private void sendCollisions(HttpExchange exchange) throws IOException {
+        JsonObject body = readJsonBody(exchange);
+        int x = body.has("x") ? body.get("x").getAsInt() : 0;
+        int y = body.has("y") ? body.get("y").getAsInt() : 0;
+        int z = body.has("z") ? body.get("z").getAsInt() : 0;
+
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                net.minecraft.world.phys.AABB box = new net.minecraft.world.phys.AABB(
+                    x + 0.05, y + 0.05, z + 0.05, x + 0.95, y + 0.95, z + 0.95);
+                int count = 0;
+                String first = "";
+                for (net.minecraft.world.phys.shapes.VoxelShape s :
+                    Minecraft.getInstance().level.getBlockCollisions(Minecraft.getInstance().player, box)) {
+                    if (s.isEmpty()) continue;
+                    count++;
+                    if (first.isEmpty()) first = s.bounds().toString();
+                }
+                out.addProperty("count", count);
+                out.addProperty("first", first);
+                out.addProperty("ok", true);
             } catch (Throwable t) {
                 out.addProperty("ok", false);
                 out.addProperty("error", String.valueOf(t.getMessage()));
