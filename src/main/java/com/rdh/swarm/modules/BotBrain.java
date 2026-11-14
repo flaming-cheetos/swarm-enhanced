@@ -6020,6 +6020,39 @@ public class BotBrain extends Module {
         return continueToStagingTarget(base);
     }
 
+    /**
+     * Nearest standable position in one column, closest to {@code centerY} first, then the
+     * surface above it as a fallback for bases that are not connected to anything.
+     */
+    private BlockPos standableInColumn(int x, int z, int centerY, int band) {
+        if (mc.level == null) return null;
+        for (int step = 0; step <= band; step++) {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                if (step == 0 && sign > 0) continue;
+                BlockPos p = new BlockPos(x, centerY + sign * step, z);
+                if (isStandable(p)) return p;
+            }
+        }
+        try {
+            int surface = mc.level.getHeight(
+                net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+            BlockPos p = new BlockPos(x, surface, z);
+            if (isStandable(p)) return p;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /** Solid floor under it, two blocks of headroom over it, no lava or water in either. */
+    private boolean isStandable(BlockPos p) {
+        if (mc.level == null) return false;
+        var below = mc.level.getBlockState(p.below());
+        var feet = mc.level.getBlockState(p);
+        var head = mc.level.getBlockState(p.above());
+        if (below.isAir() || !below.getFluidState().isEmpty()) return false;
+        if (!feet.isAir() || !head.isAir()) return false;
+        return feet.getFluidState().isEmpty() && head.getFluidState().isEmpty();
+    }
+
     /** Pick the best reachable candidate in the configured vertical band. */
     private BlockPos selectStagingCandidate(BlockPos origin, int band) {
         if (mc.level == null) return null;
@@ -6030,22 +6063,17 @@ public class BotBrain extends Module {
             int distance = 100 + (int) (Math.random() * 200);
             int targetX = origin.getX() + (int) (Math.cos(angle) * distance);
             int targetZ = origin.getZ() + (int) (Math.sin(angle) * distance);
-            int targetY = origin.getY() + (int) (Math.random() * (band * 2 + 1)) - band;
-            BlockPos candidate = new BlockPos(targetX, targetY, targetZ);
+            // One random Y per column was the defect: inside a base most columns are solid at
+            // that exact Y, so 64 samples produced no-candidate. Scan the column for the
+            // nearest place a player can actually stand, preferring the base's own level.
+            BlockPos candidate = standableInColumn(targetX, targetZ, origin.getY(), band);
+            if (candidate == null) {
+                debug("STAGE", "rejected reason=no-column %d %d", targetX, targetZ);
+                continue;
+            }
+            int targetY = candidate.getY();
             var below = mc.level.getBlockState(candidate.below());
-            var feet = mc.level.getBlockState(candidate);
-            var head = mc.level.getBlockState(candidate.above());
-            boolean floor = !below.isAir() && below.getFluidState().isEmpty();
-            int headroom = feet.isAir() && head.isAir()
-                && feet.getFluidState().isEmpty() && head.getFluidState().isEmpty() ? 2 : 0;
-            if (!floor) {
-                debug("STAGE", "rejected reason=no-floor %d %d %d", targetX, targetY, targetZ);
-                continue;
-            }
-            if (headroom < 2) {
-                debug("STAGE", "rejected reason=no-headroom %d %d %d", targetX, targetY, targetZ);
-                continue;
-            }
+            int headroom = 2;
             int score = 100
                 - (Math.abs(targetX - origin.getX()) + Math.abs(targetZ - origin.getZ())) / 4
                 - Math.abs(targetY - origin.getY()) * 2;
