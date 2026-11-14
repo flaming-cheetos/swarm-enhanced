@@ -83,7 +83,7 @@ public class SwarmFlee extends Module {
 
     @Override
     public void onDeactivate() {
-        stopFleeing();
+        stopFleeing("module off");
     }
 
     @EventHandler
@@ -103,10 +103,10 @@ public class SwarmFlee extends Module {
         boolean safe = threat == null || mc.player.distanceTo(threat) >= safeDistance.get();
         boolean timeout = elapsedMs > maxSeconds.get() * 1000L;
 
-        if (recovered || safe || timeout || hp <= 0) {
-            stopFleeing();
-            return;
-        }
+        if (recovered) { stopFleeing("recovered"); return; }
+        if (safe) { stopFleeing("safe distance"); return; }
+        if (timeout) { stopFleeing("timeout"); return; }
+        if (hp <= 0) { stopFleeing("dead"); return; }
 
         // Recompute the escape direction at most once a second, or when the threat
         // has moved to a genuinely different bearing. Every-tick reissue thrashed.
@@ -116,6 +116,7 @@ public class SwarmFlee extends Module {
         if (!turned && now - lastIssueMs < 1000L) return;
         lastYaw = yaw;
         lastIssueMs = now;
+        info("Flee path — yaw %.0f, threat %.1f blocks", yaw, mc.player.distanceTo(threat));
 
         try {
             PathManagers.get().moveInDirection(yaw);
@@ -124,7 +125,7 @@ public class SwarmFlee extends Module {
                 warnedNoBaritone = true;
                 warning("Path manager unavailable: %s", t.getMessage());
             }
-            stopFleeing();
+            stopFleeing("path manager unavailable");
         }
     }
 
@@ -134,7 +135,11 @@ public class SwarmFlee extends Module {
         lastIssueMs = 0;
         savedGoal = currentGoal();
         tuneBaritone();
-        info("Fleeing — health %.1f", mc.player.getHealth());
+        Entity threat = nearestThreat();
+        info("Fleeing — health %.1f, threat %s at %.1f blocks",
+            mc.player.getHealth(),
+            threat == null ? "none" : threat.getType().getDescription().getString(),
+            threat == null ? -1.0 : mc.player.distanceTo(threat));
     }
 
     /** Baritone has no sprint-jump, but these keep it sprinting and sprint-ascending. */
@@ -154,7 +159,7 @@ public class SwarmFlee extends Module {
         return d;
     }
 
-    private void stopFleeing() {
+    private void stopFleeing(String reason) {
         if (!fleeing) return;
         fleeing = false;
 
@@ -169,7 +174,9 @@ public class SwarmFlee extends Module {
         } catch (Throwable ignored) {
         }
         savedGoal = null;
-        info("Flee over — resuming");
+        Entity threat = nearestThreat();
+        info("Flee over (%s) — threat %s, resuming", reason,
+            threat == null ? "gone" : String.format("%.1f blocks", mc.player.distanceTo(threat)));
     }
 
     private baritone.api.pathing.goals.Goal currentGoal() {
