@@ -86,6 +86,29 @@ public class StorageIndex {
         return totals;
     }
 
+    /**
+     * Newest chest scan that can back a claim about this item. With an item, only a
+     * chest actually holding it counts: a fresh scan of an empty chest says nothing
+     * about a count taken from another chest an hour ago. With a null item, any scan
+     * in scope counts, which is the best available proof when the answer is zero.
+     */
+    public synchronized long lastScanFor(String server, String itemId, String category) {
+        server = normalize(server);
+        String norm = itemId == null ? null : normalizeId(itemId);
+        long newest = 0L;
+        Map<String, Map<String, ChestRecord>> serverMap = index.get(server);
+        if (serverMap == null) return 0L;
+        String cat = (category == null || category.isBlank()) ? null : normalize(category);
+        for (var cEntry : serverMap.entrySet()) {
+            if (cat != null && !cat.equals(cEntry.getKey())) continue;
+            for (ChestRecord r : cEntry.getValue().values()) {
+                if (norm != null && r.counts.getOrDefault(norm, 0L) <= 0) continue;
+                if (r.lastScan > newest) newest = r.lastScan;
+            }
+        }
+        return newest;
+    }
+
     public synchronized List<ChestRecord> getChests(String server, String category) {
         server = normalize(server); category = normalize(category);
         Map<String, Map<String, ChestRecord>> serverMap = index.get(server);

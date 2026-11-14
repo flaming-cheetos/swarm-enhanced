@@ -888,4 +888,82 @@ public class EnhancedSwarmHost extends Thread {
     public void clearHaltedFlags() {
         for (BotStatus status : botStatuses.values()) status.halted = false;
     }
+
+    /** Outcome of an ensure request: the queued shortfall, or why nothing was queued. */
+    public static final class EnsureResult {
+        public final BotTask task;
+        public final String error;
+        public final long have;
+        public final boolean alreadyMet;
+        EnsureResult(BotTask task, String error, long have, boolean alreadyMet) {
+            this.task = task; this.error = error; this.have = have; this.alreadyMet = alreadyMet;
+        }
+    }
+
+    /**
+     * Nudge the queue to hand out work that is ready now. TaskQueue has no timer of its
+     * own: a task sits PENDING until something calls dispatchNextTask, which is how an
+     * ensure with a one-item shortfall sat unleased while the bot idled.
+     */
+    public void dispatchPending() {
+        try {
+            String[] names = getWorkerNames();
+            dispatchNextTask(names.length > 0 ? names[0] : "");
+        } catch (Exception ignored) {}
+    }
+
+    /** A stock reading older than this cannot back an ensure decision. */
+    private static final long STOCK_READING_MAX_AGE_MS = 30_000L;
+
+    /**
+     * Queue a target-level (ensure) task. The base is measured now and only the
+     * shortfall is queued, so an ensure for 200 beef with 137 stored becomes a
+     * 63-item gather instead of a second 200. A reading older than 30 s is refused
+     * rather than trusted: a stale count is how a bot mines 64 logs while 400 sit
+     * in a chest. Scope is a deposit category ("food", "tools") or "all".
+     */
+    public EnsureResult queueEnsure(net.minecraft.world.item.Item item, String itemId, int target, String scope) {
+        if (item == null) return new EnsureResult(null, "no item given", 0L, false);
+        String server = getCurrentServer();
+        String norm = StorageIndex.normalizeId(
+            net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item).toString());
+        boolean scoped = scope != null && !scope.isBlank() && !scope.equalsIgnoreCase("all");
+        long have;
+        long scan;
+        if (scoped) {
+            have = getStorageIndex().categoryTotals(server, scope).getOrDefault(norm, 0L);
+            scan = getStorageIndex().lastScanFor(server, have > 0 ? norm : null, scope);
+        } else {
+            have = getStorageIndex().getTotal(server, norm);
+            scan = getStorageIndex().lastScanFor(server, have > 0 ? norm : null, null);
+        }
+        long age = scan <= 0 ? Long.MAX_VALUE : System.currentTimeMillis() - scan;
+        if (age > STOCK_READING_MAX_AGE_MS) {
+            return new EnsureResult(null,
+                "no reading of " + (scoped ? "zone '" + scope + "'" : "the base") + " within "
+                + (STOCK_READING_MAX_AGE_MS / 1000) + "s ("
+                + (scan <= 0 ? "never measured" : (age / 1000) + "s old")
+                + "); scan the chests, then run ensure again", have, false);
+        }
+        int shortfall = (int) Math.max(0L, (long) target - have);
+        BotTask t = new BotTask(BotTask.Type.GATHER, item, shortfall);
+        t.setEnsureMode(true);
+        t.setEnsureTarget(target);
+        t.setEnsureBaseline(have);
+        String where = scoped ? "zone " + scope : "all chests";
+        if (shortfall <= 0) {
+            t.setStatus(BotTask.Status.COMPLETE);
+            t.setStatusReason("already-in-stock");
+            ChatUtils.infoPrefix("Swarm", "ENSURE: %s target %d already met (%s holds %d, read %s); nothing queued",
+                itemId, target, where, have, scan <= 0 ? "never" : (age / 1000) + "s ago");
+        } else {
+            t.setStatusReason("ensure-shortfall");
+            ChatUtils.infoPrefix("Swarm", "ENSURE: %s target %d, %s holds %d (read %s), queuing shortfall %d",
+                itemId, target, where, have, scan <= 0 ? "never" : (age / 1000) + "s ago", shortfall);
+        }
+        getTaskQueue().add(t);
+        if (shortfall > 0) dispatchPending();
+        return new EnsureResult(t, null, have, shortfall <= 0);
+    }
+
 }

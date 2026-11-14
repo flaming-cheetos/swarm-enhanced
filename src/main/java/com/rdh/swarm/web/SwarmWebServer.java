@@ -613,7 +613,8 @@ public class SwarmWebServer {
                     String item = extractJson(body, "item");
                     int qty = 64;
                     try { qty = Integer.parseInt(extractJson(body, "qty")); } catch (Exception ignored) {}
-                    String bot = extractJson(body, "bot");
+                    String mode = extractJson(body, "mode");
+                    String scope = extractJson(body, "scope");
                     String typeStr = extractJson(body, "type");
                     if (item == null) item = "";
                     boolean itemless = item.isEmpty() || item.equalsIgnoreCase("none");
@@ -628,6 +629,19 @@ public class SwarmWebServer {
                             logWarn("unknown item '" + item + "', not queued");
                             return;
                         }
+                    }
+                    // ENSURE measures the base here and queues only the shortfall, so the
+                    // bot is asked for what is missing rather than for the whole target.
+                    if (mcItem != null && "ensure".equalsIgnoreCase(mode == null ? "" : mode)) {
+                        var res = host.queueEnsure(mcItem, item, qty, scope);
+                        if (res.error != null) { logWarn("ENSURE not queued: " + res.error); return; }
+                        if (res.alreadyMet) {
+                            logInfo("ENSURE " + item + " target " + qty + " already met (base holds " + res.have + ")");
+                        } else {
+                            logInfo("ENSURE " + item + " target " + qty + ", base holds " + res.have
+                                + ", queued " + res.task.getTargetQuantity() + " as " + res.task.getId());
+                        }
+                        return;
                     }
                     BotTask.Type taskType;
                     if (typeStr == null || typeStr.isEmpty() || typeStr.equalsIgnoreCase("auto")) {
@@ -681,28 +695,13 @@ public class SwarmWebServer {
                     // Adding a task must not prune finished history; /api/task/clear_done owns that.
                     host.getTaskQueue().addTask(task);
 
-                    // If a specific bot was requested, try to resolve nickname
-                    String targetBot = bot;
-                    if (bot != null && !bot.isEmpty() && !bot.equalsIgnoreCase("any")) {
-                        try {
-                            java.util.Map<String,String> nmap = host.getTaskQueue().getAllNicknames();
-                            if (nmap != null) {
-                                for (var entry : nmap.entrySet()) {
-                                    if (entry.getValue().equalsIgnoreCase(bot)) {
-                                        targetBot = entry.getKey();
-                                        break;
-                                    }
-                                }
-                            }
-                        } catch (Exception ignored) {}
-                    } else {
-                        targetBot = null;
-                    }
+                    // No bot is named on a task any more: the lease decides who runs it,
+                    // so this only nudges the queue to hand out work that is ready now.
+                    try {
+                        host.dispatchNextTask(host.getWorkerNames().length > 0 ? host.getWorkerNames()[0] : "");
+                    } catch (Exception ignored) {}
 
-                    // Let the host decide whether to dispatch now (ensures single active task)
-                    try { host.dispatchNextTask(targetBot == null ? (host.getWorkerNames().length > 0 ? host.getWorkerNames()[0] : "") : targetBot); } catch (Exception ignored) {}
-
-                    logInfo("Task added: " + (itemless ? taskType.name() : item) + " x" + qty + " → " + (bot != null ? bot : "any"));
+                    logInfo("Task added: " + (itemless ? taskType.name() : item) + " x" + qty + " (unassigned; the queue leases it)");
                 }
                 case "/api/task/clear_done" -> {
                     if (host.getTaskQueue() != null) host.getTaskQueue().clearCompleted();

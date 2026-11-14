@@ -28,9 +28,11 @@ The dedicated gather path maps an item to a block with `MINE_FOR` and
 is met. `armBreakWatch`/`tickBreakConfirmation` watch for the block becoming air
 and for nearby server-side drops. `DropCollector` sweeps the drops separately.
 
-**How you start it.** `/eswarm task add <item> <quantity> [bot]`, the
-`/v2` Tasks tab, or `POST /api/task/add`. `type=auto` chooses `CRAFT` when
-`RecipeBook.hasRecipe` knows the item, otherwise `GATHER`.
+**How you start it.** `/eswarm gather <item> <quantity>` (additive) or
+`/eswarm ensure [category] <item> <quantity>` (target level), the `/v2` Tasks tab,
+or `POST /api/task/add` with `mode=gather|ensure` and an optional `scope`.
+`type=auto` chooses `CRAFT` when `RecipeBook.hasRecipe` knows the item, otherwise
+`GATHER`.
 
 **What it needs.** A host, a connected worker with `BotBrain` active, Baritone
 chat commands, a task whose item has a known source, and a usable tool when the
@@ -83,9 +85,9 @@ the owning worker. Verified live: `TASK: cancelled d617ac41-… owner=jamal` and
 fix the endpoint only sent `cancel`, so the `ACTIVE` row stayed queued and was
 re-dispatched; the old workaround was stopping it worker-side.
 
-**How you start it.** `/eswarm task add`, `/eswarm task list`,
+**How you start it.** `/eswarm gather`, `/eswarm ensure`, `/eswarm task list`,
 `/eswarm task cancel`, `pause`/`resume`, or the same controls in `/v2` and the
-old panel. The queue is created by `EnhancedSwarmHost` and reloaded at host
+old panel. No command takes a bot name: the lease assigns the task. The queue is created by `EnhancedSwarmHost` and reloaded at host
 construction.
 
 **What it needs.** A host process, a writable
@@ -491,11 +493,44 @@ driven it in game yet. The old `/` was not opened in this pass. Sources:
 `src/main/resources/web/v2/index.html`, `src/main/resources/web/v2/app.js`,
 `src/main/resources/web/v2/app.css`.
 
+## Task modes: gather and ensure (2026-11-14)
+
+**What it does.** A queued task now says which question it answers.
+
+- `gather` is additive. The task moves its own quantity and deposits it; base stock is
+  irrelevant to whether it is done, and it never withdraws from storage or closes on a
+  chest count. `gather oak_log 64` with 400 oak_log in a chest still mines and deposits 64.
+- `ensure` is target-level. The host measures the base when the task is created and
+  queues only the shortfall: `ensure 200 cooked_beef` with 137 stored queues 63, and with
+  200 stored it queues nothing and records `already-in-stock` on the spot.
+
+**Why.** Both old behaviours were the same bug from two sides. A top-level `GATHER` could
+close on stock, so `gather 3 birch` finished in 3 s with 16 logs in a chest and nothing
+moved; and if it did not close it withdrew the stock and deposited it back, which is net
+zero movement reported as progress. Stock can now only feed a *plan step* (a craft asking
+for material the base owns); `BotBrain.handleGathering` skips both paths for `GATHER`.
+
+**Scope.** `ensure <category> <item> <qty>` counts only chests registered under that
+deposit category. Categories are item-class filters (`food`, `tools`, `all`), not places:
+beef sitting in an `all` chest is invisible to `ensure food beef`, which is why named
+chest zones are the planned follow-up rather than the final answer.
+
+**What it needs.** For ensure, a chest reading within 30 s — of the item when the count is
+non-zero, of any in-scope chest when it is zero. Older readings are refused with their age
+instead of being trusted.
+
+**What it breaks it.** Tree mining overshoots: `ensure birch_log 21` with 20 stored mined
+one tree and the base ended at 29. Ensure guarantees *at least* the target, not an exact
+count. The persistence fields (`mode`, `ensureTarget`, `ensureBaseline`) live in
+`task-queue.json`, so a restart keeps the distinction.
+
+---
+
 ## Commands and keybinds
 
 **What it does.** `EnhancedSwarmAddon` registers `/eswarm` and the alias
 `/swarm`. `SwarmCommand.build` defines `cancel`/`stop`/`resume`, `exec`, `list`,
-`send`, `task add|cancel|pause|resume|list`, `deposit set|remove|list|auto|
+`send`, `gather`, `ensure`, `task cancel|pause|resume|list`, `deposit set|remove|list|auto|
 threshold|push`, `scan`, `stock`, `base set|clear|show|push`, `dumpstorage`,
 `waypoint add|portal|list|remove|goto|push`, and attaches `IdsCommand`. Most
 commands require `mod.isHost()`; `exec` falls back to local dispatch when the
@@ -513,7 +548,8 @@ worker name, `all`, or a nickname that resolves to a worker. Commands that creat
 tasks need a known item source.
 
 **What it breaks it.** A command run on a worker with no host reports
-`Not hosting`. `task add` rejects unknown items and items with no known source.
+`Not hosting`. `gather` rejects unknown items and items with no known source;
+`ensure` refuses when the last chest reading is older than 30 s.
 `waypoint push` only prints a message; it does not serialize or send waypoints,
 despite being in the tree. `waypoint goto` sends one `exec #goto` string and does
 not confirm arrival. There is no `grind`, `get`, `sort`, or `build` command.
@@ -654,8 +690,8 @@ Running real work surfaced two completions that were theatre, both fixed:
 1. **Withdraw-and-return counts as gathering.** A `gather 64 oak_log` task found 64
    oak_log already in the chests, withdrew them, counted the withdrawal as gathering,
    deposited them back into the same chest and printed `COMPLETE` with a ledger entry.
-   Net movement: zero. A gather whose target the base already covers now closes with
-   `evidence=already-in-stock` and never withdraws the stock.
+   Net movement: zero. *Superseded 2026-11-14:* closing on stock was itself dishonest for
+   an additive gather, so the stock branch was removed entirely — see "Task modes" above.
 2. **A requeued task was never re-dispatched.** Every dispatch trigger was an event, so
    after a lease expiry the task sat `PENDING` while the bot idled, with no failure to
    explain it. The maintenance sweep now hands pending work to workers that report

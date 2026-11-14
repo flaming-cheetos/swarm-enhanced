@@ -187,6 +187,11 @@ public class TaskQueue {
                 jo.addProperty("priority", t.getPriority());
                 jo.addProperty("item", t.getItemName());
                 jo.addProperty("targetQuantity", t.getTargetQuantity());
+                if (t.isEnsureMode()) {
+                    jo.addProperty("mode", "ensure");
+                    jo.addProperty("ensureTarget", t.getEnsureTarget());
+                    jo.addProperty("ensureBaseline", t.getEnsureBaseline());
+                }
                 jo.addProperty("collected", t.getCollectedQuantity());
                 try { jo.addProperty("status", t.getStatus().name()); } catch (Exception ignored) { jo.addProperty("status", "PENDING"); }
                 jo.addProperty("assignedBot", t.getAssignedBot() == null ? "" : t.getAssignedBot());
@@ -264,6 +269,11 @@ public class TaskQueue {
                         data.put("quantity", targetQty);
 
                         BotTask t = new BotTask(id, type, priority, data);
+                        if (jo.has("mode") && "ensure".equalsIgnoreCase(jo.get("mode").getAsString())) {
+                            t.setEnsureMode(true);
+                            t.setEnsureTarget(jo.has("ensureTarget") ? jo.get("ensureTarget").getAsInt() : targetQty);
+                            t.setEnsureBaseline(jo.has("ensureBaseline") ? jo.get("ensureBaseline").getAsLong() : -1L);
+                        }
                         if (collected > 0) t.addCollected(collected);
                         try { t.setStatus(BotTask.Status.valueOf(statusStr)); } catch (Exception ignored) {}
                         if (assigned != null && !assigned.isEmpty()) t.setAssignedBot(assigned);

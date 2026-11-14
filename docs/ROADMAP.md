@@ -38,7 +38,7 @@ against you · `ABSENT` not written
 |---|---|---|---|
 | M0 | Foundation: 26.3 port, modules, task queue, panel, mining, halt, deposit | both | `DONE` (live) |
 | M1 | Survival loop: fuel, cooking, completion, pause, staging | bot | `PARTIAL` — outcome-completion gate, deferred completion, deposit ledger and multi-load smelt are `DONE` live (2026-11-13); fuel, food and pickup remain `CODE ONLY` |
-| M2 | Storage intelligence: chest counts, reserved slots, sorter | both | `PARTIAL` — chest scan + index + keep-filter verified live 2026-11-13; reserved slots, low-stock warnings and sorter missing |
+| M2 | Storage intelligence: chest counts, reserved slots, sorter | both | `PARTIAL` — chest scan + index + keep-filter verified live 2026-11-13; gather/ensure task modes live 2026-11-14 (additive vs measured shortfall, category scope). Still missing: ensure rules + upkeep scheduler, named chest zones (categories are item-class filters, not places), reserved slots, low-stock warnings, sorter |
 | M3 | Bulk jobs: shulkers, counting, multi-trip | bot | `ABSENT` |
 | M4 | Tier progression: iron → diamond | bot | `ABSENT` |
 | M5 | Base utilities: gather zones, furnace registry, self-rebuild | bot | `PARTIAL` |

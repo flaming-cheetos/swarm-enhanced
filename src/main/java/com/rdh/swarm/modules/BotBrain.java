@@ -1325,10 +1325,9 @@ public class BotBrain extends Module {
     }
 
     /**
-     * Close a task on stock the base already holds. The count gate compares inventory plus
-     * this run's deposits, and nothing is in either, so it would keep refusing the
-     * completion and replan the shortfall every tick; the outcome here is the stored
-     * count, which is stated in the log line and in the task's reason.
+     * Close a task on stock the base already holds. Unused by GATHER and ENSURE: both own
+     * their outcome now (one moves items, the other is measured before it is queued).
+     * Kept for the digest path that reports a satisfied requirement without work.
      */
     private void completeFromStock(BotTask task, String itemId, long stored) {
         task.addCollected(task.getTargetQuantity() - task.getCollectedQuantity());
@@ -1622,7 +1621,17 @@ public class BotBrain extends Module {
                     ? stepForNeed.getTargetQuantity()
                     : currentTask.getTargetQuantity();
                 int deficit = need - have;
-                if (deficit > 0 && out != null) {
+                // Withdrawing stock to satisfy a task is a plan-step move (a craft
+                // fetching its ore). A top-level gather or ensure must do the work
+                // itself: withdrawing and depositing the same items straight back is
+                // net zero movement that still printed COMPLETE.
+                // Withdrawing stock is a craft-style move: the plan step needs material
+                // the base already owns. A GATHER task never takes from storage, in either
+                // mode: additive gather means "move N more", and an ensure task was already
+                // reduced to its shortfall by the host. Taking stock here and depositing it
+                // back is net zero movement reported as progress.
+                if (deficit > 0 && out != null
+                    && currentTask != null && currentTask.getType() != BotTask.Type.GATHER) {
                     String itemId = BuiltInRegistries.ITEM.getKey(tgt).toString();
                     Map<String, Integer> needs = new HashMap<>();
                     needs.put(itemId, deficit);
@@ -1683,26 +1692,13 @@ public class BotBrain extends Module {
                     // satisfied by withdrawing the stock and depositing it straight back:
                     // net zero movement, yet the task printed COMPLETE with a ledger entry.
                     // That is the phantom this gate exists to stop. Close it on the stock.
-                    if (!taskAlreadyWithdrew && deficit > 0 && a >= deficit
-                        && currentTask != null && currentTask.getType() == BotTask.Type.GATHER) {
-                        // Completing on stock is a claim about the base, so it needs a reading
-                        // of the base taken now: a stale cache or a query still in flight
-                        // cannot back a COMPLETE.
-                        long cacheAge = lastStorageCacheAt == 0L ? Long.MAX_VALUE
-                            : System.currentTimeMillis() - lastStorageCacheAt;
-                        if (storageQueryPending || cacheAge > STOCK_EVIDENCE_MAX_AGE_MS) {
-                            storageQueryPending = true;
-                            if (nowMs - lastPerTaskWithdrawLog > 10_000L) {
-                                lastPerTaskWithdrawLog = nowMs;
-                                ChatUtils.infoPrefix("BotBrain",
-                                    "Stock evidence for %s is %s; re-reading the base before completing",
-                                    itemId, cacheAge == Long.MAX_VALUE ? "never taken" : (cacheAge / 1000) + "s old");
-                            }
-                            return;
-                        }
-                        completeFromStock(currentTask, itemId, a);
-                        return;
-                    }
+                    // Nothing closes a task on stock here any more. A GATHER task is
+                    // additive and must move its own items; an ENSURE task arrives with
+                    // targetQuantity already reduced to the shortfall measured at enqueue,
+                    // and its "already in stock" outcome is decided by the host before the
+                    // task ever exists. The old branch below-the-fold completed on any
+                    // count of the item, which is how "gather 3 birch" finished with 16
+                    // logs sitting in a chest and zero moved.
                     if (inFlight) {
                         // A withdrawal for this step is already out; wait for the transfer
                         // rather than asking again or mining over the top of it.

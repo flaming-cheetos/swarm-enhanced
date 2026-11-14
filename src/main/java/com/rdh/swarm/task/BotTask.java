@@ -43,6 +43,14 @@ public class BotTask {
     private String lastLeaseToken = "";
     private long leaseLapsedAt;
 
+    // ENSURE is a target-level task: the host measures the base when the task is
+    // queued and stores only the shortfall in targetQuantity. These fields keep the
+    // operator's intent and the reading behind it, so a COMPLETE can say
+    // "12 + 3 = 15" instead of claiming fifteen items moved.
+    private boolean ensureMode;
+    private int ensureTarget;
+    private long ensureBaseline = -1L;
+
     // Primary constructor used by system code
     public BotTask(UUID id, Type type, int priority, Map<String, Object> data) {
         this.id = id;
@@ -108,6 +116,13 @@ public class BotTask {
     public String getLastLeaseToken() { return lastLeaseToken == null ? "" : lastLeaseToken; }
     public void setLastLeaseToken(String lastLeaseToken) { this.lastLeaseToken = lastLeaseToken == null ? "" : lastLeaseToken; }
     public long getLeaseLapsedAt() { return leaseLapsedAt; }
+
+    public boolean isEnsureMode() { return ensureMode; }
+    public void setEnsureMode(boolean ensureMode) { this.ensureMode = ensureMode; }
+    public int getEnsureTarget() { return ensureTarget; }
+    public void setEnsureTarget(int ensureTarget) { this.ensureTarget = Math.max(0, ensureTarget); }
+    public long getEnsureBaseline() { return ensureBaseline; }
+    public void setEnsureBaseline(long ensureBaseline) { this.ensureBaseline = ensureBaseline; }
     public void setLeaseLapsedAt(long leaseLapsedAt) { this.leaseLapsedAt = Math.max(0L, leaseLapsedAt); }
 
     public String getProgressString() { return String.format("%d/%d", collectedQuantity, targetQuantity); }

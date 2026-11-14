@@ -173,72 +173,73 @@ public class SwarmCommand extends Command {
         builder.then(send);
 
         // ---- task ----
-        LiteralArgumentBuilder<ClientSuggestionProvider> task = literal("task");
+        // Task modes, queued without a bot name: the lease decides which bot runs a
+        // task, so a name here only ever pre-assigned work the queue should own.
+        //   gather <item> <qty>             additive: move qty MORE, stock is irrelevant
+        //   ensure <item> <qty>             target: the base holds qty, anywhere
+        //   ensure <category> <item> <qty>  target: that category holds qty
+        LiteralArgumentBuilder<ClientSuggestionProvider> gather = literal("gather");
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> gatherItem =
+            argument("item", StringArgumentType.word());
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> gatherQty =
+            argument("quantity", IntegerArgumentType.integer(1));
 
-        // add: .eswarm task add <item> <quantity> [bot]
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> itemArg = argument("item", StringArgumentType.word());
-        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> qtyArg = argument("quantity", IntegerArgumentType.integer(1));
-
-        qtyArg.executes(context -> {
+        gatherQty.executes(context -> {
             String item = StringArgumentType.getString(context, "item");
             int qty = IntegerArgumentType.getInteger(context, "quantity");
             EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
             if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
-
-            try {
-                net.minecraft.world.item.Item it = resolveKnownItem(item);
-                if (it == null) {
-                    error("unknown item '%s', not queued", item);
-                    return SINGLE_SUCCESS;
-                }
-                BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
-                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
-                    t.setStatus(BotTask.Status.FAILED);
-                    t.setFailureReason("no known source");
-                    mod.host.getTaskQueue().add(t);
-                    info("TASK: %s failed — no known source", t.getId());
-                    return SINGLE_SUCCESS;
-                }
+            net.minecraft.world.item.Item it = resolveKnownItem(item);
+            if (it == null) { error("unknown item '%s', not queued", item); return SINGLE_SUCCESS; }
+            BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
+            t.setStatusReason("gather: additive");
+            if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
+                t.setStatus(BotTask.Status.FAILED);
+                t.setFailureReason("no known source");
                 mod.host.getTaskQueue().add(t);
-                info("Added task %s (%s x%d)", t.getId().toString(), item, qty);
-            } catch (Exception e) { error("Invalid item: %s", item); }
-
+                info("TASK: %s failed — no known source", t.getId());
+                return SINGLE_SUCCESS;
+            }
+            mod.host.getTaskQueue().add(t);
+            mod.host.dispatchPending();
+            info("GATHER: queued %s %s x%d (additive: base stock does not count)", t.getId(), item, qty);
             return SINGLE_SUCCESS;
         });
 
-        qtyArg.then(argument("bot", StringArgumentType.word()).suggests(TARGET_SUGGESTIONS).executes(context -> {
-            String item = StringArgumentType.getString(context, "item");
-            int qty = IntegerArgumentType.getInteger(context, "quantity");
-            String bot = StringArgumentType.getString(context, "bot");
-            EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
-            if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
+        gatherItem.then(gatherQty);
+        gather.then(gatherItem);
+        builder.then(gather);
 
-            try {
-                net.minecraft.world.item.Item it = resolveKnownItem(item);
-                if (it == null) {
-                    error("unknown item '%s', not queued", item);
-                    return SINGLE_SUCCESS;
-                }
-                BotTask t = new BotTask(BotTask.Type.GATHER, it, qty);
-                if (!com.rdh.swarm.task.DependencyResolver.hasKnownSource(it)) {
-                    t.setStatus(BotTask.Status.FAILED);
-                    t.setFailureReason("no known source");
-                    t.setAssignedBot(bot);
-                    mod.host.getTaskQueue().add(t);
-                    info("TASK: %s failed — no known source", t.getId());
-                    return SINGLE_SUCCESS;
-                }
-                t.setAssignedBot(bot);
-                mod.host.getTaskQueue().add(t);
-                mod.host.assignTask(bot, t);
-                info("Added and assigned task %s to %s", t.getId().toString(), bot);
-            } catch (Exception e) { error("Invalid item: %s", item); }
+        LiteralArgumentBuilder<ClientSuggestionProvider> ensure = literal("ensure");
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> ensureItem =
+            argument("item", StringArgumentType.word());
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> ensureQty =
+            argument("quantity", IntegerArgumentType.integer(1));
 
-            return SINGLE_SUCCESS;
-        }));
+        ensureQty.executes(context -> queueEnsure(
+            StringArgumentType.getString(context, "item"),
+            IntegerArgumentType.getInteger(context, "quantity"), "all"));
+        ensureItem.then(ensureQty);
+        ensure.then(ensureItem);
 
-        itemArg.then(qtyArg);
-        task.then(literal("add").then(itemArg));
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> ensureCategory =
+            argument("category", StringArgumentType.word());
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, String> ensureItem2 =
+            argument("item", StringArgumentType.word());
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<ClientSuggestionProvider, Integer> ensureQty2 =
+            argument("quantity", IntegerArgumentType.integer(1));
+        ensureQty2.executes(context -> queueEnsure(
+            StringArgumentType.getString(context, "item"),
+            IntegerArgumentType.getInteger(context, "quantity"),
+            StringArgumentType.getString(context, "category")));
+        ensureItem2.then(ensureQty2);
+        ensureCategory.then(ensureItem2);
+        ensure.then(ensureCategory);
+        builder.then(ensure);
+
+        // cancel/list/pause/resume keep working exactly as before; they name a task or a
+        // bot, never an assignment.
+        LiteralArgumentBuilder<ClientSuggestionProvider> task = literal("task");
 
         // cancel: .eswarm task cancel <taskId>
         task.then(literal("cancel").then(argument("taskId", StringArgumentType.word()).executes(context -> {
@@ -777,4 +778,23 @@ public class SwarmCommand extends Command {
             mod.baseZSetting.set(z);
         } catch (Exception ignored) {}
     }
+
+    /** queueEnsure is what both the chat verb and the panel use: measure, then queue the gap. */
+    private int queueEnsure(String item, int target, String scope) {
+        EnhancedSwarm mod = Modules.get().get(EnhancedSwarm.class);
+        if (mod == null || !mod.isHost() || mod.host == null) { error("Not hosting"); return SINGLE_SUCCESS; }
+        net.minecraft.world.item.Item it = resolveKnownItem(item);
+        if (it == null) { error("unknown item '%s', not queued", item); return SINGLE_SUCCESS; }
+        var res = mod.host.queueEnsure(it, item, target, scope);
+        if (res.error != null) { error("ENSURE: %s", res.error); return SINGLE_SUCCESS; }
+        String where = (scope == null || scope.isBlank() || scope.equalsIgnoreCase("all")) ? "base" : "zone " + scope;
+        if (res.alreadyMet) {
+            info("ENSURE: %s already at %d (%s holds %d) — nothing queued", item, target, where, res.have);
+        } else {
+            info("ENSURE: %s target %d, %s holds %d, queued %s for the shortfall of %d",
+                item, target, where, res.have, res.task.getId(), res.task.getTargetQuantity());
+        }
+        return SINGLE_SUCCESS;
+    }
+
 }
