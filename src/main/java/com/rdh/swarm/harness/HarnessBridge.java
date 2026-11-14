@@ -182,6 +182,11 @@ public final class HarnessBridge {
                 return;
             }
 
+            if ("POST".equals(method) && "/harness/shape".equals(path)) {
+                sendShape(exchange);
+                return;
+            }
+
             if ("POST".equals(method) && "/harness/screenshot".equals(path)) {
                 String length = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (length != null) {
@@ -235,6 +240,37 @@ public final class HarnessBridge {
                     .moveTo(new net.minecraft.core.BlockPos(x, y, z));
                 out.addProperty("ok", true);
                 out.addProperty("goal", x + " " + y + " " + z);
+            } catch (Throwable t) {
+                out.addProperty("ok", false);
+                out.addProperty("error", String.valueOf(t.getMessage()));
+            }
+            return out;
+        });
+        sendJson(exchange, 200, result);
+    }
+
+    /** Reports a block's collision shape, so collision modules can be proven directly. */
+    private void sendShape(HttpExchange exchange) throws IOException {
+        JsonObject body = readJsonBody(exchange);
+        int x = body.has("x") ? body.get("x").getAsInt() : 0;
+        int y = body.has("y") ? body.get("y").getAsInt() : 0;
+        int z = body.has("z") ? body.get("z").getAsInt() : 0;
+
+        JsonObject result = client(() -> {
+            JsonObject out = new JsonObject();
+            try {
+                net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
+                net.minecraft.world.level.block.state.BlockState state = Minecraft.getInstance().level.getBlockState(pos);
+                net.minecraft.world.phys.shapes.VoxelShape shape =
+                    state.getCollisionShape(Minecraft.getInstance().level, pos);
+                out.addProperty("block", state.getBlock().getName().getString());
+                out.addProperty("empty", shape.isEmpty());
+                if (!shape.isEmpty()) {
+                    net.minecraft.world.phys.AABB b = shape.bounds();
+                    out.addProperty("min", b.minX + "," + b.minY + "," + b.minZ);
+                    out.addProperty("max", b.maxX + "," + b.maxY + "," + b.maxZ);
+                }
+                out.addProperty("ok", true);
             } catch (Throwable t) {
                 out.addProperty("ok", false);
                 out.addProperty("error", String.valueOf(t.getMessage()));
