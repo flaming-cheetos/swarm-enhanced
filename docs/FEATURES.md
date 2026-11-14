@@ -510,7 +510,19 @@ moved; and if it did not close it withdrew the stock and deposited it back, whic
 zero movement reported as progress. Stock can now only feed a *plan step* (a craft asking
 for material the base owns); `BotBrain.handleGathering` skips both paths for `GATHER`.
 
-**Scope.** `ensure <category> <item> <qty>` counts only chests registered under that
+**Grammar.** `ensure <item> <qty>` targets the whole base; `ensure in <category> <item> <qty>`
+targets one category. `in` is a literal so the category slot is unambiguous — with the old
+two-shape form the first token could be an item or a category and no suggestion list could
+know which slot was being typed.
+
+**Autofill.** Every argument that can be known is suggested from live data: `item` lists what
+the base holds first (with the count) then the registry; `quantity` on ensure offers
+`have + 64/128/256/512` with the shortfall in the tooltip; `category` lists the categories this
+base actually has chests for; `task cancel` lists live task ids with their progress; `x y z`
+suggests your block position; waypoint names, deposit indices and on/off come from their own
+sources.
+
+**Scope.** `ensure in <category> <item> <qty>` counts only chests registered under that
 deposit category. Categories are item-class filters (`food`, `tools`, `all`), not places:
 beef sitting in an `all` chest is invisible to `ensure food beef`, which is why named
 chest zones are the planned follow-up rather than the final answer.
@@ -518,6 +530,11 @@ chest zones are the planned follow-up rather than the final answer.
 **What it needs.** For ensure, a chest reading within 30 s — of the item when the count is
 non-zero, of any in-scope chest when it is zero. Older readings are refused with their age
 instead of being trusted.
+
+**Completion is measured, not counted.** An ensure does not close on its own ledger: before
+`COMPLETE` it re-reads the base, waits up to 45 s for a fresh answer, and fails
+`ensure-undergather <have>/<target>` if the base is short. Overshoot is accepted by design;
+finishing below the target is the one outcome that is never reported as success.
 
 **What it breaks it.** Tree mining overshoots: `ensure birch_log 21` with 20 stored mined
 one tree and the base ended at 29. Ensure guarantees *at least* the target, not an exact
@@ -664,7 +681,7 @@ rejected), which is why the chest test used the real deposit path.
 A queued task now runs to a verified end on the live test server:
 
 ```
-task_add jamal minecraft:cobblestone 32
+ensure minecraft:cobblestone 32        (host measures the base, queues only the shortfall)
   -> bot mines, deposits, host ledger records the evidence
 TASK: ledger de521082 += 32 minecraft:cobblestone landed in chests
 TASK: complete de521082 evidence=verified-empty      (progress 32/32)

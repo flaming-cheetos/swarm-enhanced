@@ -170,7 +170,7 @@ probe above is the primary channel.
 | Tool | Args | Backing |
 |---|---|---|
 | `command` | `bot, chat` (raw command passthrough) | ex `/api/command` |
-| `task_add` | `bot, item, qty` | ex `/api/task/add` |
+| `task_add` | `item, qty, mode?, scope?` (no bot: the lease assigns) | ex `/api/task/add` |
 | `task_cancel` / `task_remove` / `task_pause` / `task_resume` / `task_clear_done` | `id?` | ex |
 | `task_clear_all` | — | ex + destructive |
 | `bot_stop` | `bot` | ex `/api/action/stop` |
@@ -431,7 +431,7 @@ start with one taken at the end. Verdict:
     "chests":[{"x":-550,"y":91,"z":601,"fill":{"minecraft:raw_iron":78}}],
     "ore":78,"fuel":{"minecraft:coal":64}},
    {"op":"preflight","expect":"pass"}],
- "act":[{"op":"task_add","bot":"jamal","item":"minecraft:iron_ingot","qty":78}],
+ "act":[{"op":"task_add","item":"minecraft:iron_ingot","qty":78,"mode":"gather"}],
  "wait":{"until":"task.complete","timeoutMs":240000},
  "assert":{"ref":"tools/mcp/asserts/iron78.json"},
  "teardown":[{"op":"tick_rate","rate":20}]}

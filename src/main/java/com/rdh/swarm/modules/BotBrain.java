@@ -560,6 +560,15 @@ public class BotBrain extends Module {
     private static final long GATHER_STALL_MS = 45_000L;
     private static final int GATHER_MAX_REISSUES = 4;
     /** A stock completion must rest on a base reading no older than this. */
+    // How long an ensure may wait for a fresh base reading before it gives up honestly.
+    private static final long ENSURE_VERIFY_MAX_MS = 45_000L;
+    private java.util.UUID ensureVerifyTaskId;
+    // A reading that predates the deposit being verified is not evidence, however recent
+    // it is. This is the timestamp the ensure check compares against.
+    private long lastDepositAt;
+    private long ensureVerifyStartedAt;
+    private long lastEnsureQueryAt;
+
     private static final long STOCK_EVIDENCE_MAX_AGE_MS = 30_000L;
     private long gatherApproachUntil = 0L;
     private double gatherStallLastX = Double.NaN;
@@ -1215,6 +1224,7 @@ public class BotBrain extends Module {
             Long moved = swarmMod.worker.lastDepositDelta.get(id);
             if (moved != null && moved > 0) {
                 outcomeDeposited += moved.intValue();
+                lastDepositAt = System.currentTimeMillis();
                 ChatUtils.infoPrefix("BotBrain", "TASK: ledger %s += %d %s landed in chests",
                     task.getId(), moved, id);
             }
@@ -1249,7 +1259,45 @@ public class BotBrain extends Module {
                 deferredCompletionTask = null;
                 return false;
             }
-            if (!depositLanded && have > 0) {
+            // An ensure task is finished by the base, not by its own ledger. Overshoot is
+        // always acceptable here; finishing short is the one outcome that must never be
+        // reported as COMPLETE. Re-measure, and wait for a fresh reading instead of
+        // trusting a cache that may predate the deposit it is meant to verify.
+        // depositLanded is part of the condition, not a detail: measuring before the move
+        // completes reports the pre-deposit count and fails work that is about to succeed.
+        if (task.isEnsureMode() && task.getTargetItem() != null && depositLanded) {
+            long target = task.getEnsureTarget();
+            long stored = freshStored(task.getTargetItem());
+            if (stored < 0) {
+                long nowMs = System.currentTimeMillis();
+                if (!task.getId().equals(ensureVerifyTaskId)) {
+                    ensureVerifyTaskId = task.getId();
+                    ensureVerifyStartedAt = nowMs;
+                }
+                if (nowMs - ensureVerifyStartedAt > ENSURE_VERIFY_MAX_MS) {
+                    ChatUtils.warningPrefix("BotBrain",
+                        "TASK: %s ensure target %d never verified — no fresh base reading in %ds",
+                        task.getId(), target, (int) (ENSURE_VERIFY_MAX_MS / 1000));
+                    failTaskWithReason(task, "ensure-unverified");
+                    ensureVerifyTaskId = null;
+                    return true;
+                }
+                return false;
+            }
+            if (stored < target) {
+                ChatUtils.warningPrefix("BotBrain",
+                    "TASK: %s ensure target %d, base holds %d — refusing to complete short (%d missing)",
+                    task.getId(), target, stored, target - stored);
+                failTaskWithReason(task, "ensure-undergather " + stored + "/" + target);
+                ensureVerifyTaskId = null;
+                return true;
+            }
+            ChatUtils.infoPrefix("BotBrain", "ENSURE: %s verified — base holds %d of %d",
+                task.getId(), stored, target);
+            ensureVerifyTaskId = null;
+        }
+
+        if (!depositLanded && have > 0) {
                 // The output exists but is still in the bot's inventory. This task's
                 // outcome is a deposit, so the completion waits for the move.
                 boolean alreadyWaiting = deferredCompletionTask == task;
@@ -1325,10 +1373,31 @@ public class BotBrain extends Module {
     }
 
     /**
-     * Close a task on stock the base already holds. Unused by GATHER and ENSURE: both own
-     * their outcome now (one moves items, the other is measured before it is queued).
-     * Kept for the digest path that reports a satisfied requirement without work.
+     * A base count recent enough to back a claim, or -1 after asking for one. A cached
+     * number nobody refreshed since the last deposit is exactly the evidence an ensure
+     * must not close on, so a stale cache triggers a query instead of an answer.
      */
+    private long freshStored(net.minecraft.world.item.Item item) {
+        if (item == null) return -1L;
+        String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item).toString();
+        long age = lastStorageCacheAt == 0L ? Long.MAX_VALUE : System.currentTimeMillis() - lastStorageCacheAt;
+        boolean answered = lastStorageCache != null && lastStorageCache.containsKey(id);
+        // The cache must be newer than the deposit it is meant to prove: a scan taken
+        // before the chest changed reports the old count and would fail an honest task
+        // (live: ensure 50 verified a pre-deposit 46 and failed 4/4 work that succeeded).
+        boolean afterDeposit = lastStorageCacheAt > lastDepositAt;
+        if (!storageQueryPending && answered && age <= STOCK_EVIDENCE_MAX_AGE_MS && afterDeposit) {
+            return lastStorageCache.getOrDefault(id, 0L);
+        }
+        if (System.currentTimeMillis() - lastEnsureQueryAt > 2_000L) {
+            lastEnsureQueryAt = System.currentTimeMillis();
+            java.util.Map<String, Integer> needs = new HashMap<>();
+            needs.put(id, 1);
+            try { queryStorageBeforeGathering(needs); } catch (Exception ignored) {}
+        }
+        return -1L;
+    }
+
     private void completeFromStock(BotTask task, String itemId, long stored) {
         task.addCollected(task.getTargetQuantity() - task.getCollectedQuantity());
         task.setStatus(BotTask.Status.COMPLETE);

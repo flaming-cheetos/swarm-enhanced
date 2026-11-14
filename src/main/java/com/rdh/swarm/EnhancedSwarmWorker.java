@@ -673,6 +673,14 @@ public class EnhancedSwarmWorker extends Thread {
                                         task.setLeaseToken(leaseToken);
                                         task.setAttempt(attempt);
                                     } catch (Exception ignored) {}
+                                    // Mode travels with the assignment: an ensure task
+                                    // verifies its target against the base before it
+                                    // can complete, and the worker cannot infer that
+                                    // from a shortfall quantity alone.
+                                    try {
+                                        if (f.length > 7) task.setEnsureMode("ensure".equalsIgnoreCase(f[7]));
+                                        if (f.length > 8) task.setEnsureTarget(Integer.parseInt(f[8]));
+                                    } catch (Exception ignored) {}
 
                                     // assign to local BotBrain if present
                                     try {

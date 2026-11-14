@@ -8,7 +8,8 @@ Root command class `commands/SwarmCommand` (694 lines). Two instances registered
 /eswarm exec <command...>                     // host: sends "swarm:all exec <cmd>"; solo: dispatches locally ("#" = chat, else Meteor command)
 /eswarm list                                  // host.listWorkers()
 /eswarm send <target> <command...>            // "swarm:all <cmd>" or "swarm:<target> <cmd>"
-/eswarm task add <item> <quantity> [bot]      // BotTask GATHER; optional assignTask
+/eswarm gather <item> <qty>                    // additive; base stock does not count
+/eswarm ensure [in <category>] <item> <qty>    // target-level; host queues the measured shortfall
 /eswarm task cancel <taskId>                  // "swarm:all task cancel <uuid>"
 /eswarm task pause <bot>                      // "swarm:<bot> task pause"
 /eswarm task resume <bot>                     // "swarm:<bot> task resume"

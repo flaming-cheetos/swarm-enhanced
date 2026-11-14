@@ -92,6 +92,20 @@ public class StorageIndex {
      * about a count taken from another chest an hour ago. With a null item, any scan
      * in scope counts, which is the best available proof when the answer is zero.
      */
+    /** Every item in the base, summed across categories. Backs item suggestions. */
+    public synchronized Map<String, Long> allTotals(String server) {
+        Map<String, Long> totals = new LinkedHashMap<>();
+        server = normalize(server);
+        Map<String, Map<String, ChestRecord>> serverMap = index.get(server);
+        if (serverMap == null) return totals;
+        for (var cEntry : serverMap.entrySet()) {
+            for (ChestRecord r : cEntry.getValue().values()) {
+                for (Map.Entry<String, Long> e : r.counts.entrySet()) totals.merge(e.getKey(), e.getValue(), Long::sum);
+            }
+        }
+        return totals;
+    }
+
     public synchronized long lastScanFor(String server, String itemId, String category) {
         server = normalize(server);
         String norm = itemId == null ? null : normalizeId(itemId);

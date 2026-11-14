@@ -835,10 +835,14 @@ public class EnhancedSwarmHost extends Thread {
             if (next == null) return;
             logTaskEvents();
 
-            String payload = String.format("task assign %s|%s|%s|%d|%s|%s|%d",
+            // Mode and ensureTarget travel last so an older worker simply ignores them;
+            // without them the worker rebuilds every task as a plain gather and an ensure
+            // loses the only thing that makes it verifiable at the end.
+            String payload = String.format("task assign %s|%s|%s|%d|%s|%s|%d|%s|%d",
                 next.getId().toString(), next.getType().name(), next.getItemName(), next.getTargetQuantity(),
                 next.getAssignedBot() == null ? "" : next.getAssignedBot(),
-                next.getLeaseToken(), next.getAttempt());
+                next.getLeaseToken(), next.getAttempt(),
+                next.isEnsureMode() ? "ensure" : "gather", next.getEnsureTarget());
             sendTo(botName, payload);
         } catch (Exception ignored) {}
     }
@@ -850,7 +854,10 @@ public class EnhancedSwarmHost extends Thread {
         if (claimed == null) return;
         String itemName = "";
         try { itemName = claimed.getItemName(); } catch (Exception ignored) {}
-        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s|%s|%d", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot(), claimed.getLeaseToken(), claimed.getAttempt());
+        // The trailing mode/ensureTarget fields are what make an ensure task an ensure
+        // task on the worker. Without them the worker rebuilt every task as a plain
+        // gather and the completion check had nothing to verify against.
+        String msg = String.format("swarm:%s task assign %s|%s|%s|%d|%s|%s|%d|%s|%d", workerName, claimed.getId().toString(), claimed.getType().name(), itemName, claimed.getTargetQuantity(), claimed.getAssignedBot() == null ? "" : claimed.getAssignedBot(), claimed.getLeaseToken(), claimed.getAttempt(), claimed.isEnsureMode() ? "ensure" : "gather", claimed.getEnsureTarget());
         logTaskEvents();
         sendTo(workerName, msg);
     }

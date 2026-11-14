@@ -83,15 +83,30 @@ Verify anything not on this list with `javap` before writing against it.
    about a second of the last sweep.
 3. **Halt is a latch, not a `#stop`.** Once halted, everything respects it until an explicit resume.
 4. **Never target air**, and never queue an item with no known source.
-5. **Ender chest is the only trusted storage.** Never add a deposit path that trusts a normal chest.
-6. **The 37 proxy PvP modules stay disabled.** They are not test targets.
-7. **A fix that hides a ghost block is worse than a visible one.** Confirm breaks from server evidence — a
+5. **The 37 proxy PvP modules stay disabled.** They are not test targets.
+6. **A fix that hides a ghost block is worse than a visible one.** Confirm breaks from server evidence — a
    drop entity or an inventory delta — and abandon unconfirmed ones with a log line instead of retrying.
+
+## Tasks are the unit of work
+
+- `gather <item> <qty>` is additive: the task moves its own quantity, and base stock never ends it.
+- `ensure <item> <qty>` / `ensure in <category> <item> <qty>` is target-level: the host measures the
+  base at enqueue and queues only the shortfall, refusing a reading older than 30 s.
+- **Overshoot is fine; undergathering is not.** An ensure completes only after a fresh reading shows
+  the base at target, and fails `ensure-undergather` instead of claiming a base it did not reach.
+- A task never names a bot. The lease decides who runs it.
 
 ## Testing
 
-Local singleplayer, alone, on a **copied** world. No second player, no `/tp` — a teleport mid-break desyncs the
-client and fakes the mining bug. Never test on a world you care about.
+Host and worker need two clients, so the live rig is the LAN server `192.168.4.57` with two
+instances: `main` (host, panel on 8888) and `bot` (worker, 8898). `start-both.sh` launches them.
+The launcher refuses a second instance while one is running — start `main`, wait for 8888 to
+listen, then start `bot`. Still no `/tp` mid-break: a teleport desyncs the client and fakes the
+mining bug. Never test on a world you care about.
+
+Every deploy copies the **same jar** (identical md5) to both instances and reads the
+`Initializing Enhanced Swarm <version>` line on each. A jar whose label does not match the commit
+is a lie the next session will believe.
 
 A green build proves it compiles. Nothing more.
 
