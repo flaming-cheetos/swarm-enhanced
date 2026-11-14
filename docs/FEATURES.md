@@ -875,3 +875,41 @@ Note the give-up came from `no-candidate` rather than the forced flag: the 64-sa
 found no reachable floor with headroom in band 16 around that anchor, which is its own
 finding — staging from inside a built-up base is likely to fail, and until now that failure
 meant mining the base.
+
+## Staging candidate search, fixed and proven (2026-11-14 18:39, jar 0.1.0+6ecaec0)
+
+Old search sampled one random Y inside the band per column and required air at exactly that
+Y. From a base at y=90 under a grass surface almost every column is stone at that Y, so 64
+samples returned `no-candidate` every time. It now walks the column outward from the base's
+own elevation to the nearest spot with a solid floor and two blocks of headroom, and falls
+back to the heightmap surface when a column has nothing underground.
+
+Unstaged gather from inside the base, `birch_log` (0 in stock):
+
+```
+STAGING: waypoint for 'birch_log' -> none
+STAGE: origin -545 90 602 band=16
+STAGE: selected -645 84 613 floor=grass_block
+Staging complete, beginning gather
+GATHER: item=birch_log method=mine issuing=#mine minecraft:birch_log | dispatch
+```
+
+Bot walked from -549,91,596 to -627,79,607 (83 blocks from the anchor) and mined.
+
+## Open defect this run found: honest completions fail as unproven
+
+Same run, immediately after the gather:
+
+```
+18:40:07 DEPOSIT: start chest=-551 91 598 ... complete moved=0 delta={}
+18:40:09 DEPOSIT: landed for c2df8759 ... (mov...
+18:40:09 TASK: retry c2df8759 reason=unproven-completion
+18:40:09 TASK: failed c2df8759 reason=unproven-completion
+18:40:10 TASK: complete a3dce021 evidence=already-in-stock (2 minecraft:birch_log in base storage)
+```
+
+The bot gathered, came back and deposited; the evidence check then declared the completion
+unproven and failed the task — while the very next task, a minute later, completed on the same
+`already-in-stock` evidence. The difference is timing: the first check ran before the deposit's
+chest measurement landed. A race, not a policy problem, but it means an honest gather fails and
+Gate A cannot pass while it exists.
